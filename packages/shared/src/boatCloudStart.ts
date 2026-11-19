@@ -18,6 +18,7 @@ import {
   type BoatApi,
   BoatApiError,
   type BoatCommandResult,
+  type BoatMachineType,
   type BoatSandbox,
   type BoatSnapshot,
 } from "./boatCloudApi.ts";
@@ -272,6 +273,7 @@ export interface ReadySpare {
   readonly pairingCode: string;
   readonly snapshot: string;
   readonly environment: string | null;
+  readonly machineType: BoatMachineType;
   /** Epoch milliseconds the pairing code expires at. */
   readonly codeExpiresAt: number;
   /** Epoch milliseconds Boat may stop the VM from. */
@@ -294,12 +296,33 @@ interface StartMachineInput {
   /** Checkouts the holder remembers on stopped VMs, which cannot be asked. */
   readonly knownWorkspaceRoots: (sandboxId: string) => ReadonlyArray<string>;
   readonly paired?: ReadonlyArray<PairedEnvironment>;
+  /**
+   * False keeps each new thread on a VM of its own: only the spare is reused, never a VM
+   * that serves a thread, running or stopped. Absent shares VMs that have room.
+   */
+  readonly shareMachines?: boolean;
+  /**
+   * The VM size: a new VM is made at it, a stopped one resumes at it, and a running VM of
+   * another size is never picked. Absent takes any running VM and makes or resumes `default`.
+   */
+  readonly machineType?: BoatMachineType;
   readonly report: ReportStep;
   /** Runs once a VM joins the holder's machines: one it created, or the spare it took. */
   readonly onAdded?: (sandboxId: string) => Effect.Effect<void>;
   /** Runs before an existing VM is resumed or reused, so an idle sweep leaves it on. */
   readonly onReused?: (sandboxId: string) => Effect.Effect<void>;
+  /** Runs once the start deleted a VM it created and could not get ready. */
+  readonly onDeleted?: (sandboxId: string) => Effect.Effect<void>;
 }
+
+/**
+ * The name is all that marks a spare, so a VM handed out under it can be deleted by any
+ * holder once it stops. A thread never runs on one whose rename did not land.
+ */
+const renameToMachine = (api: BoatApi, sandboxId: string) =>
+  api
+    .rename(sandboxId, MACHINE_NAME)
+    .pipe(Effect.retry({ schedule: Schedule.exponential(Duration.millis(500)), times: 4 }));
 
 /**
  * Cuts the thread's worktree name and starts the checkout, together with `alongside`.
@@ -308,7 +331,7 @@ interface StartMachineInput {
 const startCheckout = Effect.fn("BoatCloud.startCheckout")(function* (
   input: StartMachineInput,
   sandboxId: string,
-  alongside: Effect.Effect<void> = Effect.void,
+  alongside: Effect.Effect<void, BoatApiError> = Effect.void,
 ) {
   const { api, repository, report } = input;
   // The same temporary name T3 gives a new worktree, so the server renames it after the first message.
@@ -352,12 +375,20 @@ const handOutSpare = Effect.fn("BoatCloud.handOutSpare")(function* (
   if (input.onAdded) yield* input.onAdded(sandboxId);
   if (input.onReused) yield* input.onReused(sandboxId);
   const claim = Effect.all(
-    [api.rename(sandboxId, MACHINE_NAME), api.extend(sandboxId, IDLE_TTL_SECONDS)],
+    [
+      renameToMachine(api, sandboxId).pipe(
+        Effect.tapError(() => report("repository", "failed", "Could not take the ready VM.")),
+      ),
+      api.extend(sandboxId, IDLE_TTL_SECONDS).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("boat cloud could not extend the spare it handed out", {
+            sandboxId,
+            cause,
+          }),
+        ),
+      ),
+    ],
     { concurrency: 2, discard: true },
-  ).pipe(
-    Effect.catchCause((cause) =>
-      Effect.logWarning("boat cloud could not claim the spare it handed out", { sandboxId, cause }),
-    ),
   );
   const { worktree, fiber } = yield* startCheckout(input, sandboxId, claim);
   yield* report("server", "done", null);
@@ -386,8 +417,14 @@ export const startMachine = Effect.fn("BoatCloud.startMachine")(function* (
   yield* report("machine", "active", "Looking for a VM");
   const { choice, sandboxes } = yield* Effect.gen(function* () {
     const sandboxes = input.sandboxes ?? (yield* api.listSandboxes(MACHINE_LABEL_FILTER));
+    const shareMachines = input.shareMachines ?? true;
     const candidates = yield* Effect.forEach(
-      sandboxes.filter((sandbox) => machineStateOf(sandbox.state) !== "starting"),
+      // Without sharing, only the spare can be picked, so the other VMs are not measured.
+      sandboxes.filter(
+        (sandbox) =>
+          machineStateOf(sandbox.state) !== "starting" &&
+          (shareMachines || sandbox.name === SPARE_NAME),
+      ),
       (sandbox): Effect.Effect<MachineCandidate> => {
         const running = machineStateOf(sandbox.state) === "running";
         const environment = sandbox.environment ?? null;
@@ -400,6 +437,7 @@ export const startMachine = Effect.fn("BoatCloud.startMachine")(function* (
             usage: null,
             workspaceRoots: input.knownWorkspaceRoots(sandbox.id),
             spare,
+            machineType: sandbox.type ?? null,
           });
         }
         // The load decides between sharing this VM and starting another, even when it is the only one.
@@ -413,13 +451,20 @@ export const startMachine = Effect.fn("BoatCloud.startMachine")(function* (
             usage: measure?.usage ?? null,
             workspaceRoots: measure?.workspaceRoots ?? [],
             spare,
+            machineType: sandbox.type ?? null,
           })),
         );
       },
       { concurrency: 8 },
     );
     return {
-      choice: pickMachine(candidates, repository.workspaceRoot, input.environment),
+      choice: pickMachine(
+        candidates,
+        repository.workspaceRoot,
+        input.environment,
+        shareMachines,
+        input.machineType ?? null,
+      ),
       sandboxes,
     };
   }).pipe(Effect.tapError(() => report("machine", "failed", "Looking for a VM")));
@@ -436,77 +481,92 @@ export const startMachine = Effect.fn("BoatCloud.startMachine")(function* (
           ? "Using a ready VM"
           : `Using ${machineLabelOf(choice.sandboxId)}`;
   const runningSpare = spare && choice.kind === "use";
+  /** Set once Boat made a VM for this start, which is deleted if the start then fails. */
+  let createdId: string | null = null;
   const join = Effect.fn("BoatCloud.joinMachine")(function* (sandboxId: string) {
     if (spare) {
-      // The name is all that marks a spare, so no other holder takes it from here on.
-      yield* api.rename(sandboxId, MACHINE_NAME);
+      yield* renameToMachine(api, sandboxId);
       if (input.onAdded) yield* input.onAdded(sandboxId);
     }
     if (input.onReused) yield* input.onReused(sandboxId);
   });
-  const sandbox = yield* runStep(
-    report,
-    "machine",
-    machineDetail,
-    Effect.gen(function* () {
-      if (choice.kind === "create") {
-        const created = yield* api.createSandbox({
-          name: MACHINE_NAME,
-          // Several threads share a VM, so it gets the medium size.
-          type: "default",
-          labels: { ...MACHINE_LABELS, [SNAPSHOT_LABEL]: input.snapshot },
-          from: input.snapshot,
-          ttlSeconds: IDLE_TTL_SECONDS,
-          ...(input.environment === null ? {} : { environment: input.environment }),
-        });
-        if (input.onAdded) yield* input.onAdded(created.id);
-        return yield* waitRunning(api, created.id);
-      }
-      // A running spare joins alongside its server start below.
-      if (!runningSpare) yield* join(choice.sandboxId);
-      if (choice.kind === "resume") {
-        // No environment on resume: Boat keeps the VM on the one it started with. A small
-        // spare grows to the shared size here.
-        yield* api.resume(choice.sandboxId, IDLE_TTL_SECONDS, "default");
-        return yield* waitRunning(api, choice.sandboxId);
-      }
-      // Listed running a moment ago, so it needs no wait. The new deadline is set
-      // alongside the server start below.
-      return sandboxes.find((listed) => listed.id === choice.sandboxId)!;
-    }),
-  );
-  const sandboxId = sandbox.id;
-  const { worktree, fiber: checkoutFiber } = yield* startCheckout(input, sandboxId);
-
-  // A client paired with this VM reconnects with its saved credential, so it needs no new code.
-  const expected = sandbox.subdomain
-    ? (input.paired?.find(
-        (environment) => subdomainOfHttpBaseUrl(environment.httpBaseUrl) === sandbox.subdomain,
-      ) ?? null)
-    : null;
-  const server = yield* runStep(
-    report,
-    "server",
-    null,
-    Effect.gen(function* () {
-      // A reused VM may be minutes from its deadline; the new thread restarts it.
-      const [started] = yield* Effect.all(
-        [
-          startServer(api, sandboxId, expected === null),
-          choice.kind === "use" ? api.extend(sandboxId, IDLE_TTL_SECONDS) : Effect.void,
-          runningSpare ? join(sandboxId) : Effect.void,
-        ],
-        { concurrency: "unbounded" },
+  const deleteCreated = Effect.suspend(() => {
+    const sandboxId = createdId;
+    if (sandboxId === null) return Effect.void;
+    return api
+      .delete(sandboxId)
+      .pipe(
+        Effect.ignore,
+        Effect.andThen(input.onDeleted ? input.onDeleted(sandboxId) : Effect.void),
       );
-      // Its state was reset since the client paired, so the saved credential no longer works.
-      const pairingCode =
-        expected !== null && started.environmentId !== expected.environmentId
-          ? yield* pair(api, sandboxId)
-          : (started.pairing?.code ?? null);
-      const httpBaseUrl = yield* serverUrl(api, sandbox, started.hosted);
-      return { environmentId: started.environmentId, pairingCode, httpBaseUrl };
-    }),
-  ).pipe(Effect.onError(() => Fiber.interrupt(checkoutFiber)));
+  });
+  const { sandbox, server, worktree, checkoutFiber } = yield* Effect.gen(function* () {
+    const sandbox = yield* runStep(
+      report,
+      "machine",
+      machineDetail,
+      Effect.gen(function* () {
+        if (choice.kind === "create") {
+          const created = yield* api.createSandbox({
+            name: MACHINE_NAME,
+            type: input.machineType ?? "default",
+            labels: { ...MACHINE_LABELS, [SNAPSHOT_LABEL]: input.snapshot },
+            from: input.snapshot,
+            ttlSeconds: IDLE_TTL_SECONDS,
+            ...(input.environment === null ? {} : { environment: input.environment }),
+          });
+          createdId = created.id;
+          if (input.onAdded) yield* input.onAdded(created.id);
+          return yield* waitRunning(api, created.id);
+        }
+        // A running spare joins alongside its server start below.
+        if (!runningSpare) yield* join(choice.sandboxId);
+        if (choice.kind === "resume") {
+          // No environment on resume: Boat keeps the VM on the one it started with. A stopped
+          // spare takes the asked size here.
+          yield* api.resume(choice.sandboxId, IDLE_TTL_SECONDS, input.machineType ?? "default");
+          return yield* waitRunning(api, choice.sandboxId);
+        }
+        // Listed running a moment ago, so it needs no wait. The new deadline is set
+        // alongside the server start below.
+        return sandboxes.find((listed) => listed.id === choice.sandboxId)!;
+      }),
+    );
+    const sandboxId = sandbox.id;
+    const { worktree, fiber: checkoutFiber } = yield* startCheckout(input, sandboxId);
+
+    // A client paired with this VM reconnects with its saved credential, so it needs no new code.
+    const expected = sandbox.subdomain
+      ? (input.paired?.find(
+          (environment) => subdomainOfHttpBaseUrl(environment.httpBaseUrl) === sandbox.subdomain,
+        ) ?? null)
+      : null;
+    const server = yield* runStep(
+      report,
+      "server",
+      null,
+      Effect.gen(function* () {
+        // A reused VM may be minutes from its deadline; the new thread restarts it.
+        const [started] = yield* Effect.all(
+          [
+            startServer(api, sandboxId, expected === null),
+            choice.kind === "use" ? api.extend(sandboxId, IDLE_TTL_SECONDS) : Effect.void,
+            runningSpare ? join(sandboxId) : Effect.void,
+          ],
+          { concurrency: "unbounded" },
+        );
+        // Its state was reset since the client paired, so the saved credential no longer works.
+        const pairingCode =
+          expected !== null && started.environmentId !== expected.environmentId
+            ? yield* pair(api, sandboxId)
+            : (started.pairing?.code ?? null);
+        const httpBaseUrl = yield* serverUrl(api, sandbox, started.hosted);
+        return { environmentId: started.environmentId, pairingCode, httpBaseUrl };
+      }),
+    ).pipe(Effect.onError(() => Fiber.interrupt(checkoutFiber)));
+    return { sandbox, server, worktree, checkoutFiber };
+  }).pipe(Effect.onError(() => deleteCreated));
+  const sandboxId = sandbox.id;
   return {
     sandboxId,
     environmentId: server.environmentId,
@@ -531,37 +591,50 @@ const HOLD_MINUTES = SPARE_TTL_SECONDS / 60 + 5;
 /**
  * Keeps one small spare from the current snapshot and environment ready: server up, hosted,
  * a code taken for the holder, worktrees parked. A held spare whose code outlasts the new
- * deadline only gets the deadline. Other spares are removed.
+ * deadline only gets the deadline. Other spares are removed when this holder made them or
+ * Boat stopped them: another holder's running spare may be mid-hand-out under its old name.
  */
 const ensureSpare = Effect.fn("BoatCloud.ensureSpare")(function* (input: {
   readonly api: BoatApi;
   readonly snapshot: string;
   readonly environment: string | null;
+  readonly machineType: BoatMachineType;
   /** The spare this holder holds a code for. */
   readonly held: ReadySpare | null;
   /** Spares this holder handed out that Boat may still list under the spare's name. */
   readonly taken: ReadonlySet<string>;
+  /** Spares this holder made, which it alone decides on while they run. */
+  readonly created: Set<string>;
 }) {
   const { api, held } = input;
   const spares = (yield* api.listSandboxes(MACHINE_LABEL_FILTER)).filter(
     (sandbox) => sandbox.name === SPARE_NAME && !input.taken.has(sandbox.id),
   );
+  // A stopped spare resumes at the size, so only a running one must already have it.
   const fits = (sandbox: BoatSandbox) =>
     sandbox.labels?.[SNAPSHOT_LABEL] === input.snapshot &&
-    (input.environment === null || sandbox.environment === input.environment);
+    (input.environment === null || sandbox.environment === input.environment) &&
+    (machineStateOf(sandbox.state) === "stopped" ||
+      sandbox.type === undefined ||
+      sandbox.type === null ||
+      sandbox.type === input.machineType);
   const kept =
     spares.find((sandbox) => sandbox.id === held?.sandboxId && fits(sandbox)) ??
     spares.find(fits) ??
     null;
-  yield* Effect.forEach(
-    spares.filter((sandbox) => sandbox !== kept),
-    (sandbox) => api.delete(sandbox.id),
-    { concurrency: "unbounded", discard: true },
-  );
+  // A stopped spare went a whole TTL without a client asking for it.
+  const removable = (sandbox: BoatSandbox) =>
+    sandbox !== kept &&
+    (input.created.has(sandbox.id) || machineStateOf(sandbox.state) === "stopped");
+  yield* Effect.forEach(spares.filter(removable), (sandbox) => api.delete(sandbox.id), {
+    concurrency: "unbounded",
+    discard: true,
+  });
   const stopsAt = (yield* Clock.currentTimeMillis) + SPARE_TTL_SECONDS * 1000;
   if (
     kept !== null &&
     held?.sandboxId === kept.id &&
+    held.machineType === input.machineType &&
     machineStateOf(kept.state) === "running" &&
     held.codeExpiresAt - stopsAt > HAND_OUT_MARGIN_MS
   ) {
@@ -579,15 +652,16 @@ const ensureSpare = Effect.fn("BoatCloud.ensureSpare")(function* (input: {
   if (kept === null) {
     const created = yield* api.createSandbox({
       name: SPARE_NAME,
-      type: "small",
+      type: input.machineType,
       labels: { ...MACHINE_LABELS, [SNAPSHOT_LABEL]: input.snapshot },
       from: input.snapshot,
       ttlSeconds: SPARE_TTL_SECONDS,
       ...(input.environment === null ? {} : { environment: input.environment }),
     });
+    input.created.add(created.id);
     sandboxId = created.id;
   } else if (machineStateOf(kept.state) === "stopped") {
-    yield* api.resume(kept.id, SPARE_TTL_SECONDS);
+    yield* api.resume(kept.id, SPARE_TTL_SECONDS, input.machineType);
     sandboxId = kept.id;
   } else {
     // Running, or starting under the holder that made it.
@@ -609,6 +683,7 @@ const ensureSpare = Effect.fn("BoatCloud.ensureSpare")(function* (input: {
     pairingCode: pairing.code,
     snapshot: input.snapshot,
     environment: input.environment,
+    machineType: input.machineType,
     codeExpiresAt: pairing.expiresAt,
     stopsAt,
   } satisfies ReadySpare;
@@ -622,18 +697,33 @@ const ensureSpare = Effect.fn("BoatCloud.ensureSpare")(function* (input: {
 export const makeSpareKeeper = () => {
   let ready: ReadySpare | null = null;
   const taken = new Set<string>();
+  const created = new Set<string>();
   let keeping = false;
   /** A keep asked for while one ran, run once that one ends since a start may have taken its spare. */
   let queued: Effect.Effect<void> | null = null;
 
-  const keep = (api: BoatApi, snapshot: string, environment: string | null): Effect.Effect<void> =>
+  const keep = (
+    api: BoatApi,
+    snapshot: string,
+    environment: string | null,
+    /** The spare is kept at the holder's default size, the one most starts ask for. */
+    machineType: BoatMachineType = "small",
+  ): Effect.Effect<void> =>
     Effect.suspend(() => {
       if (keeping) {
-        queued = keep(api, snapshot, environment);
+        queued = keep(api, snapshot, environment, machineType);
         return Effect.void;
       }
       keeping = true;
-      return ensureSpare({ api, snapshot, environment, held: ready, taken }).pipe(
+      return ensureSpare({
+        api,
+        snapshot,
+        environment,
+        machineType,
+        held: ready,
+        taken,
+        created,
+      }).pipe(
         Effect.tap((spare) =>
           Effect.sync(() => {
             ready = taken.has(spare.sandboxId) ? null : spare;
@@ -659,14 +749,15 @@ export const makeSpareKeeper = () => {
 
   return {
     keep,
-    /** The ready spare for this snapshot and environment, which no later start gets. */
-    take: (snapshot: string, environment: string | null) =>
+    /** The ready spare for this snapshot, environment and size, which no later start gets. */
+    take: (snapshot: string, environment: string | null, machineType?: BoatMachineType) =>
       Effect.map(Clock.currentTimeMillis, (now) => {
         const spare = ready;
         if (
           spare === null ||
           spare.snapshot !== snapshot ||
           spare.environment !== environment ||
+          (machineType !== undefined && spare.machineType !== machineType) ||
           Math.min(spare.codeExpiresAt, spare.stopsAt) - now < HAND_OUT_MARGIN_MS
         ) {
           return null;
@@ -688,6 +779,10 @@ export const makeSpareKeeper = () => {
       }
       for (const sandboxId of taken) {
         if (byId.get(sandboxId)?.name !== SPARE_NAME) taken.delete(sandboxId);
+      }
+      for (const sandboxId of created) {
+        const listed = byId.get(sandboxId);
+        if (listed !== undefined && listed.name !== SPARE_NAME) created.delete(sandboxId);
       }
     },
   };
@@ -813,6 +908,32 @@ export const snapshotToBuild = Effect.fn("BoatCloud.snapshotToBuild")(function* 
   return needsSnapshot(snapshots, version, withSkills) ? version : null;
 });
 
+/**
+ * A stop takes the sandbox's last disk snapshot, and only then reads stopped (`archived`
+ * in the API). Saving a running sandbox instead has Boat take a fresh capture, which can
+ * run for many minutes and fails for good when the sandbox goes away first.
+ */
+const waitStopped = (api: BoatApi, sandboxId: string) =>
+  api.getSandbox(sandboxId).pipe(
+    Effect.flatMap((sandbox) => {
+      if (sandbox === null) return Effect.fail(vmFailure("The setup VM no longer exists."));
+      if (sandbox.state === "archived" || sandbox.state === "stopped") return Effect.void;
+      if (sandbox.state === "error") {
+        return Effect.fail(vmFailure("Boat could not stop the setup VM."));
+      }
+      return Effect.fail(vmFailure("Boat is still stopping the setup VM.", "stopping"));
+    }),
+    Effect.retry({
+      schedule: Schedule.spaced(Duration.seconds(2)),
+      times: 300,
+      while: (error) => error.code === "stopping",
+    }),
+    Effect.catchIf(
+      (error) => error.code === "stopping",
+      () => Effect.fail(vmFailure("Boat did not stop the setup VM in 10 minutes.")),
+    ),
+  );
+
 // Until Boat starts saving, a name saved before still reports its previous snapshot as ready.
 const waitSnapshot = (api: BoatApi, name: string, sourceSandboxId: string) =>
   api.listSnapshots().pipe(
@@ -821,16 +942,29 @@ const waitSnapshot = (api: BoatApi, name: string, sourceSandboxId: string) =>
       if (snapshot?.status === "ready" && snapshot.sourceSandboxId === sourceSandboxId) {
         return Effect.void;
       }
-      if (snapshot?.status === "failed") {
-        return Effect.fail(vmFailure("Boat could not save the snapshot."));
+      if (snapshot?.status === "failed" && snapshot.sourceSandboxId === sourceSandboxId) {
+        const reason = snapshot.error?.trim();
+        return Effect.fail(
+          vmFailure(
+            reason
+              ? `Boat could not save the snapshot: ${reason}.`
+              : "Boat could not save the snapshot.",
+            "vm",
+            snapshot,
+          ),
+        );
       }
       return Effect.fail(vmFailure("Boat is still saving the snapshot.", "saving"));
     }),
     Effect.retry({
       schedule: Schedule.spaced(Duration.seconds(5)),
-      times: 360,
+      times: 180,
       while: (error) => error.code === "saving",
     }),
+    Effect.catchIf(
+      (error) => error.code === "saving",
+      () => Effect.fail(vmFailure("Boat did not save the snapshot in 15 minutes.")),
+    ),
   );
 
 /** Clones what it can; a repository missing from the snapshot is cloned on first use instead. */
@@ -902,6 +1036,12 @@ export const buildSnapshot = Effect.fn("BoatCloud.buildSnapshot")(function* (inp
     if (input.copySkills) yield* input.copySkills(created.id);
     yield* input.setStep("save-snapshot");
     yield* exec(api, created.id, prepareSnapshotScript);
+    // Saved from the stopped VM, the snapshot is the stop's capture, taken after the prepare.
+    yield* api.stop(created.id);
+    yield* waitStopped(api, created.id);
+    // A failed save under the name would read as this save failing until Boat replaces it.
+    const previous = (yield* api.listSnapshots()).find((snapshot) => snapshot.name === name);
+    if (previous?.status === "failed") yield* api.deleteSnapshot(name);
     yield* api.saveSnapshot(created.id, name);
     yield* waitSnapshot(api, name, created.id);
   }).pipe(Effect.ensuring(api.delete(created.id).pipe(Effect.ignore)));

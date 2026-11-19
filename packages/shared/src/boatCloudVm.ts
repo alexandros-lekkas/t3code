@@ -69,6 +69,13 @@ export const snapshotNameOf = (version: string, withSkills: boolean) =>
 export const isBoatCloudSnapshot = (name: string) =>
   name === SNAPSHOT_PREFIX || name.startsWith(`${SNAPSHOT_PREFIX}-`);
 
+/** The t3 build a snapshot name records, or null for a name from before builds were named. */
+export const snapshotBuildOf = (name: string) => {
+  const match = /^t3-code-(\d+)-(\d+)-(\d+)(-skills)?$/u.exec(name);
+  if (match === null) return null;
+  return { version: `${match[1]}.${match[2]}.${match[3]}`, withSkills: match[4] !== undefined };
+};
+
 /**
  * Installs that version with T3 Code's installer, which checks the archive's checksum and
  * unpacks it into the runtime layout `t3 service install` expects.
@@ -177,20 +184,6 @@ for f in ${VM_HOME}/.claude/CLAUDE.md ${VM_HOME}/.codex/AGENTS.md; do
   grep -qs ${INSTRUCTIONS_MARKER} "$f" || printf '\\n<!-- ${INSTRUCTIONS_MARKER} -->\\n%s\\n' ${q(AGENT_INSTRUCTIONS)} >> "$f"
 done`;
 
-/**
- * Leaves the snapshot without T3 state, so every VM made from it gets its own
- * environment id. The logs directory stays because the service unit appends to it.
- */
-export const prepareSnapshotScript = `set -e
-${prepareVmScript}
-systemctl --user stop t3code.service
-find ${VM_HOME}/.t3/userdata -mindepth 1 -maxdepth 1 ! -name logs -exec rm -rf {} +
-rm -rf ${VM_HOME}/.t3/userdata/logs/* ${VM_HOME}/.t3/usage-host-id ${HOSTED_STAMP}
-# Fills the compile cache, so the first server start on a new VM already uses it.
-${T3}
-"$T3" --version >/dev/null
-sync`;
-
 /** What Boat's Agents & Proxying page and GitHub connection give a VM. */
 const BOAT_CREDENTIALS = [
   "ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_OAUTH_TOKEN",
@@ -199,6 +192,25 @@ const BOAT_CREDENTIALS = [
   "CLAUDE_CODE_USE_BEDROCK AWS_BEARER_TOKEN_BEDROCK AWS_REGION AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY",
   "GH_TOKEN GITHUB_TOKEN",
 ].join(" ");
+
+const CREDENTIALS_STAMP = '"${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/t3-boat-credentials"';
+
+/**
+ * Leaves the snapshot without T3 state, so every VM made from it gets its own
+ * environment id. The logs directory stays because the service unit appends to it.
+ */
+export const prepareSnapshotScript = `set -e
+${prepareVmScript}
+systemctl --user stop t3code.service
+# The setup VM's credentials were imported for its server; none may be saved with the snapshot.
+systemctl --user unset-environment ${BOAT_CREDENTIALS}
+rm -f ${CREDENTIALS_STAMP}
+find ${VM_HOME}/.t3/userdata -mindepth 1 -maxdepth 1 ! -name logs -exec rm -rf {} +
+rm -rf ${VM_HOME}/.t3/userdata/logs/* ${VM_HOME}/.t3/usage-host-id ${HOSTED_STAMP}
+# Fills the compile cache, so the first server start on a new VM already uses it.
+${T3}
+"$T3" --version >/dev/null
+sync`;
 
 /**
  * The agents on a VM that each of Boat's AI credentials signs in, by provider driver.
@@ -232,7 +244,6 @@ export function boatCloudProviderDrivers(credentials: ReadonlyArray<string>): Se
       .map(([driver]) => driver),
   );
 }
-const CREDENTIALS_STAMP = '"${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/t3-boat-credentials"';
 
 /**
  * Boat sets its credentials only in the commands it runs, never in systemd services, so
@@ -383,10 +394,10 @@ export const syncCheckoutScript = (
 dir=${q(repository.workspaceRoot)}
 if [ -d "$dir/.git" ]; then
   ( cat "$dir"/.git/objects/pack/*.pack "$dir/.git/index" ) </dev/null >/dev/null 2>&1 &
-  ${baseBranch === null ? ":" : `${hasBaseBranch(baseBranch)} || git -C "$dir" fetch --prune --quiet origin`}
+  ${baseBranch === null ? ":" : `${hasBaseBranch(baseBranch)} || git -C "$dir" fetch --prune --quiet -- origin`}
 else
   mkdir -p "$(dirname "$dir")"
-  git clone --quiet ${q(repository.cloneUrl)} "$dir"
+  git clone --quiet -- ${q(repository.cloneUrl)} "$dir"
 fi
 ${baseBranch === null ? "" : baseBranchCheckScript(baseBranch, repository.name)}`;
 
@@ -401,7 +412,7 @@ const SNAPSHOT_CLONE_SECONDS = 270;
 export const cloneRepositoriesScript = (repositories: ReadonlyArray<ParsedRepository>) =>
   `clone() {
   mkdir -p "$(dirname "$1")"
-  if GIT_TERMINAL_PROMPT=0 timeout ${SNAPSHOT_CLONE_SECONDS} git clone --quiet "$2" "$1.cloning" </dev/null >/dev/null 2>&1; then
+  if GIT_TERMINAL_PROMPT=0 timeout ${SNAPSHOT_CLONE_SECONDS} git clone --quiet -- "$2" "$1.cloning" </dev/null >/dev/null 2>&1; then
     mv "$1.cloning" "$1" && printf '%s\\n' "$1"
   else
     rm -rf "$1.cloning"
@@ -439,7 +450,7 @@ export const parkCheckoutFunction = `park_checkout() {
   local dir="$1" parked="$2" base start
   base="$(git -C "$dir" symbolic-ref --quiet --short refs/remotes/origin/HEAD)" || return 0
   base="\${base#origin/}"
-  git -C "$dir" fetch --quiet origin "$base" || true
+  git -C "$dir" fetch --quiet -- origin "$base" || true
   start="refs/remotes/origin/$base"
   if [ -e "$parked/.git" ] && [ "$(git -C "$dir" config --get ${PARKED_BASE_KEY})" = "$base" ]; then
     [ "$(git -C "$parked" rev-parse HEAD)" != "$(git -C "$dir" rev-parse "$start")" ] || return 0
@@ -463,7 +474,7 @@ export const parkCheckoutFunction = `park_checkout() {
 export const prepareWorktreeScript = (worktree: PreparedWorktree, parkedPath: string) => {
   const branch = q(worktree.branch);
   const path = q(worktree.path);
-  return `git -C "$dir" fetch --quiet origin ${q(worktree.baseBranch)} || true
+  return `git -C "$dir" fetch --quiet -- origin ${q(worktree.baseBranch)} || true
 start=${q(`refs/remotes/origin/${worktree.baseBranch}`)}
 git -C "$dir" rev-parse --verify --quiet "$start^{commit}" >/dev/null || start=${q(`refs/remotes/${worktree.baseBranch}`)}
 mkdir -p "$(dirname ${path})"
@@ -533,14 +544,16 @@ const BACKUP_PATHS = [
 
 /**
  * Stops the server so its database is consistent, then archives what a fresh
- * VM needs to continue: T3 state, provider sessions and workspaces.
+ * VM needs to continue: T3 state, provider sessions and workspaces. The server's
+ * secrets stay on the VM; a restored one makes new ones and its client pairs again.
  */
 export const backupScript = `set -e
 cd ${VM_HOME}
 systemctl --user stop t3code.service || true
 paths=""
 for p in ${BACKUP_PATHS.join(" ")}; do [ -e "$p" ] && paths="$paths $p"; done
-tar -czf ${VM_BACKUP_ARCHIVE} --exclude=node_modules --exclude=.t3/userdata/logs $paths`;
+umask 077
+tar -czf ${VM_BACKUP_ARCHIVE} --exclude=node_modules --exclude=.t3/userdata/logs --exclude=.t3/userdata/secrets $paths`;
 
 export const restoreScript = `set -e
 systemctl --user stop t3code.service
@@ -649,6 +662,75 @@ export function parseMeasure(output: string): MachineMeasure | null {
   };
 }
 
+/**
+ * A VM's live load for a client to show: two `/proc/stat` CPU lines a second apart, the CPU
+ * count, MemTotal and MemAvailable in kB, then the root filesystem's size and used bytes.
+ */
+export const statsScript = `head -1 /proc/stat; sleep 1; head -1 /proc/stat
+nproc
+awk '/^MemTotal:/{t=$2} /^MemAvailable:/{a=$2} END{print t, a}' /proc/meminfo
+df -B1 --output=size,used / 2>/dev/null | tail -1`;
+
+export interface MachineStats {
+  readonly cpuPercent: number;
+  readonly cpus: number;
+  readonly memoryUsedBytes: number;
+  readonly memoryTotalBytes: number;
+  readonly diskUsedBytes: number | null;
+  readonly diskTotalBytes: number | null;
+}
+
+/** Reads `statsScript` output; null when the CPU or memory lines are missing. */
+export function parseStats(output: string): MachineStats | null {
+  const lines = output
+    .trim()
+    .split("\n")
+    .map((line) => line.trim());
+  const cpuTimes = (line: string | undefined) => {
+    if (line === undefined || !/^cpu\s/u.test(line)) return null;
+    const values = line.split(/\s+/u).slice(1).map(Number);
+    if (values.length < 4 || !values.every(Number.isFinite)) return null;
+    // Guest time is already counted in user time.
+    const total = values.slice(0, 8).reduce((sum, value) => sum + value, 0);
+    const idle = values[3]! + (values[4] ?? 0);
+    return { total, idle };
+  };
+  const before = cpuTimes(lines[0]);
+  const after = cpuTimes(lines[1]);
+  const cpus = Number(lines[2]);
+  const [memTotalKb, memAvailableKb] = (lines[3] ?? "").split(/\s+/u).map(Number);
+  if (
+    before === null ||
+    after === null ||
+    !Number.isFinite(cpus) ||
+    cpus <= 0 ||
+    memTotalKb === undefined ||
+    memAvailableKb === undefined ||
+    !Number.isFinite(memTotalKb) ||
+    !Number.isFinite(memAvailableKb) ||
+    memTotalKb <= 0
+  )
+    return null;
+  const elapsed = after.total - before.total;
+  const busy = elapsed - (after.idle - before.idle);
+  const cpuPercent = elapsed > 0 ? Math.min(100, Math.max(0, (busy / elapsed) * 100)) : 0;
+  const [diskTotal, diskUsed] = (lines[4] ?? "").split(/\s+/u).map(Number);
+  const disk =
+    diskTotal !== undefined &&
+    diskUsed !== undefined &&
+    Number.isFinite(diskTotal) &&
+    Number.isFinite(diskUsed) &&
+    diskTotal > 0;
+  return {
+    cpuPercent: Math.round(cpuPercent * 10) / 10,
+    cpus,
+    memoryUsedBytes: Math.max(0, memTotalKb - memAvailableKb) * 1024,
+    memoryTotalBytes: memTotalKb * 1024,
+    diskUsedBytes: disk ? diskUsed : null,
+    diskTotalBytes: disk ? diskTotal : null,
+  };
+}
+
 export interface MachineCandidate {
   readonly sandboxId: string;
   /** The Boat environment the VM runs; a thread only joins a VM on its holder's choice. */
@@ -659,6 +741,8 @@ export interface MachineCandidate {
   readonly usage: number | null;
   /** The warm spare, taken only after the VMs that already serve threads. */
   readonly spare?: boolean;
+  /** Boat's machine type; null when Boat did not say. */
+  readonly machineType?: string | null;
 }
 
 export type MachineChoice =
@@ -675,9 +759,25 @@ export function pickMachine(
   allCandidates: ReadonlyArray<MachineCandidate>,
   workspaceRoot: string,
   environment: string | null,
+  /** False keeps each thread on a VM of its own: only the spare, which serves none, is reused. */
+  shareMachines = true,
+  /**
+   * The size the thread asked for. A VM of another size is never picked, except a stopped
+   * spare, which resumes at this size. Null takes any size.
+   */
+  machineType: string | null = null,
 ): MachineChoice {
+  const fitsType = (candidate: MachineCandidate) =>
+    machineType === null ||
+    candidate.machineType === undefined ||
+    candidate.machineType === null ||
+    candidate.machineType === machineType ||
+    (candidate.spare === true && !candidate.running);
   const candidates = allCandidates.filter(
-    (candidate) => environment === null || candidate.environment === environment,
+    (candidate) =>
+      (environment === null || candidate.environment === environment) &&
+      (shareMachines || candidate.spare === true) &&
+      fitsType(candidate),
   );
   const hasCheckout = (candidate: MachineCandidate) =>
     candidate.workspaceRoots.includes(workspaceRoot);

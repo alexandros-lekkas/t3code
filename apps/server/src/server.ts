@@ -107,7 +107,8 @@ import * as DesktopBrowserChannel from "./preview/DesktopBrowserChannel.ts";
 import * as ServerBrowserStream from "./preview/ServerBrowserStream.ts";
 import * as PreviewBrowser from "./preview/PreviewBrowser.ts";
 import * as ProcessRunner from "./processRunner.ts";
-import * as BoatCloud from "./boatCloud/BoatCloudService.ts";
+// The real BoatCloudService, or a fake Boat in dev with T3CODE_BOAT_CLOUD_FAKE=1.
+import * as BoatCloud from "./boatCloud/fake/FakeBoatCloud.ts";
 import * as GitManager from "./git/GitManager.ts";
 import * as EnvironmentTheme from "./environmentTheme.ts";
 import * as Keybindings from "./keybindings.ts";
