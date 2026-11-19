@@ -96,6 +96,9 @@ import { ThreadSearchMatchExcerpt } from "./thread-search-match";
 import { useScaledTextRole } from "../settings/appearance/useScaledTextRole";
 import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
 import { pullRequestStatus } from "../pull-requests/pullRequestStatus";
+import { useAtomValue } from "@effect/atom-react";
+import { BoatIcon } from "../../components/BoatIcon";
+import { boatCloudEnvironmentStateAtom } from "../boatCloud/boatCloudManaged";
 
 interface StatusLabel {
   // Null when the icon and timer carry the status on their own.
@@ -867,6 +870,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const selected = props.selected === true;
   const rowAppearance = getThreadListV2RowAppearance(theme, sidebarPane, selected);
 
+  const boatCloudState = useAtomValue(boatCloudEnvironmentStateAtom(thread.environmentId));
   const rawStatus = resolveThreadListV2Status(thread);
   const status = resolveThreadListV2RowStatus(thread);
   const isUnread = status === "ready" && threadHasUnseenCompletion(thread);
@@ -1515,9 +1519,12 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
           >
             {thread.runtime.lastError}
           </Text>
-        ) : props.environmentLabel ? (
+        ) : props.environmentLabel || boatCloudState ? (
           <View className="min-w-0 flex-1 flex-row items-center gap-1">
-            {props.environmentMachine ? (
+            {boatCloudState ? (
+              // The shared Boat tile icon replaces this one.
+              <BoatIcon size={machineIconSize} />
+            ) : props.environmentMachine ? (
               <EnvironmentMachineSymbol
                 kind={props.environmentMachine}
                 size={machineIconSize}
@@ -1537,7 +1544,16 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
               )}
               numberOfLines={1}
             >
-              {props.environmentLabel}
+              {[
+                props.environmentLabel,
+                boatCloudState === "sleeping"
+                  ? gt("Sleeping", { $context: "Boat VM state" })
+                  : boatCloudState === "waking"
+                    ? gt("Waking", { $context: "Boat VM state" })
+                    : null,
+              ]
+                .filter(Boolean)
+                .join(" · ")}
             </Text>
           </View>
         ) : (

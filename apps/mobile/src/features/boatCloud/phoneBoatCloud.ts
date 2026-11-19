@@ -2,11 +2,13 @@ import { enabledEnvironmentIds } from "@t3tools/client-runtime/state/connections
 import { mostWorkedRepositories } from "@t3tools/client-runtime/state/threads";
 import {
   BOAT_CLOUD_SNAPSHOT_REPOSITORIES,
+  BoatCloudMachineType,
   type BoatCloudEnvironmentAccess,
   type BoatCloudSession,
   type BoatCloudStatus,
 } from "@t3tools/contracts";
 import {
+  BOAT_MACHINE_SPECS,
   type BoatApi,
   BoatApiError,
   cloudEnvironments,
@@ -36,9 +38,11 @@ import * as Effect from "effect/Effect";
 import { msg } from "gt-react-native";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 import { HttpClient } from "effect/http";
 import { Atom } from "effect/reactivity";
 
+import * as Dialog from "../../components/ui/Dialog";
 import { m } from "../../i18n/messages";
 import * as Runtime from "../../lib/runtime";
 import { MobileSecureStorage } from "../../persistence/mobile-secure-storage";
@@ -66,12 +70,20 @@ const DISCONNECTED: BoatCloudStatus = {
   environment: null,
   environments: [],
   environmentsError: null,
+  shareMachines: false,
+  defaultMachineType: "small",
+  machineTypes: [],
+  environmentUsage: [],
 };
 
 export const phoneBoatCloudAtom = Atom.make<BoatCloudStatus>(DISCONNECTED).pipe(
   Atom.keepAlive,
   Atom.withLabel("mobile-boat-cloud:phone"),
 );
+
+const isMachineType = Schema.is(BoatCloudMachineType);
+const specOf = (type: string | null | undefined) =>
+  type != null && isMachineType(type) ? BOAT_MACHINE_SPECS[type] : null;
 
 const setStatus = (update: (status: BoatCloudStatus) => BoatCloudStatus) =>
   appAtomRegistry.update(phoneBoatCloudAtom, update);
@@ -164,6 +176,12 @@ export function refreshPhoneBoatCloud(): Promise<void> {
             repositories: [],
             backedUpAt: null,
             environment: sandbox.environment ?? null,
+            machineType: sandbox.type ?? null,
+            vcpu: sandbox.vcpu ?? specOf(sandbox.type)?.vcpu ?? null,
+            memoryGB: sandbox.memoryGB ?? specOf(sandbox.type)?.memoryGB ?? null,
+            // The phone keeps no usage reads or stats; a machine holding the key does.
+            usage: null,
+            stats: null,
           })),
         environment,
         environments: listed,
@@ -390,4 +408,30 @@ export function wakeOnPhone(httpBaseUrl: string) {
       return yield* wakeMachine(api, sandbox.id);
     }),
   );
+}
+
+/** Runs a change to one of this phone's VMs, then re-reads them. Tells the user what failed. */
+function changePhoneMachine(
+  title: string,
+  change: (api: BoatApi) => Effect.Effect<unknown, BoatApiError>,
+): Promise<void> {
+  return run(Effect.flatMap(phoneApi, change))
+    .then(
+      () => undefined,
+      (error: unknown) => Dialog.alert(title, errorMessage(error)),
+    )
+    .finally(() => void refreshPhoneBoatCloud());
+}
+
+/** Stops a VM this phone sees. The phone keeps no backups; the VM's disk stays with Boat. */
+export function stopPhoneBoatCloudMachine(sandboxId: string): Promise<void> {
+  return changePhoneMachine(m(msg("Could not stop the VM")), (api) => api.stop(sandboxId));
+}
+
+export function wakePhoneBoatCloudMachine(sandboxId: string): Promise<void> {
+  return changePhoneMachine(m(msg("Could not wake the VM")), (api) => wakeMachine(api, sandboxId));
+}
+
+export function deletePhoneBoatCloudMachine(sandboxId: string): Promise<void> {
+  return changePhoneMachine(m(msg("Could not delete the VM")), (api) => api.delete(sandboxId));
 }

@@ -1,5 +1,5 @@
 import * as Dialog from "../../components/ui/Dialog";
-import { useBoatCloudSleep } from "../boatCloud/boatCloud";
+import { useBoatCloudSleep, useConnectManagedBoatCloud } from "../boatCloud/boatCloud";
 import { useRememberOpenedBoatCloudThread } from "../boatCloud/boatCloudThreads";
 import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
 import { useRememberThreadProject } from "./useRememberThreadProject";
@@ -270,6 +270,11 @@ function LiveThreadRouteController(props: ThreadRouteScreenProps) {
   const environmentId = environmentIdRaw ? EnvironmentId.make(environmentIdRaw) : null;
   const routeEnvironmentRuntime = useRemoteEnvironmentRuntime(environmentId);
   const routeEnvironmentShellState = useEnvironmentShellReadiness(environmentId);
+  // A link to a thread an agent started on a Boat VM names an environment this app has not paired with.
+  const connectingBoatCloud = useConnectManagedBoatCloud(
+    environmentId,
+    connectionsReady && routeEnvironmentRuntime === null,
+  );
   const { onReconnectEnvironment } = useRemoteConnections();
   const navigation = useNavigation();
   const routeName = useRoute().name;
@@ -304,7 +309,7 @@ function LiveThreadRouteController(props: ThreadRouteScreenProps) {
       content
     );
 
-  if (environmentId === null || threadIdRaw === null) {
+  if (environmentId === null || threadIdRaw === null || connectingBoatCloud) {
     return withInspectorHeader(<OpeningThreadLoadingScreen />);
   }
 

@@ -3,7 +3,6 @@ import {
   BOAT_CLOUD_REQUIRED_SCOPES,
   BOAT_CLOUD_SETUP_STEPS,
   type BoatCloudEnvironmentAccess,
-  type BoatCloudMachine,
   type BoatCloudSetup,
   type BoatCloudSetupStep,
 } from "@t3tools/contracts";
@@ -33,6 +32,7 @@ import {
   refreshPhoneBoatCloud,
   runPhoneBoatCloudSetup,
 } from "../boatCloud/phoneBoatCloud";
+import { BoatCloudMachinesSection } from "./BoatCloudMachines";
 import { SettingsSection } from "./components/SettingsSection";
 import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
 
@@ -50,13 +50,6 @@ const ACCESS_LABELS: Record<keyof BoatCloudEnvironmentAccess, string> = {
   passAgentsCredentials: msg("Agent sign-ins"),
 };
 const ACCESS_KEYS = Object.keys(ACCESS_LABELS) as ReadonlyArray<keyof BoatCloudEnvironmentAccess>;
-
-const MACHINE_STATE_LABELS: Record<BoatCloudMachine["state"], string> = {
-  running: msg("Running", { $context: "Boat VM state" }),
-  starting: msg("Starting", { $context: "Boat VM state" }),
-  stopped: msg("Stopped", { $context: "Boat VM state" }),
-  gone: msg("Saved copy", { $context: "Boat VM state, deleted but backed up" }),
-};
 
 function stepState(setup: BoatCloudSetup, index: number): StepState {
   if (setup.status === "ready") return "done";
@@ -121,14 +114,6 @@ export function BoatCloudSettings() {
   const status = machineHolder?.status ?? (phone.connected ? phone : null);
   const connected = status !== null;
   const setup = status?.setup ?? null;
-  const machines = [
-    ...new Map(
-      [...phone.machines, ...holders.flatMap((holder) => holder.status.machines)].map((m) => [
-        m.sandboxId,
-        m,
-      ]),
-    ).values(),
-  ];
   const labelOf = (environmentId: string) =>
     environments.find((environment) => environment.environmentId === environmentId)?.label ??
     environmentId;
@@ -387,25 +372,7 @@ export function BoatCloudSettings() {
         </SettingsSection>
       ) : null}
 
-      {connected && machines.length > 0 ? (
-        <SettingsSection title={gt("VMs")}>
-          {machines.map((machine, index) => (
-            <Separated key={machine.sandboxId} index={index}>
-              <ListRowLayout
-                label={machine.label}
-                description={
-                  machine.repositories.length > 0
-                    ? machine.repositories
-                        .map((repository) => repository.split("/").slice(1).join("/"))
-                        .join(", ")
-                    : undefined
-                }
-                detail={resolve(MACHINE_STATE_LABELS[machine.state])}
-              />
-            </Separated>
-          ))}
-        </SettingsSection>
-      ) : null}
+      {connected ? <BoatCloudMachinesSection /> : null}
     </View>
   );
 }
