@@ -78,7 +78,10 @@ const DISCONNECTED: BoatCloudStatus = {
   environment: null,
   environments: [],
   environmentsError: null,
+  githubConnected: null,
   shareMachines: false,
+  // The phone keeps no ready machine: it is opt-in, and only a machine holder offers it.
+  keepReadyMachine: false,
   defaultMachineType: "small",
   machineTypes: machineTypeOptions(null),
   environmentUsage: [],
@@ -218,10 +221,10 @@ export function refreshPhoneBoatCloud(): Promise<void> {
 }
 
 const spares = makeSpareKeeper();
-/** Keeps one spare VM ready for this phone's next start. */
+/** Keeps one spare VM ready for this phone's next start, when a ready machine is wanted. */
 const keepSpare = (api: BoatApi, environment: string | null) =>
   Effect.suspend(() =>
-    snapshotName === null
+    snapshotName === null || !appAtomRegistry.get(phoneBoatCloudAtom).keepReadyMachine
       ? Effect.void
       : spares.keep(
           api,

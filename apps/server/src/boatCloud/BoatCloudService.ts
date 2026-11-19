@@ -980,13 +980,27 @@ const make = Effect.gen(function* () {
     yield* exec(api, sandboxId, extractSkillsScript, 300);
   }, Effect.mapError(transferFailure));
 
-  /** Keeps the spare, when the user wants one, in step with the snapshot, environment and size. */
+  /**
+   * Keeps the spare, when the user wants one, in step with the snapshot, environment and size.
+   * Without one, deletes any spare left from before, such as one kept before a restart.
+   */
   const keepSpare = (api: BoatApi) =>
     Effect.suspend(() =>
-      snapshotName === null || !state.keepReadyMachine
-        ? Effect.void
-        : spares.keep(api, snapshotName, state.environment, state.defaultMachineType),
+      !state.keepReadyMachine
+        ? releaseSpares(api)
+        : snapshotName === null
+          ? Effect.void
+          : spares.keep(api, snapshotName, state.environment, state.defaultMachineType),
     );
+
+  const releaseSpares = (api: BoatApi) =>
+    spares
+      .release(api)
+      .pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("boat cloud could not delete its spare VM", { cause }),
+        ),
+      );
 
   const finishSetup = (api: BoatApi, saved: string | null, error: string | null) =>
     Effect.suspend(() => {
@@ -1372,14 +1386,7 @@ const make = Effect.gen(function* () {
       if (Option.isSome(key)) {
         const api = makeBoatApi(http, key.value);
         if (state.keepReadyMachine) yield* keepSpare(api).pipe(Effect.forkIn(scope));
-        else
-          yield* spares
-            .release(api)
-            .pipe(
-              Effect.catchCause((cause) =>
-                Effect.logWarning("boat cloud could not delete its spare VM", { cause }),
-              ),
-            );
+        else yield* releaseSpares(api);
       }
     }
     return yield* SubscriptionRef.get(statusRef);

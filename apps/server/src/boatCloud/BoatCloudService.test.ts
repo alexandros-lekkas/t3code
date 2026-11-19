@@ -511,6 +511,25 @@ it.layer(dependencies)("BoatCloudService", (it) => {
     }),
   );
 
+  it.effect("deletes a spare left from before when no ready machine is kept", () =>
+    Effect.gen(function* () {
+      yield* seed([]);
+      const deleted = yield* Deferred.make<void>();
+      const boat = fakeBoat(
+        { "vm-spare": { state: "ready", environment: "base", name: SPARE } },
+        undefined,
+        (call) =>
+          call === "DELETE /sandboxes/vm-spare"
+            ? Deferred.succeed(deleted, undefined)
+            : Effect.void,
+      );
+      yield* withService(boat.http, (service) =>
+        Effect.raceFirst(Stream.runDrain(service.subscribe), Deferred.await(deleted)),
+      );
+      assert.include(boat.calls, "DELETE /sandboxes/vm-spare");
+    }),
+  );
+
   it.effect("reads Boat's cost and the VM's load once a client watches", () =>
     Effect.gen(function* () {
       yield* seed([{ ...storedMachine("vm-1", "env-1", "base"), acquiredAt: null }], {
