@@ -1,11 +1,12 @@
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { createBoatCloudThreadListAtoms } from "@t3tools/client-runtime/state/threads";
-import type { ScopedThreadRef } from "@t3tools/contracts";
+import type { EnvironmentId, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { useEffect } from "react";
 
 import { environmentCatalog } from "../../connection/catalog";
 import { appAtomRegistry } from "../../state/atom-registry";
+import { managedBoatCloudEnvironmentIdsAtom } from "./boatCloudManagedEnvironments";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
 
 const MAX_REMEMBERED = 500;
@@ -16,11 +17,26 @@ const openedThreadsAtom = Atom.make(
     AsyncResult.getOrElse(get(mobilePreferencesAtom), () => null)?.boatCloudOpenedThreads ?? NONE,
 ).pipe(Atom.withLabel("mobile-boat-cloud-opened-threads"));
 
-/** Boat cloud VM threads this phone started or opened, the only VM threads its lists show. */
-export const boatCloudThreadList = createBoatCloudThreadListAtoms({
+const openedThreadList = createBoatCloudThreadListAtoms({
   catalogValueAtom: environmentCatalog.catalogValueAtom,
   openedThreadsAtom,
 });
+
+/**
+ * Which threads lists show on a Boat VM: those this phone started or opened, or all of them on
+ * a VM a connected machine handed out, where an agent may have started threads this phone never
+ * opened. Null for an environment that is not a VM, which lists everything.
+ */
+export const boatCloudThreadList = {
+  onBoatCloudAtom: openedThreadList.onBoatCloudAtom,
+  listedThreadIdsAtom: Atom.family((environmentId: EnvironmentId) =>
+    Atom.make((get): ReadonlySet<ThreadId> | null =>
+      get(managedBoatCloudEnvironmentIdsAtom).has(environmentId)
+        ? null
+        : get(openedThreadList.listedThreadIdsAtom(environmentId)),
+    ).pipe(Atom.withLabel(`mobile-boat-cloud-listed-thread-ids:${environmentId}`)),
+  ),
+};
 
 const preferencesLoadedAtom = Atom.make((get) => AsyncResult.isSuccess(get(mobilePreferencesAtom)));
 const NO_ENVIRONMENT_ATOM = Atom.make(false);

@@ -44,6 +44,7 @@ import * as Schema from "effect/Schema";
 import { HttpClient } from "effect/http";
 import { Atom } from "effect/reactivity";
 
+import * as Dialog from "../../components/ui/Dialog";
 import { m } from "../../i18n/messages";
 import * as Runtime from "../../lib/runtime";
 import { MobileSecureStorage } from "../../persistence/mobile-secure-storage";
@@ -187,6 +188,7 @@ export function refreshPhoneBoatCloud(): Promise<void> {
             machineType: sandbox.type ?? null,
             vcpu: sandbox.vcpu ?? specOf(sandbox.type)?.vcpu ?? null,
             memoryGB: sandbox.memoryGB ?? specOf(sandbox.type)?.memoryGB ?? null,
+            // The phone keeps no usage reads or stats; a machine holding the key does.
             usage: null,
             stats: null,
           })),
@@ -466,4 +468,30 @@ export function wakeOnPhone(httpBaseUrl: string) {
       return yield* wakeMachine(api, sandbox.id);
     }),
   );
+}
+
+/** Runs a change to one of this phone's VMs, then re-reads them. Tells the user what failed. */
+function changePhoneMachine(
+  title: string,
+  change: (api: BoatApi) => Effect.Effect<unknown, BoatApiError>,
+): Promise<void> {
+  return run(Effect.flatMap(phoneApi, change))
+    .then(
+      () => undefined,
+      (error: unknown) => Dialog.alert(title, errorMessage(error)),
+    )
+    .finally(() => void refreshPhoneBoatCloud());
+}
+
+/** Stops a VM this phone sees. The phone keeps no backups; the VM's disk stays with Boat. */
+export function stopPhoneBoatCloudMachine(sandboxId: string): Promise<void> {
+  return changePhoneMachine(m(msg("Could not stop the VM")), (api) => api.stop(sandboxId));
+}
+
+export function wakePhoneBoatCloudMachine(sandboxId: string): Promise<void> {
+  return changePhoneMachine(m(msg("Could not wake the VM")), (api) => wakeMachine(api, sandboxId));
+}
+
+export function deletePhoneBoatCloudMachine(sandboxId: string): Promise<void> {
+  return changePhoneMachine(m(msg("Could not delete the VM")), (api) => api.delete(sandboxId));
 }

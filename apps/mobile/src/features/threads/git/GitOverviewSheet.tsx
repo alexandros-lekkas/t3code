@@ -28,6 +28,7 @@ import { groupedListInsets } from "../../../components/ui/listMetrics";
 import { ScreenContent } from "../../../components/ui/ScreenContent";
 import { SheetPane } from "../../../components/ui/SheetPane";
 import { InspectorSheetContext } from "../../layout/workspace-inspector-sheet";
+import { BoatCloudSandboxSection } from "../../boatCloud/BoatCloudSandboxSection";
 import { AppText as Text } from "../../../components/ui/AppText";
 import { useEnvironmentQuery } from "../../../state/query";
 import { useThreadSelection } from "../../../state/use-thread-selection";
@@ -383,6 +384,8 @@ function GitOverviewSheetContent(props: GitOverviewSheetProps) {
           </Text>
         </ListSection>
       ) : null}
+
+      <BoatCloudSandboxSection environmentId={environmentId} />
     </NativeScrollView>
   );
 

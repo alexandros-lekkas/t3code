@@ -1,4 +1,5 @@
 import { useGT, useMessages } from "gt-react-native";
+import { useConnectManagedBoatCloudMachines } from "../boatCloud/boatCloud";
 import { useActiveNewTask } from "../../state/active-new-task";
 import { ThreadUndoNotice } from "../home/ThreadUndoNotice";
 import { useAndroidControlSizing } from "../../components/ui/useAndroidControlSizing";
@@ -122,6 +123,7 @@ export function ThreadNavigationSidebar(props: ThreadNavigationSidebarProps) {
 
 function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
   const gt = useGT();
+  useConnectManagedBoatCloudMachines();
   const messages = useMessages();
   const floatingTabsEnabled = useAndroidFloatingTabs();
   const { themeVariables: materialTheme } = useAppearancePreferences();

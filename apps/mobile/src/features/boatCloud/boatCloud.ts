@@ -1,8 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
-import {
-  connectionCatalogDisplayUrl,
-  type EnvironmentConnectionPhase,
-} from "@t3tools/client-runtime/connection";
+import type { EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
 import {
   isAtomCommandInterrupted,
   runAtomCommand,
@@ -18,13 +15,12 @@ import {
   type BoatCloudStatus,
   type BoatCloudStepProgress,
   type EnvironmentId,
-  isBoatCloudHttpBaseUrl,
 } from "@t3tools/contracts";
 import { boatCloudProviderDrivers } from "@t3tools/shared/boatCloudVm";
 import * as Effect from "effect/Effect";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { msg } from "gt-react-native";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 import * as Dialog from "../../components/ui/Dialog";
 import { m } from "../../i18n/messages";
@@ -32,9 +28,19 @@ import { environmentCatalog } from "../../connection/catalog";
 import { connectPairingCode } from "../../connection/onboarding";
 import { uuidv4 } from "../../lib/uuid";
 import { appAtomRegistry } from "../../state/atom-registry";
-import { connectedEnvironmentIdsAtom, environmentPresentations } from "../../state/presentation";
+import { connectedEnvironmentIdsAtom } from "../../state/presentation";
 import { environmentProjects } from "../../state/projects";
 import { serverEnvironment } from "../../state/server";
+import {
+  type BoatCloudHolder,
+  boatCloudHoldersAtom,
+  boatCloudMachinesAtom,
+  boatCloudWakingAtom,
+  noteBoatCloudHolders,
+  readBoatCloudHoldersOnce,
+} from "./boatCloudManaged";
+import { boatCloudMachineEnvironments } from "./boatCloudMachineModel";
+import { managedBoatCloudEnvironmentIds } from "./boatCloudManagedEnvironments";
 import {
   ensurePhoneBoatCloudLoaded,
   phoneBoatCloudAtom,
@@ -52,25 +58,12 @@ const PROJECT_APPEAR_TIMEOUT_MS = 60_000;
 const RECONNECT_TIMEOUT_MS = 15_000;
 const WAKE_CONNECT_TIMEOUT_MS = 90_000;
 
-interface BoatCloudHolder {
-  readonly environmentId: EnvironmentId;
-  readonly status: BoatCloudStatus;
-}
+export { boatCloudHoldersAtom, boatCloudMachinesAtom };
 
 /** Who starts a VM: a connected machine with the key, or this phone with its own. */
 type BoatCloudStarter =
   | { readonly kind: "machine"; readonly environmentId: EnvironmentId }
   | { readonly kind: "phone" };
-
-/** Paired Boat VMs, by environment, with the URL each one is reached at. */
-export const boatCloudMachinesAtom = Atom.make((get) => {
-  const machines = new Map<EnvironmentId, string>();
-  for (const [environmentId, presentation] of get(environmentPresentations.presentationsAtom)) {
-    const url = connectionCatalogDisplayUrl(presentation.entry);
-    if (url !== null && isBoatCloudHttpBaseUrl(url)) machines.set(environmentId, url);
-  }
-  return machines;
-}).pipe(Atom.withLabel("mobile-boat-cloud:machines"));
 
 /** Connected machines whose T3 Code predates Boat cloud, so they cannot take the key yet. */
 export const boatCloudOutdatedMachinesAtom = Atom.make((get): ReadonlyArray<EnvironmentId> => {
@@ -81,19 +74,6 @@ export const boatCloudOutdatedMachinesAtom = Atom.make((get): ReadonlyArray<Envi
     return config !== null && config.environment.capabilities.boatCloud !== true;
   });
 }).pipe(Atom.withLabel("mobile-boat-cloud:outdated-machines"));
-
-/** Connected machines that answer for Boat cloud, without the VMs, which answer too. */
-export const boatCloudHoldersAtom = Atom.make((get): ReadonlyArray<BoatCloudHolder> => {
-  const machines = get(boatCloudMachinesAtom);
-  return get(connectedEnvironmentIdsAtom).flatMap((environmentId) => {
-    if (machines.has(environmentId)) return [];
-    const status = AsyncResult.getOrElse(
-      get(serverEnvironment.boatCloudStatus({ environmentId, input: {} })),
-      () => null,
-    );
-    return status ? [{ environmentId, status }] : [];
-  });
-}).pipe(Atom.withLabel("mobile-boat-cloud:holders"));
 
 function boatCloudReady(status: BoatCloudStatus | null | undefined) {
   return status?.connected === true && (status.setup.status === "ready" || status.snapshotReady);
@@ -387,11 +367,6 @@ export async function prepareBoatCloudProject(input: {
 
 const wakesInFlight = new Map<EnvironmentId, Promise<boolean>>();
 
-/** Whether this app is turning a VM back on, so its thread shows "Waking" rather than "Sleeping". */
-const boatCloudWakingAtom = Atom.family((_environmentId: EnvironmentId | null) =>
-  Atom.make(false).pipe(Atom.keepAlive),
-);
-
 /**
  * Turns a stopped VM back on. A machine that owns it can also restore it from
  * its backup and hands out a new pairing; the phone reconnects to the same server.
@@ -496,4 +471,115 @@ export function useBoatCloudSleep(
     state: waking ? "waking" : "sleeping",
     wake: () => void wakeBoatCloudMachine(environmentId, httpBaseUrl),
   };
+}
+
+const connectsInFlight = new Map<EnvironmentId, Promise<boolean>>();
+/** Running VMs this launch already tried to pair with, so a failing one is not retried on every visit. */
+const connectAttempted = new Set<string>();
+
+/**
+ * Pairs this app with a Boat VM a connected machine handed out, such as one an agent started a
+ * thread on, through that machine's wake, which hands out a pairing code. False when no
+ * connected machine manages it or the pairing failed.
+ */
+export function connectManagedBoatCloudEnvironment(
+  environmentId: EnvironmentId,
+  holders?: ReadonlyArray<BoatCloudHolder>,
+): Promise<boolean> {
+  if (appAtomRegistry.get(boatCloudMachinesAtom).has(environmentId)) {
+    return Promise.resolve(true);
+  }
+  const inFlight = connectsInFlight.get(environmentId);
+  if (inFlight) return inFlight;
+  const connect = (async () => {
+    const known = holders ?? (await readBoatCloudHoldersOnce());
+    noteBoatCloudHolders(known);
+    const owner = known.find((holder) =>
+      managedBoatCloudEnvironmentIds([holder.status]).has(environmentId),
+    );
+    if (!owner) return false;
+    const woken = await runAtomCommand(
+      appAtomRegistry,
+      serverEnvironment.wakeBoatCloud,
+      { environmentId: owner.environmentId, input: { environmentId } },
+      { label: serverEnvironment.wakeBoatCloud.label, reportFailure: false, reportDefect: true },
+    );
+    if (woken._tag === "Failure") return false;
+    return attach(woken.value).then(
+      () => true,
+      () => false,
+    );
+  })().finally(() => connectsInFlight.delete(environmentId));
+  connectsInFlight.set(environmentId, connect);
+  return connect;
+}
+
+/**
+ * Pairs with every running VM the connected machines manage that this app has not paired with,
+ * so threads agents started there join the lists. Sleeping VMs stay asleep.
+ */
+export async function connectManagedBoatCloudMachines(): Promise<void> {
+  const holders = await readBoatCloudHoldersOnce();
+  noteBoatCloudHolders(holders);
+  const paired = appAtomRegistry.get(boatCloudMachinesAtom);
+  for (const holder of holders) {
+    const environments = boatCloudMachineEnvironments({
+      machines: holder.status.machines,
+      environmentUsage: holder.status.environmentUsage,
+      pairedUrls: paired,
+    });
+    for (const machine of holder.status.machines) {
+      const environmentId = environments.get(machine.sandboxId);
+      if (machine.state !== "running" || environmentId === undefined) continue;
+      if (paired.has(environmentId) || connectAttempted.has(machine.sandboxId)) continue;
+      connectAttempted.add(machine.sandboxId);
+      await connectManagedBoatCloudEnvironment(environmentId, holders);
+    }
+  }
+}
+
+/**
+ * Pairs with the Boat VM behind a thread this app has no connection for, such as one a link
+ * names that an agent started. True while it tries, so the route waits rather than giving up.
+ */
+export function useConnectManagedBoatCloud(
+  environmentId: EnvironmentId | null,
+  unknownEnvironment: boolean,
+): boolean {
+  const wanted = environmentId !== null && unknownEnvironment;
+  const [tried, setTried] = useState<EnvironmentId | null>(null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- pairs with the VM through the machine that manages it, outside React
+  useEffect(() => {
+    if (!wanted || environmentId === null) return;
+    let current = true;
+    void connectManagedBoatCloudEnvironment(environmentId).finally(() => {
+      if (current) setTried(environmentId);
+    });
+    return () => {
+      current = false;
+    };
+  }, [wanted, environmentId]);
+  return wanted && tried !== environmentId;
+}
+
+const MANAGED_CHECK_INTERVAL_MS = 60_000;
+let lastManagedCheck = { key: "", at: 0 };
+
+/**
+ * Lists the threads on VMs the connected machines manage: reads their Boat status once when a
+ * thread list opens or a machine connects, at most once a minute otherwise, and pairs with
+ * running VMs this app has not seen.
+ */
+export function useConnectManagedBoatCloudMachines(): void {
+  const key = useAtomValue(connectedEnvironmentIdsAtom).slice().sort().join(",");
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads the machines' Boat status and pairs with new VMs, outside React
+  useEffect(() => {
+    if (key === "") return;
+    const now = Date.now();
+    if (key === lastManagedCheck.key && now - lastManagedCheck.at < MANAGED_CHECK_INTERVAL_MS) {
+      return;
+    }
+    lastManagedCheck = { key, at: now };
+    void connectManagedBoatCloudMachines();
+  }, [key]);
 }

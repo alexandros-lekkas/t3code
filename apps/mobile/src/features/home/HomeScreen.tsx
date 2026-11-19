@@ -1,4 +1,5 @@
 import { useGT, useMessages } from "gt-react-native";
+import { useConnectManagedBoatCloudMachines } from "../boatCloud/boatCloud";
 
 import { useContentTopInset } from "../../components/ui/useBarInset";
 import { usePaneRole } from "../../components/ui/Pane";
@@ -195,6 +196,7 @@ function renderHomeScrollView(props: ScrollViewProps) {
 
 export function HomeScreen(props: HomeScreenProps) {
   const gt = useGT();
+  useConnectManagedBoatCloudMachines();
   const m = useMessages();
   const usesNativeWorkspaceColumns = useNativeWorkspaceColumnsSupported();
   const workspace = useWorkspaceTabs();
