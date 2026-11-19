@@ -29,7 +29,7 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
  */
 const BoatCloudThreadLaunchTool = Tool.make("t3_boat_cloud_thread_launch", {
   description:
-    "Spawn a new top-level thread on a Boat cloud VM (boat.dev), as in 'run this on Boat'. Starts a `machineType` VM, clones the project's git remote and sends `message`. Takes a minute or more; do not retry. Follow it with `t3_thread_read` or `t3_thread_wait` and the returned `environmentId`.",
+    "Spawn a new top-level thread on a Boat VM (boat.dev), as in 'run this on Boat'. Starts a `machineType` VM, clones the project's git remote and sends `message`. Takes a minute or more; do not retry. Follow it with `t3_thread_read` or `t3_thread_wait` and the returned `environmentId`.",
   parameters: Schema.Struct({
     title: TrimmedNonEmptyString,
     message: Schema.String.check(Schema.isMaxLength(120000)).annotate({
@@ -86,7 +86,7 @@ const BoatCloudThreadLaunchTool = Tool.make("t3_boat_cloud_thread_launch", {
     ProjectService.ProjectService,
   ],
 })
-  .annotate(Tool.Title, "Launch a thread on Boat cloud")
+  .annotate(Tool.Title, "Launch a thread on Boat")
   .annotate(Tool.Destructive, true)
   .annotate(Tool.OpenWorld, true);
 

@@ -12,7 +12,11 @@ import { isScratchProject } from "@t3tools/client-runtime/state/projects";
 
 import type { ComposerThreadTarget, DraftId } from "../../composerDraftStore";
 import { useT3ProjectFileScripts } from "../../hooks/useT3ProjectFileScripts";
-import { type EnvMode, type EnvironmentOption } from "../BranchToolbar.logic";
+import {
+  type CloudEnvironmentOption,
+  type EnvMode,
+  type EnvironmentOption,
+} from "../BranchToolbar.logic";
 import { BranchToolbar } from "../BranchToolbar";
 import BaseGitActionsControl from "../GitActionsControl";
 import ProjectScriptsControl, {
@@ -22,6 +26,8 @@ import ProjectScriptsControl, {
 import { T, useGT } from "gt-react";
 import { memo, useState, type ComponentProps } from "react";
 import { ThreadDetailsCard } from "./ThreadDetailsCard";
+import { ThreadDetailsSandbox } from "./ThreadDetailsSandbox";
+import { useBoatCloudThreadMachineState } from "../../state/boatCloudThreads";
 import { OpenInPicker } from "./OpenInPicker";
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import { ThreadAutomationsPanel } from "./ThreadAutomationsPanel";
@@ -74,6 +80,7 @@ interface ThreadDetailsPanelProps extends Pick<
   availableEnvironments: readonly EnvironmentOption[];
   autoEnvironmentLabel?: string | undefined;
   onAutoEnvironment?: (() => void) | undefined;
+  cloudEnvironment?: CloudEnvironmentOption | undefined;
   onEnvironmentChange?: (environmentId: EnvironmentId) => void;
   onEnvModeChange: (mode: EnvMode) => void;
   envMode: EnvMode;
@@ -97,6 +104,11 @@ interface ThreadDetailsPanelProps extends Pick<
 export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
   const visible = useClientSettings(resolveThreadDetailsVisibility);
   const gt = useGT();
+  const onBoatCloud =
+    useBoatCloudThreadMachineState({
+      environmentId: props.environmentId,
+      threadId: props.threadId,
+    }) !== null;
   const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
   const fileScripts = useT3ProjectFileScripts(
     props.environmentId,
@@ -200,6 +212,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                           : {})}
                         autoEnvironmentLabel={props.autoEnvironmentLabel}
                         onAutoEnvironment={props.onAutoEnvironment}
+                        cloudEnvironment={props.cloudEnvironment}
                         {...branchToolbarProps}
                       />
                     ) : null}
@@ -284,6 +297,10 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                   showLineage={visible.lineage}
                   showSideChats={visible.sideChats}
                 />
+              ) : null}
+
+              {visible.sandbox && onBoatCloud && !props.draftId ? (
+                <ThreadDetailsSandbox threadRef={activeThreadRef} />
               ) : null}
 
               {visible.usage ? <ThreadDetailsUsage {...props.usage} /> : null}

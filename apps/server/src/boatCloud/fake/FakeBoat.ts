@@ -49,6 +49,8 @@ export interface FakeBoatOptions {
   readonly target: FakeBoatTarget;
   /** Multiplies every simulated delay; 0 makes the fake answer at once, as tests want. */
   readonly delayScale?: number;
+  /** Starts with a running and a stopped VM; without it Boat has none until a start makes one. */
+  readonly seed?: boolean;
 }
 
 type MachineType = "small" | "default" | "large" | "xlarge";
@@ -56,10 +58,10 @@ const MACHINE_SPECS: Record<MachineType, { vcpu: number; memoryGB: number; multi
   small: { vcpu: 2, memoryGB: 4, multiplier: 0.5 },
   default: { vcpu: 4, memoryGB: 8, multiplier: 1 },
   large: { vcpu: 8, memoryGB: 16, multiplier: 2 },
-  xlarge: { vcpu: 16, memoryGB: 32, multiplier: 4 },
+  xlarge: { vcpu: 16, memoryGB: 32, multiplier: 0.2 / 0.036 },
 };
-/** Dollars per billed second; a default VM is $0.09 an hour. */
-const DOLLARS_PER_SECOND = 0.000025;
+/** Dollars per billed second; a default VM is $0.036 an hour, as on Boat. */
+const DOLLARS_PER_SECOND = 0.036 / 3600;
 const DISK_TOTAL_BYTES = 40 * 1024 ** 3;
 
 interface FakeSandbox {
@@ -113,34 +115,36 @@ export const makeFakeBoat = Effect.fn("FakeBoat.make")(function* (options: FakeB
 
   const sandboxes = new Map<string, FakeSandbox>();
   const addSandbox = (sandbox: FakeSandbox) => sandboxes.set(sandbox.id, sandbox);
-  addSandbox({
-    id: FAKE_RUNNING_VM,
-    name: MACHINE_NAME,
-    state: "running",
-    readyAt: 0,
-    type: "small",
-    labels: { ...MACHINE_LABELS },
-    environment: "default",
-    createdAt: iso(startedAt - 3 * 24 * 3600 * 1000),
-    billedSeconds: 2.3 * 3600 * 0.5,
-    runningSince: startedAt - 25 * 60 * 1000,
-    lastActive: startedAt,
-    diskUsedBytes: 9.4 * 1024 ** 3,
-  });
-  addSandbox({
-    id: FAKE_STOPPED_VM,
-    name: MACHINE_NAME,
-    state: "stopped",
-    readyAt: 0,
-    type: "default",
-    labels: { ...MACHINE_LABELS },
-    environment: "default",
-    createdAt: iso(startedAt - 9 * 24 * 3600 * 1000),
-    billedSeconds: 5.1 * 3600,
-    runningSince: null,
-    lastActive: startedAt - 2 * 3600 * 1000,
-    diskUsedBytes: 14.2 * 1024 ** 3,
-  });
+  if (options.seed) {
+    addSandbox({
+      id: FAKE_RUNNING_VM,
+      name: MACHINE_NAME,
+      state: "running",
+      readyAt: 0,
+      type: "small",
+      labels: { ...MACHINE_LABELS },
+      environment: "default",
+      createdAt: iso(startedAt - 3 * 24 * 3600 * 1000),
+      billedSeconds: 2.3 * 3600 * 0.5,
+      runningSince: startedAt - 25 * 60 * 1000,
+      lastActive: startedAt,
+      diskUsedBytes: 9.4 * 1024 ** 3,
+    });
+    addSandbox({
+      id: FAKE_STOPPED_VM,
+      name: MACHINE_NAME,
+      state: "stopped",
+      readyAt: 0,
+      type: "default",
+      labels: { ...MACHINE_LABELS },
+      environment: "default",
+      createdAt: iso(startedAt - 9 * 24 * 3600 * 1000),
+      billedSeconds: 5.1 * 3600,
+      runningSince: null,
+      lastActive: startedAt - 2 * 3600 * 1000,
+      diskUsedBytes: 14.2 * 1024 ** 3,
+    });
+  }
 
   const snapshots = new Map<string, FakeSnapshot>();
   const readySnapshot = snapshotNameOf(options.version, true);

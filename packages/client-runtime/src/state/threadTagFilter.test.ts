@@ -95,7 +95,10 @@ describe("hiddenThreadKeys", () => {
     const hidden = hiddenThreadKeys([
       {
         environmentId: local,
-        threads: localThreads,
+        threads: [
+          ...localThreads,
+          { ...thread("agent-launched", []), linkOrigin: { sessionId: "holder", label: "Mac" } },
+        ],
         hiddenTags: null,
         listedThreadIds: new Set([ThreadId.make("plain")]),
       },

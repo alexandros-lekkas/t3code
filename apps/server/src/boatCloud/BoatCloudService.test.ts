@@ -503,7 +503,7 @@ it.layer(dependencies)("BoatCloudService", (it) => {
           ["small", 0.018, "derived", true],
           ["default", 0.036, "boat", true],
           ["large", 0.072, "derived", true],
-          ["xlarge", 0.144, "derived", false],
+          ["xlarge", 0.036 * (0.2 / 0.036), "derived", false],
         ],
       );
     }),

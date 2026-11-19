@@ -422,33 +422,27 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
   ),
   t3_theme_read: tool(["Read", "Reading", "Read", "themes"], "theme-read"),
   t3_theme_set: tool(["Set", "Setting", "Set", "the theme"], "theme-set"),
-  t3_boat_cloud_status: tool(["Read", "Reading", "Read", "Boat cloud"], "boat-cloud-read"),
+  t3_boat_cloud_status: tool(["Read", "Reading", "Read", "Boat"], "boat-cloud-read"),
   t3_boat_cloud_configure: tool(
-    ["Configure", "Configuring", "Configured", "Boat cloud"],
+    ["Configure", "Configuring", "Configured", "Boat"],
     "boat-cloud-update",
   ),
   t3_boat_cloud_root_environment_update: tool(
-    ["Update", "Updating", "Updated", "the Boat cloud environment"],
+    ["Update", "Updating", "Updated", "the Boat environment"],
     "boat-cloud-update",
   ),
   t3_boat_cloud_snapshot_rebuild: tool(
-    ["Rebuild", "Rebuilding", "Started rebuilding", "the Boat cloud snapshot"],
+    ["Rebuild", "Rebuilding", "Started rebuilding", "the Boat snapshot"],
     "boat-cloud-update",
   ),
-  t3_boat_cloud_machine: tool(
-    ["Manage", "Managing", "Managed", "a Boat cloud VM"],
-    "boat-cloud-update",
-  ),
+  t3_boat_cloud_machine: tool(["Manage", "Managing", "Managed", "a Boat VM"], "boat-cloud-update"),
   t3_boat_cloud_machine_stop: tool(
-    ["Stop", "Stopping", "Stopped", "a Boat cloud VM"],
+    ["Stop", "Stopping", "Stopped", "a Boat VM"],
     "boat-cloud-update",
   ),
-  t3_boat_cloud_machine_wake: tool(
-    ["Wake", "Waking", "Woke", "a Boat cloud VM"],
-    "boat-cloud-update",
-  ),
+  t3_boat_cloud_machine_wake: tool(["Wake", "Waking", "Woke", "a Boat VM"], "boat-cloud-update"),
   t3_boat_cloud_machine_delete: tool(
-    ["Delete", "Deleting", "Deleted", "a Boat cloud VM"],
+    ["Delete", "Deleting", "Deleted", "a Boat VM"],
     "boat-cloud-update",
   ),
   t3_thread_launch: tool(["Launch", "Launching", "Launched", "a project thread"], "thread-create"),

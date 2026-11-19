@@ -1,5 +1,6 @@
 import { Outlet, createFileRoute, redirect } from "@tanstack/react-router";
 
+import { useBoatCloudMachinePairing } from "../boatCloud";
 import { ThreadRouteView } from "../components/ThreadRouteView";
 import { GlobalVoiceInputIndicator } from "../components/chat/GlobalVoiceInputIndicator";
 import { isAppModalPage } from "../components/sidebar/mainAppLocation";
@@ -12,6 +13,7 @@ import { useShownThreadRouteTarget } from "../hooks/useShownThreadRouteTarget";
 function ChatRouteLayout() {
   // Render both routes here so draft promotion keeps the same ChatView mounted.
   const { shownTarget, modalOpen } = useShownThreadRouteTarget();
+  useBoatCloudMachinePairing();
   return (
     <>
       {shownTarget?.kind === "server" && !modalOpen ? (

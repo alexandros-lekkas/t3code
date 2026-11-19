@@ -40,6 +40,7 @@ import {
 } from "./ConnectionsSettings.logic";
 import { settingsScopeEnvironmentLabel } from "./settingsScopeAxis";
 import { useAccessEnvironment } from "./useAccessEnvironment";
+import { BoatCloudSettings } from "./BoatCloudSettings";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
 import { ManagedByOrganization } from "../ManagedPolicy";
 import { LocalEnvironmentSetting } from "./LocalEnvironmentSetting";
@@ -283,8 +284,10 @@ function ConnectionsSettingsContent({
     ? (accessSessionState.data.permissions ?? accessSessionState.data.scopes ?? null)
     : null;
   const currentAuthPolicy = desktopBridge ? null : (accessSessionState.data?.auth.policy ?? null);
+  // Boat cloud VMs come and go with their threads; the Boat cloud section manages them.
   const savedEnvironments = environments.filter(
-    (environment) => environment.entry.target._tag !== "PrimaryConnectionTarget",
+    (environment) =>
+      environment.entry.target._tag !== "PrimaryConnectionTarget" && !environment.boatCloud,
   );
   const listedEnvironments = savedEnvironments.filter(
     (environment) => !isDesktopLocalConnectionTarget(environment.entry.target),
@@ -1836,6 +1839,7 @@ function ConnectionsSettingsContent({
           isSearchTarget={index === 0}
         />
       ))}
+      <BoatCloudSettings />
       <LoadBalancingSettings environments={loadBalancingEnvironments} />
       <PullRequestRoutingSettings environments={loadBalancingEnvironments} />
     </SettingsPageContainer>

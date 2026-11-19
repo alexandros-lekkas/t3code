@@ -10,7 +10,7 @@ import { threadKey } from "./entities.ts";
 
 type FilterableThread = Pick<
   OrchestrationV2ThreadShell,
-  "id" | "lineage" | "tags" | "delegatedFrom"
+  "id" | "lineage" | "tags" | "delegatedFrom" | "linkOrigin"
 >;
 
 export interface TagFilteredEnvironment {
@@ -18,7 +18,10 @@ export interface TagFilteredEnvironment {
   readonly threads: ReadonlyArray<FilterableThread>;
   /** Tags this environment hides, or null while its filter is off. */
   readonly hiddenTags: ReadonlyArray<string> | null;
-  /** The only top-level threads this environment lists, or null to list them all. */
+  /**
+   * The only top-level threads this environment lists, besides those a linked environment's agent
+   * started there, which no client opens; null lists them all.
+   */
   readonly listedThreadIds?: ReadonlySet<ThreadId> | null;
 }
 
@@ -117,7 +120,7 @@ export function hiddenThreadKeys(
     if (!followsParent) {
       const hidden =
         hasHiddenTag(thread.tags, environment.hiddenTags) ||
-        environment.listedThreadIds?.has(thread.id) === false;
+        (environment.listedThreadIds?.has(thread.id) === false && thread.linkOrigin === undefined);
       hiddenByKey.set(key, hidden);
       return hidden;
     }

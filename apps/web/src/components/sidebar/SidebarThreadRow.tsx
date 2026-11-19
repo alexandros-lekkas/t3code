@@ -87,6 +87,8 @@ import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { cn } from "~/lib/utils";
 import { textDirection } from "~/textDirection";
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
+import { BoatIcon } from "../Icons";
+import { useBoatCloudThreadMachineState } from "../../state/boatCloudThreads";
 import {
   animateSidebarLayoutChanges,
   hasUnseenCompletion,
@@ -864,6 +866,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     : thread.modelSelection.model;
 
   const isRemote = thread.environmentId !== props.currentEnvironmentId;
+  const boatMachineState = useBoatCloudThreadMachineState(threadRef);
   const showsScratchMachine = !checkoutThread.branch && props.scratchMachineLabel !== null;
 
   const detailsTooltip = (
@@ -1258,9 +1261,22 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   ) : null;
 
   const remoteMachineIcon =
-    isRemote && !showsScratchMachine ? (
-      <span className="inline-flex shrink-0 items-center text-sidebar-muted-foreground/70">
-        <EnvironmentMachineIcon aria-hidden kind={props.environmentMachine} className="size-3.5" />
+    (isRemote || boatMachineState !== null) && !showsScratchMachine ? (
+      <span className="inline-flex shrink-0 items-center gap-1 text-sidebar-muted-foreground/70">
+        {boatMachineState === "stopped" || boatMachineState === "gone" ? (
+          <span className="text-xs">
+            <T>Sleeping</T>
+          </span>
+        ) : null}
+        {boatMachineState !== null ? (
+          <BoatIcon aria-hidden className="size-3.5" />
+        ) : (
+          <EnvironmentMachineIcon
+            aria-hidden
+            kind={props.environmentMachine}
+            className="size-3.5"
+          />
+        )}
       </span>
     ) : null;
   const diff = latestRunDiff(thread);

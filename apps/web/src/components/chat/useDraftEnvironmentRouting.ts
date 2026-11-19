@@ -1,3 +1,4 @@
+import { useAtomValue } from "@effect/atom-react";
 import { msg, useGT } from "gt-react";
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { m } from "~/i18n/messages";
@@ -6,6 +7,7 @@ import { useLogicalProjectEnvironments } from "../../hooks/useLogicalProjectEnvi
 import { useScratchProject } from "../../hooks/useScratchProject";
 import { useStableCallback } from "../../hooks/useStableCallback";
 import {
+  type BoatCloudMachineType,
   type EnvironmentId,
   type ProviderDriverKind,
   ProviderInstanceId,
@@ -33,6 +35,7 @@ import { useComposerDraftStore, DraftId } from "../../composerDraftStore";
 import { type EnvironmentPresentation, useEnvironmentProviders } from "../../state/environments";
 import { currentClientMetadata } from "../../connection/platform";
 import { useProjects } from "../../state/entities";
+import { rememberOpenedBoatCloudThread } from "../../state/boatCloudThreads";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import type { DraftSessionState } from "../../composerDraftStore";
@@ -40,6 +43,14 @@ import { loadBalancingSendWarning } from "./composerSend.logic";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { seedDraftModelSelection } from "../../lib/seedDraftModelSelection";
 import { draftFanoutSelectionsAtom } from "./chatViewSend";
+import {
+  boatCloudDraftMachineTypeAtom,
+  boatCloudReady,
+  clearBoatCloudStartProgress,
+  prepareBoatCloudProject,
+  prewarmBoatCloudProject,
+  usePrimaryBoatCloudStatus,
+} from "../../boatCloud";
 
 interface DraftEnvironmentRoutingInput {
   readonly draftId: DraftId | null;
@@ -151,7 +162,110 @@ export function useDraftEnvironmentRouting(input: DraftEnvironmentRoutingInput) 
     loadBalancingSettings.loadBalancingWeights,
   );
   const readRouting = useStableCallback(() => ({ input, loadBalancingCandidates }));
+  const boatCloud = usePrimaryBoatCloudStatus();
+  const pickedMachineType = useAtomValue(boatCloudDraftMachineTypeAtom(draftId ?? ""));
+  const wantedMachineType = pickedMachineType ?? boatCloud.status?.defaultMachineType ?? "small";
+  // The picker lists only sizes the plan can start, so a size it no longer allows becomes the first.
+  const availableMachineTypes = (boatCloud.status?.machineTypes ?? []).filter(
+    (option) => option.available,
+  );
+  const machineType =
+    availableMachineTypes.length === 0 ||
+    availableMachineTypes.some((option) => option.id === wantedMachineType)
+      ? wantedMachineType
+      : availableMachineTypes[0]!.id;
+  /** What starting this draft on Boat cloud needs, or why it cannot start. */
+  const boatCloudStart = (draft: NonNullable<ReturnType<typeof getDraftSession>>) => {
+    if (boatCloud.holderEnvironmentId === null || !boatCloudReady(boatCloud.status)) {
+      return {
+        title: gt("Boat is not set up"),
+        description: gt("Finish setup in Settings, Environments."),
+      };
+    }
+    const project = allProjects.find(
+      (candidate) =>
+        candidate.environmentId === draft.environmentId && candidate.id === draft.projectId,
+    );
+    // A fork's own remote, where the agent can push, rather than the upstream it groups under.
+    const identity = project?.repositoryIdentity;
+    const repositoryUrl = identity?.origin?.remoteUrl ?? identity?.locator.remoteUrl;
+    if (!repositoryUrl) {
+      return {
+        title: gt("Boat needs a git remote"),
+        description: gt("Push this project to a remote Boat can clone."),
+      };
+    }
+    if (!draft.branch) {
+      return {
+        title: gt("Choose a base branch"),
+        description: gt("Boat starts a new worktree from it."),
+      };
+    }
+    return {
+      holderEnvironmentId: boatCloud.holderEnvironmentId,
+      repositoryUrl,
+      baseBranch: draft.branch,
+      machineType: appAtomRegistry.get(boatCloudDraftMachineTypeAtom(draftId ?? "")) ?? machineType,
+    };
+  };
+  const moveToBoatCloud = async () => {
+    if (!draftId) return false;
+    const originalDraft = getDraftSession(draftId);
+    if (!originalDraft) return false;
+    const start = boatCloudStart(originalDraft);
+    if ("title" in start) {
+      toastManager.add({ type: "warning", id: "boat-cloud-send", ...start });
+      return false;
+    }
+    const target = await prepareBoatCloudProject({ draftId, ...start });
+    if (!target) return false;
+    const currentDraft = getDraftSession(draftId);
+    if (
+      !currentDraft ||
+      currentDraft.promotedTo ||
+      currentDraft.environmentSelection !== "cloud" ||
+      currentDraft.environmentId !== originalDraft.environmentId ||
+      currentDraft.projectId !== originalDraft.projectId
+    ) {
+      // The draft moved on while the VM started; the VM stays ready for the next send.
+      clearBoatCloudStartProgress(draftId);
+      return false;
+    }
+    const { project, worktree, sandboxId } = target;
+    const baseBranch = currentDraft.branch ?? originalDraft.branch;
+    // The VM cut the worktree from the base the start asked for; a base picked since needs a new one.
+    const readyWorktree = worktree?.baseBranch === baseBranch ? worktree : null;
+    carryFanoutSelections(originalDraft, project.environmentId);
+    // The send must read the VM project's composer and provider context after retargeting.
+    // Attachments stay on the draft; the send uploads them to the VM it now targets.
+    flushSync(() =>
+      setDraftThreadContext(draftId, {
+        projectRef: scopeProjectRef(project.environmentId, project.id),
+        environmentSelection: "cloud",
+        loadBalancedEnvironmentId: null,
+        envMode: "worktree",
+        // The thread takes the VM's worktree, or the VM cuts one from the remote base, since its
+        // clone has none of this machine's local branches. A path on this machine means nothing there.
+        ...(readyWorktree === null
+          ? { branch: baseBranch, startFromOrigin: true, worktreePath: null }
+          : { branch: readyWorktree.branch, worktreePath: readyWorktree.path }),
+      }),
+    );
+    // The thread is listed from its first event, before the route moves to it.
+    rememberOpenedBoatCloudThread(
+      { environmentId: project.environmentId, threadId: currentDraft.threadId },
+      sandboxId,
+    );
+    return true;
+  };
+  /** The send that followed a move to Boat cloud went out, so its start is over. */
+  const onRoutedSendDispatched = () => {
+    if (draftId) clearBoatCloudStartProgress(draftId);
+  };
   const refreshBeforeSend = () => {
+    if (draftId && draftThread?.environmentSelection === "cloud" && !draftThread.promotedTo) {
+      return moveToBoatCloud();
+    }
     if (
       !automaticEnvironment ||
       !draftId ||
@@ -256,6 +370,47 @@ export function useDraftEnvironmentRouting(input: DraftEnvironmentRoutingInput) 
     });
   };
   const onAutoEnvironmentStable = useStableCallback(onAutoEnvironment);
+  const onCloudEnvironment = () => {
+    if (envLocked || !draftId || sendInFlightRef.current) return;
+    setDraftThreadContext(draftId, {
+      environmentSelection: "cloud",
+      loadBalancedEnvironmentId: null,
+      envMode: "worktree",
+      worktreePath: null,
+    });
+    // The VM starts while the message is written; the send reuses this start.
+    const draft = getDraftSession(draftId);
+    const start = draft ? boatCloudStart(draft) : null;
+    if (start && !("title" in start)) prewarmBoatCloudProject({ draftId, ...start });
+  };
+  const onCloudEnvironmentStable = useStableCallback(onCloudEnvironment);
+  const onLeaveCloudEnvironment = () => {
+    if (!draftId || sendInFlightRef.current) return;
+    clearBoatCloudStartProgress(draftId);
+    setDraftThreadContext(draftId, { environmentSelection: "manual" });
+  };
+  const onLeaveCloudEnvironmentStable = useStableCallback(onLeaveCloudEnvironment);
+  const onMachineTypeChange = (next: BoatCloudMachineType) => {
+    if (!draftId) return;
+    appAtomRegistry.set(boatCloudDraftMachineTypeAtom(draftId), next);
+  };
+  const onMachineTypeChangeStable = useStableCallback(onMachineTypeChange);
+  const cloudSelected = draftThread?.environmentSelection === "cloud";
+  // Offered on a new draft once this machine has Boat cloud ready; kept visible while chosen.
+  const cloudEnvironment =
+    draftId &&
+    !envLocked &&
+    !draftThread?.promotedTo &&
+    (cloudSelected || boatCloudReady(boatCloud.status))
+      ? {
+          selected: cloudSelected,
+          onSelect: onCloudEnvironmentStable,
+          onLeave: onLeaveCloudEnvironmentStable,
+          machineType,
+          machineTypes: boatCloud.status?.machineTypes ?? [],
+          onMachineTypeChange: onMachineTypeChangeStable,
+        }
+      : undefined;
   const autoEnvironmentLabel = automaticEnvironment
     ? draftThread?.loadBalancedEnvironmentId
       ? gt("Auto balance")
@@ -397,8 +552,10 @@ export function useDraftEnvironmentRouting(input: DraftEnvironmentRoutingInput) 
     needsLoadBalancing,
     loadBalancing,
     refreshBeforeSend,
+    onRoutedSendDispatched,
     onAutoEnvironmentStable,
     autoEnvironmentLabel,
+    cloudEnvironment,
     isEnvironmentChanging,
     readPendingEnvironmentChange,
     onEnvironmentChangeStable,

@@ -1161,13 +1161,13 @@ export function summarizeT3ToolCalls(
       label = done
         ? resolve(
             msg(
-              "{count, plural, one {Checked Boat cloud {count} time} other {Checked Boat cloud {count} times}}",
+              "{count, plural, one {Checked Boat {count} time} other {Checked Boat {count} times}}",
               { count },
             ),
           )
         : resolve(
             msg(
-              "{count, plural, one {Tried to check Boat cloud {count} time} other {Tried to check Boat cloud {count} times}}",
+              "{count, plural, one {Tried to check Boat {count} time} other {Tried to check Boat {count} times}}",
               { count },
             ),
           );
@@ -1178,13 +1178,13 @@ export function summarizeT3ToolCalls(
       label = done
         ? resolve(
             msg(
-              "{count, plural, one {Changed Boat cloud {count} time} other {Changed Boat cloud {count} times}}",
+              "{count, plural, one {Changed Boat {count} time} other {Changed Boat {count} times}}",
               { count },
             ),
           )
         : resolve(
             msg(
-              "{count, plural, one {Tried to change Boat cloud {count} time} other {Tried to change Boat cloud {count} times}}",
+              "{count, plural, one {Tried to change Boat {count} time} other {Tried to change Boat {count} times}}",
               { count },
             ),
           );

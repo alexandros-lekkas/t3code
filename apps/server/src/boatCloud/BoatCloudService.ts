@@ -1130,14 +1130,16 @@ const make = Effect.gen(function* () {
     const repository = parseRepository(input.repositoryUrl);
     if (repository === null) {
       return yield* new BoatCloudError({
-        message: "Boat cloud needs a project with a git remote it can clone.",
+        message: "Boat needs a project with a git remote it can clone.",
       });
     }
     // Opening the page and connecting refresh it, so a ready snapshot needs no check per start.
     if (snapshotName === null) yield* refreshSnapshot(api);
     const snapshot = snapshotName;
     if (snapshot === null) {
-      return yield* new BoatCloudError({ message: "Finish Boat cloud setup in Settings, Cloud." });
+      return yield* new BoatCloudError({
+        message: "Finish Boat setup in Settings → Environments → Boat.",
+      });
     }
     starts.set(input.requestId, pendingSteps());
     // When each step ended, in ms since the request, so a slow start shows where it waited.
@@ -1220,6 +1222,10 @@ const make = Effect.gen(function* () {
                 state: "running",
                 acquiredAt,
                 handOuts: candidate.handOuts === null ? null : candidate.handOuts + 1,
+                // A start never lands on a VM of another size, so a new one is sized before Boat lists it.
+                machineType: candidate.machineType ?? machineType,
+                vcpu: candidate.vcpu ?? BOAT_MACHINE_SPECS[machineType].vcpu,
+                memoryGB: candidate.memoryGB ?? BOAT_MACHINE_SPECS[machineType].memoryGB,
               }
             : candidate,
         ),
@@ -1232,6 +1238,8 @@ const make = Effect.gen(function* () {
       failCloud((cause) => describe(cause) ?? "Something went wrong on Boat."),
     );
     yield* markEnded("handedOut");
+    // The new thread's details show the VM's load without waiting for the next sample.
+    yield* whileWatched(refreshStats).pipe(Effect.forkIn(scope));
     // The start may have taken the spare, so the next one is readied while this one checks out.
     yield* keepSpare(api).pipe(Effect.forkIn(scope));
     // The client connects while the checkout runs; its repository step tells it how that ended.
@@ -1300,7 +1308,7 @@ const make = Effect.gen(function* () {
           ? yield* findSandboxByHttpBaseUrl(api, input.httpBaseUrl)
           : null;
         if (sandbox === null) {
-          return yield* vmFailure("This machine does not know that Boat cloud VM.");
+          return yield* vmFailure("This machine does not know that Boat VM.");
         }
         yield* addMachine(sandbox.id);
         sandboxId = sandbox.id;
@@ -1340,7 +1348,7 @@ const make = Effect.gen(function* () {
           return publish;
         }),
       ),
-      cloudError("Could not wake the Boat cloud machine."),
+      cloudError("Could not wake the Boat machine."),
     );
   });
 
@@ -1412,7 +1420,7 @@ const make = Effect.gen(function* () {
       snapshot: starting === undefined ? null : snapshotOf(starting),
       rootEnvironment: chosen === undefined ? null : rootEnvironmentOf(chosen),
     } satisfies BoatCloudInspection;
-  }).pipe(cloudError("Could not read Boat cloud."), Effect.withSpan("BoatCloud.inspect"));
+  }).pipe(cloudError("Could not read Boat."), Effect.withSpan("BoatCloud.inspect"));
 
   const updateRootEnvironment = Effect.fn("BoatCloud.updateRootEnvironment")(function* (
     input: BoatCloudRootEnvironmentUpdate,
@@ -1518,19 +1526,19 @@ const make = Effect.gen(function* () {
         if (!(yield* backupAndStop(api, machine))) return yield* busy();
       }
       return yield* publicMachine(sandboxId);
-    }).pipe(cloudError("Could not stop the Boat cloud machine."));
+    }).pipe(cloudError("Could not stop the Boat machine."));
   });
 
   /** A thread's VM wakes through `wake`, which restores it when Boat deleted it. */
   const wakeManaged = Effect.fn("BoatCloud.wakeMachine")(function* (sandboxId: string) {
     const api = yield* requireApi;
     const machine = yield* managedMachine(api, sandboxId).pipe(
-      cloudError("Could not wake the Boat cloud machine."),
+      cloudError("Could not wake the Boat machine."),
     );
     if (machine.environmentId !== null) {
       const woken = yield* wakeWith({ environmentId: machine.environmentId }, false);
       return yield* publicMachine(woken.sandboxId).pipe(
-        cloudError("Could not wake the Boat cloud machine."),
+        cloudError("Could not wake the Boat machine."),
       );
     }
     return yield* Effect.acquireUseRelease(
@@ -1547,7 +1555,7 @@ const make = Effect.gen(function* () {
           return yield* publicMachine(sandboxId);
         }),
       () => release([sandboxId]),
-    ).pipe(cloudError("Could not wake the Boat cloud machine."));
+    ).pipe(cloudError("Could not wake the Boat machine."));
   });
 
   const deleteMachine = Effect.fn("BoatCloud.deleteMachine")(function* (input: {
@@ -1597,7 +1605,7 @@ const make = Effect.gen(function* () {
           }),
         ),
       );
-    }).pipe(cloudError("Could not delete the Boat cloud machine."));
+    }).pipe(cloudError("Could not delete the Boat machine."));
   });
 
   let usageRefreshedAt = 0;

@@ -1,4 +1,6 @@
 import type {
+  BoatCloudMachineType,
+  BoatCloudMachineTypeOption,
   EnvironmentId,
   EnvironmentMachineKind,
   VcsRef,
@@ -407,3 +409,18 @@ export function shouldIncludeBranchPickerItem(input: {
     lowerItemValue.includes(sanitizedQuery)
   );
 }
+
+/** Boat cloud in the Run on menu: a VM is picked for the draft when it sends. */
+export interface CloudEnvironmentOption {
+  readonly selected: boolean;
+  readonly onSelect: () => void;
+  /** Back to the machine the draft is on now. */
+  readonly onLeave: () => void;
+  /** The VM size the thread starts on, and the sizes Boat offers. */
+  readonly machineType: BoatCloudMachineType;
+  readonly machineTypes: ReadonlyArray<BoatCloudMachineTypeOption>;
+  readonly onMachineTypeChange: (machineType: BoatCloudMachineType) => void;
+}
+
+/** Radio value for Boat cloud; it cannot collide with server-minted environment IDs. */
+export const BOAT_CLOUD_VALUE = "cloud";

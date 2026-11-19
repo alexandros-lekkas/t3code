@@ -9,8 +9,15 @@ import { PlusIcon, ScaleIcon } from "lucide-react";
 import { memo } from "react";
 import { T, useGT } from "gt-react";
 
-import { ADD_TO_MACHINE_LABEL_CLASS, type EnvironmentOption } from "./BranchToolbar.logic";
+import {
+  ADD_TO_MACHINE_LABEL_CLASS,
+  BOAT_CLOUD_VALUE,
+  type CloudEnvironmentOption,
+  type EnvironmentOption,
+} from "./BranchToolbar.logic";
 import { EnvironmentMachineIcon } from "./EnvironmentMachineIcon";
+import { BoatIcon } from "./Icons";
+import { BOAT_CLOUD_LABEL } from "../state/environments";
 import { useComposerMenuProps } from "./chat/composerEventScope";
 import {
   Select,
@@ -24,6 +31,7 @@ import {
 interface BranchToolbarEnvironmentSelectorProps {
   autoEnvironmentLabel?: string | undefined;
   onAutoEnvironment?: (() => void) | undefined;
+  cloudEnvironment?: CloudEnvironmentOption | undefined;
   envLocked: boolean;
   environmentId: EnvironmentId;
   availableEnvironments: readonly EnvironmentOption[];
@@ -39,6 +47,7 @@ const environmentValue = (id: EnvironmentId) => `env:${id}`;
 export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvironmentSelector({
   autoEnvironmentLabel,
   onAutoEnvironment,
+  cloudEnvironment,
   envLocked,
   environmentId,
   availableEnvironments,
@@ -53,6 +62,7 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
   );
   const activeEnvironment =
     availableEnvironments.find((env) => env.environmentId === environmentId) ?? null;
+  const cloudSelected = cloudEnvironment?.selected === true;
 
   const environmentItems = [
     ...(onAutoEnvironment
@@ -62,12 +72,18 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
       value: environmentValue(env.environmentId),
       label: env.label,
     })),
+    ...(cloudEnvironment ? [{ value: BOAT_CLOUD_VALUE, label: BOAT_CLOUD_LABEL }] : []),
     ...(onAddToMachine ? [{ value: ADD_MACHINE_VALUE, label: gt("Add to another machine") }] : []),
   ];
 
   // Match the xs control's height and padding: the composer strip has no min-height,
   // and its glass seam assumes that height even when this label is the only control.
-  if (envLocked || (onEnvironmentChange === undefined && onAddToMachine === undefined)) {
+  if (
+    envLocked ||
+    (onEnvironmentChange === undefined &&
+      onAddToMachine === undefined &&
+      cloudEnvironment === undefined)
+  ) {
     const lockedRow = (
       <span
         className="inline-flex h-7 min-w-0 max-w-full items-center gap-1.5 border border-transparent px-1.75 font-normal text-muted-foreground/70 text-sm sm:h-6 sm:text-xs"
@@ -91,11 +107,24 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
   return (
     <Select
       modal={false}
-      value={autoEnvironmentLabel ? AUTO_VALUE : environmentValue(environmentId)}
+      value={
+        cloudSelected
+          ? BOAT_CLOUD_VALUE
+          : autoEnvironmentLabel
+            ? AUTO_VALUE
+            : environmentValue(environmentId)
+      }
       onValueChange={(value) => {
         if (value === ADD_MACHINE_VALUE) {
           onAddToMachine?.();
-        } else if (value === AUTO_VALUE) {
+          return;
+        }
+        if (value === BOAT_CLOUD_VALUE) {
+          cloudEnvironment?.onSelect();
+          return;
+        }
+        if (cloudSelected) cloudEnvironment?.onLeave();
+        if (value === AUTO_VALUE) {
           onAutoEnvironment?.();
         } else if (value?.startsWith("env:")) {
           onEnvironmentChange?.(value.slice(4) as EnvironmentId);
@@ -115,7 +144,9 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
             />
           }
         >
-          {autoEnvironmentLabel ? (
+          {cloudSelected ? (
+            <BoatIcon className="size-3 shrink-0" aria-hidden="true" />
+          ) : autoEnvironmentLabel ? (
             <ScaleIcon className="size-3 shrink-0" aria-hidden="true" />
           ) : (
             <EnvironmentMachineIcon
@@ -128,7 +159,9 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
           </ComposerContextLabel>
         </TooltipTrigger>
         <TooltipPopup>
-          {autoEnvironmentLabel ?? activeEnvironment?.label ?? gt("Run on")}
+          {cloudSelected
+            ? BOAT_CLOUD_LABEL
+            : (autoEnvironmentLabel ?? activeEnvironment?.label ?? gt("Run on"))}
           {shortcutLabel ? ` · ${shortcutLabel}` : null}
         </TooltipPopup>
       </Tooltip>
@@ -162,6 +195,14 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
               </span>
             </SelectItem>
           ))}
+          {cloudEnvironment ? (
+            <SelectItem value={BOAT_CLOUD_VALUE}>
+              <span className="inline-flex items-center gap-1.5">
+                <BoatIcon aria-hidden className="size-3" />
+                {BOAT_CLOUD_LABEL}
+              </span>
+            </SelectItem>
+          ) : null}
           {onAddToMachine ? (
             <SelectItem value={ADD_MACHINE_VALUE}>
               <span className={ADD_TO_MACHINE_LABEL_CLASS}>

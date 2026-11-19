@@ -8,6 +8,7 @@ import {
 } from "@t3tools/shared/threadLinks";
 import { unknownThreadLinkLabel } from "@t3tools/shared/threadLinksCopy";
 
+import { useManagedBoatCloudMachine } from "../../boatCloud";
 import { configuredHostedAppUrl } from "../../hostedPairing";
 import { useThreadRefs, useThreadShell } from "../../state/entities";
 import { useEnvironmentIdentities } from "../../state/environments";
@@ -47,7 +48,10 @@ export function MarkdownThreadLink(props: {
           const metadata = lookup.data?.[ref.threadId];
           return metadata ? [{ ref, metadata }] : [];
         })[0] ?? null);
-  const missing = target === null && (settled || !reachable);
+  // Opening a thread on a VM this machine handed out connects this client to it.
+  const onManagedVm =
+    useManagedBoatCloudMachine(reachable ? null : writtenRef.environmentId) !== null;
+  const missing = target === null && (settled || (!reachable && !onManagedVm));
   const guess = missing && props.link.environmentId === null;
   const refs = useThreadRefs(guess);
   const remoteRef = guess

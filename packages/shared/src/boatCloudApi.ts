@@ -226,7 +226,8 @@ export const BOAT_MACHINE_SPECS: Readonly<
   small: { vcpu: 2, memoryGB: 4, rate: 0.5 },
   default: { vcpu: 4, memoryGB: 8, rate: 1 },
   large: { vcpu: 8, memoryGB: 16, rate: 2 },
-  xlarge: { vcpu: 16, memoryGB: 32, rate: 4 },
+  // Boat's help lists Extra large at $0.20/h against the default's $0.036/h.
+  xlarge: { vcpu: 16, memoryGB: 32, rate: 0.2 / 0.036 },
 };
 
 /** `GET /limits`: the account's plan limits and prices; only what Boat cloud reads. */
