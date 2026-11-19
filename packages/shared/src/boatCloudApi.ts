@@ -3,7 +3,12 @@ import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import { HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/http";
-import type { BoatCloudEnvironment, BoatCloudMachineType } from "@t3tools/contracts";
+import {
+  BOAT_CLOUD_MACHINE_TYPES,
+  type BoatCloudEnvironment,
+  type BoatCloudMachineType,
+  type BoatCloudMachineTypeOption,
+} from "@t3tools/contracts";
 
 /**
  * A thin client for the parts of the Boat v1 API that Boat cloud uses. It runs
@@ -248,6 +253,36 @@ export const BoatLimits = Schema.Struct({
   creditSecondsPerDollar: Schema.optional(Schema.NullOr(Schema.Number)),
 });
 export type BoatLimits = typeof BoatLimits.Type;
+
+/**
+ * Every size with its hourly price: Boat's VM-hour price times the billing multiplier Boat
+ * reported for a VM of that size, else times the size ratio Boat documents.
+ */
+export function machineTypeOptions(
+  limits: BoatLimits | null,
+  observedMultipliers: ReadonlyMap<string, number> = new Map(),
+): Array<BoatCloudMachineTypeOption> {
+  const vmHourDollars =
+    limits?.overagePrices?.vmHourDollars ??
+    (limits?.creditSecondsPerDollar ? 3600 / limits.creditSecondsPerDollar : null);
+  return BOAT_CLOUD_MACHINE_TYPES.map((id) => {
+    const spec = BOAT_MACHINE_SPECS[id];
+    const observed = observedMultipliers.get(id);
+    // Boat's price is for the default size, whose multiplier is 1.
+    const multiplier = observed ?? spec.rate;
+    const listed = limits?.machineTypes?.find((entry) => entry.type === id);
+    return {
+      id,
+      vcpu: spec.vcpu,
+      memoryGB: spec.memoryGB,
+      hourlyDollars:
+        vmHourDollars === null || vmHourDollars === undefined ? null : vmHourDollars * multiplier,
+      priceSource: observed !== undefined || id === "default" ? "boat" : "derived",
+      available: listed?.available ?? true,
+      reason: listed?.reason ?? null,
+    };
+  });
+}
 
 const ErrorBody = Schema.Struct({
   code: Schema.optional(Schema.String),

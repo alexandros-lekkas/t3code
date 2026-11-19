@@ -3,6 +3,7 @@ import {
   BOAT_CLOUD_REQUIRED_SCOPES,
   BOAT_CLOUD_SETUP_STEPS,
   type BoatCloudEnvironmentAccess,
+  type BoatCloudConfigureMachinesInput,
   type BoatCloudMachine,
   type BoatCloudSetup,
   type BoatCloudSetupStep,
@@ -23,9 +24,12 @@ import { appAtomRegistry } from "../../state/atom-registry";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useEnvironments } from "../../state/environments";
 import { boatCloudHoldersAtom, boatCloudOutdatedMachinesAtom } from "../boatCloud/boatCloud";
+import { BoatCloudMachineTypeRows } from "../boatCloud/BoatCloudMachineTypes";
+import { availableMachineTypes } from "../boatCloud/machineTypeChoice";
 import { StepGlyph, type StepState } from "../boatCloud/BoatCloudSteps";
 import {
   configurePhoneBoatCloudEnvironment,
+  configurePhoneBoatCloudMachines,
   connectPhoneBoatCloud,
   disconnectPhoneBoatCloud,
   phoneBoatCloudAtom,
@@ -95,13 +99,18 @@ export function BoatCloudSettings() {
   );
   const runSetup = useAtomCommand(
     serverEnvironment.runBoatCloudSetup,
-    gt("Set up {product}", { product: "Boat cloud" }),
+    gt("Set up {product}", { product: "Boat" }),
   );
   const configureEnvironment = useAtomCommand(
     serverEnvironment.configureBoatCloudEnvironment,
     gt("Change the {product} environment", { product: "Boat" }),
   );
   const [environmentBusy, setEnvironmentBusy] = useState(false);
+  const configureMachines = useAtomCommand(
+    serverEnvironment.configureBoatCloudMachines,
+    gt("Change how {product} hands out VMs", { product: "Boat" }),
+  );
+  const [machinesBusy, setMachinesBusy] = useState(false);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads this phone's Boat key and VMs from Boat when the page opens
   useEffect(() => {
@@ -211,6 +220,23 @@ export function BoatCloudSettings() {
     setEnvironmentBusy(false);
   };
 
+  // Like the environment, the phone and every machine keep the same sizes and sharing.
+  const applyMachines = async (input: BoatCloudConfigureMachinesInput) => {
+    setMachinesBusy(true);
+    const [phoneError] = await Promise.all([
+      phone.connected ? configurePhoneBoatCloudMachines(input) : null,
+      ...holders
+        .filter((holder) => holder.status.connected)
+        .map((holder) => configureMachines({ environmentId: holder.environmentId, input })),
+    ]);
+    if (phoneError)
+      Dialog.alert(
+        gt("Could not change this phone's {product} VMs", { product: "Boat" }),
+        phoneError,
+      );
+    setMachinesBusy(false);
+  };
+
   const startSetup = () => {
     if (machineHolder) {
       void runSetup({ environmentId: machineHolder.environmentId, input: {} });
@@ -223,7 +249,7 @@ export function BoatCloudSettings() {
     <View className="mt-5 gap-5">
       <SettingsSection
         // oxlint-disable-next-line t3code/no-untranslated-copy -- product name
-        title="Boat cloud"
+        title="Boat"
         footer={
           connected
             ? undefined
@@ -350,6 +376,31 @@ export function BoatCloudSettings() {
                 </Separated>
               ))
             : null}
+        </SettingsSection>
+      ) : null}
+
+      {connected && availableMachineTypes(status.machineTypes).length > 0 ? (
+        <SettingsSection
+          title={gt("Default size")}
+          footer={gt("Each new thread starts on this size unless it picks another.")}
+        >
+          <BoatCloudMachineTypeRows
+            machineTypes={status.machineTypes}
+            selected={status.defaultMachineType}
+            disabled={machinesBusy}
+            onSelect={(defaultMachineType) => void applyMachines({ defaultMachineType })}
+          />
+        </SettingsSection>
+      ) : null}
+
+      {connected ? (
+        <SettingsSection footer={gt("A new thread may join a running VM that has room.")}>
+          <SettingsSwitchRow
+            label={gt("Share machines")}
+            value={status.shareMachines}
+            disabled={machinesBusy}
+            onValueChange={(shareMachines) => void applyMachines({ shareMachines })}
+          />
         </SettingsSection>
       ) : null}
 

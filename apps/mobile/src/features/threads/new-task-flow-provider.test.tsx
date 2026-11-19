@@ -116,6 +116,7 @@ vi.mock("../boatCloud/boatCloud", () => ({
   boatCloudMachinesAtom: Atom.make(new Map([["vm", "https://vm-3773.on.boat.dev"]])),
   useBoatCloudStarter: mocks.boatCloudStarter,
   useBoatCloudProviderDrivers: () => null,
+  useBoatCloudStarterStatus: () => ({ defaultMachineType: "default", machineTypes: [] }),
   prepareBoatCloudProject: mocks.prepareBoatCloud,
 }));
 
@@ -429,11 +430,16 @@ it("starts a Boat VM only when the first send asks, always in a new worktree", a
   act(() => screen.current.setStartFromOrigin(false));
   expect(screen.current.workspaceMode).toBe("worktree");
   expect(screen.current.startFromOrigin).toBe(true);
+  expect(screen.current.boatCloud?.machineType).toBe("default");
+  act(() => screen.current.chooseBoatCloudMachineType("large"));
 
   mocks.prepareBoatCloud.mockResolvedValue(vm);
   await act(async () => screen.current.startBoatCloud());
   expect(mocks.prepareBoatCloud).toHaveBeenCalledWith(
-    expect.objectContaining({ repositoryUrl: "https://github.com/fork/t3code.git" }),
+    expect.objectContaining({
+      repositoryUrl: "https://github.com/fork/t3code.git",
+      machineType: "large",
+    }),
   );
   expect(screen.current.draftKey).toBe(draftKey);
   expect(screen.current.selectedProject).toEqual(vm);

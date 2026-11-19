@@ -366,7 +366,7 @@ export function CommandPalette(props: {
       actions.unshift({
         key: "boatCloud",
         kind: "action",
-        title: gt("Run on {product}", { product: "Boat cloud" }),
+        title: gt("Run on {product}", { product: "Boat" }),
         searchTerms: ["boat", "cloud", "vm", "remote", "new thread"],
         run: () => {
           chooseBoatCloud();

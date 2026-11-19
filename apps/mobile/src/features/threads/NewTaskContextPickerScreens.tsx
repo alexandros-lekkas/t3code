@@ -32,6 +32,7 @@ import { SymbolView } from "../../components/ui/AppSymbol";
 import { AppText as Text } from "../../components/ui/AppText";
 import { EnvironmentMachineSymbol } from "../../components/EnvironmentMachineSymbol";
 import { BoatIcon } from "../../components/BoatIcon";
+import { BoatCloudMachineTypeRows } from "../boatCloud/BoatCloudMachineTypes";
 import { ThemedSwitch } from "../../components/ui/ThemedSwitch";
 import { cn } from "../../lib/cn";
 import { useEnvironmentScope } from "../../state/session";
@@ -158,7 +159,7 @@ function BoatCloudPickerRow(props: {
     <Pressable
       accessibilityRole="radio"
       // oxlint-disable-next-line t3code/no-untranslated-copy -- product name
-      accessibilityLabel="Boat cloud"
+      accessibilityLabel="Boat"
       accessibilityState={{ checked: props.selected, disabled: props.disabled }}
       disabled={props.disabled}
       onPress={props.onPress}
@@ -168,7 +169,7 @@ function BoatCloudPickerRow(props: {
       <View className="min-w-0 flex-1 gap-1">
         <Text className="text-base font-t3-medium text-foreground" numberOfLines={1}>
           {/* oxlint-disable-next-line t3code/no-untranslated-copy -- product name */}
-          Boat cloud
+          Boat
         </Text>
       </View>
       {props.selected ? (
@@ -222,6 +223,12 @@ export function NewTaskEnvironmentPickerRouteScreen() {
   const flow = useNewTaskFlow();
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
+  // A draft already on a VM keeps that VM's size; only a start still to come picks one.
+  const boatCloudSizes =
+    flow.boatCloud !== null &&
+    !flow.boatCloud.sendPending &&
+    (flow.boatCloud.startsOnSend || !flow.boatCloud.selected) &&
+    flow.boatCloud.machineTypes.length > 0;
   return (
     <View className="flex-1 bg-sheet" collapsable={false}>
       <AppBar title={gt("Environment")} hideBottomBorder onBack={() => navigation.goBack()} />
@@ -261,11 +268,27 @@ export function NewTaskEnvironmentPickerRouteScreen() {
                 disabled={flow.switchingToEnvironmentId !== null}
                 onPress={() => {
                   void Haptics.selectionAsync();
-                  if (flow.chooseBoatCloud()) navigation.goBack();
+                  // With sizes to pick, the picker stays open on them.
+                  if (flow.chooseBoatCloud() && !boatCloudSizes) navigation.goBack();
                 }}
               />
             ) : null}
           </PickerSurface>
+          {boatCloudSizes && flow.boatCloud?.selected ? (
+            <View className="mt-6">
+              <PickerSurface>
+                <BoatCloudMachineTypeRows
+                  machineTypes={flow.boatCloud.machineTypes}
+                  selected={flow.boatCloud.machineType}
+                  onSelect={(machineType) => {
+                    void Haptics.selectionAsync();
+                    flow.chooseBoatCloudMachineType(machineType);
+                    navigation.goBack();
+                  }}
+                />
+              </PickerSurface>
+            </View>
+          ) : null}
         </ScrollView>
       </ScreenContent>
     </View>
