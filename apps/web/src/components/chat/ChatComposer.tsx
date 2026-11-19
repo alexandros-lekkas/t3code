@@ -2197,7 +2197,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       submitAfterDictation(() => submitComposerRef.current(dispatchMode, submissionIntent));
       return false;
     }
-    if (submissionBlocked || !readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) {
+    // The prop, not a fresh grant read: a sleeping Boat VM has no grant until the send wakes it.
+    if (submissionBlocked || !canOperateThread) {
       event?.preventDefault();
       return false;
     }

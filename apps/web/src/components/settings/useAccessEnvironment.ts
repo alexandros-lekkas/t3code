@@ -16,7 +16,7 @@ export function useAccessEnvironment(requested: EnvironmentId | null) {
     (environment) =>
       environment.environmentId === primaryEnvironmentId ||
       environment.environmentId === requested ||
-      environment.entry.enabled,
+      (environment.entry.enabled && !environment.boatCloud),
   );
   const environmentId = resolveAccessEnvironmentId({
     primaryEnvironmentId,

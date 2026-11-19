@@ -1416,6 +1416,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [msg("add pair backend host code ssh config agent tunnel saved t3 connect")],
   },
   {
+    id: "boat-cloud",
+    title: msg("Boat cloud"),
+    to: "/settings/connections",
+    searchTerms: [msg("cloud remote vm sandbox boat.dev api key snapshot")],
+  },
+  {
     id: "load-balancing",
     title: msg("Load balancing"),
     to: "/settings/connections",

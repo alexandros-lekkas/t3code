@@ -23,7 +23,11 @@ import {
 import { bootstrapRemoteBearerSession } from "@t3tools/client-runtime/authorization";
 import { fetchRemoteEnvironmentDescriptor } from "@t3tools/client-runtime/environment";
 import { managedRelayAccountChanges, managedRelaySessionAtom } from "@t3tools/client-runtime/relay";
-import { EnvironmentRpcRequestObserver } from "@t3tools/client-runtime/rpc";
+import {
+  EnvironmentRpcRequestObserver,
+  EnvironmentRpcUnavailableError,
+  EnvironmentWaker,
+} from "@t3tools/client-runtime/rpc";
 import {
   AuthStandardClientScopes,
   type DesktopBridge,
@@ -863,6 +867,24 @@ const layerRpcRequestObserver = Layer.succeed(
   }),
 );
 
+const layerEnvironmentWaker = Layer.succeed(
+  EnvironmentWaker,
+  EnvironmentWaker.of({
+    wakeIfAsleep: Effect.fn("web.connectionPlatform.wakeIfAsleep")(function* (environmentId) {
+      // Imported on use: the Boat cloud module reaches back into the connection runtime.
+      const woken = yield* Effect.promise(() =>
+        import("../boatCloud").then((boatCloud) => boatCloud.wakeBoatCloudIfAsleep(environmentId)),
+      );
+      if (!woken) {
+        return yield* new EnvironmentRpcUnavailableError({
+          environmentId,
+          message: "The Boat cloud machine did not wake up.",
+        });
+      }
+    }),
+  }),
+);
+
 type ConnectionPlatformLayerSource =
   | typeof ConnectionStorage.layer
   | typeof layerConnectivity
@@ -870,7 +892,8 @@ type ConnectionPlatformLayerSource =
   | typeof layerCapabilities
   | typeof layerPlatformConnectionSource
   | typeof layerEnvironmentOwnedDataCleanup
-  | typeof layerRpcRequestObserver;
+  | typeof layerRpcRequestObserver
+  | typeof layerEnvironmentWaker;
 
 export const layer: Layer.Layer<
   Layer.Success<ConnectionPlatformLayerSource>,
@@ -884,4 +907,5 @@ export const layer: Layer.Layer<
   layerPlatformConnectionSource,
   layerEnvironmentOwnedDataCleanup,
   layerRpcRequestObserver,
+  layerEnvironmentWaker,
 );

@@ -21,10 +21,7 @@ export function isBoatCloudHttpBaseUrl(httpBaseUrl: string | null | undefined): 
   }
 }
 
-/**
- * The API key scopes Boat cloud uses, in Boat's own scope names.
- * @public
- */
+/** The API key scopes Boat cloud uses, in Boat's own scope names. */
 export const BOAT_CLOUD_REQUIRED_SCOPES = [
   "sandbox.create",
   "sandbox.read",
@@ -46,7 +43,6 @@ export const BOAT_CLOUD_REQUIRED_SCOPES = [
   "account.admin",
 ] as const;
 
-/** @public */
 export const BOAT_CLOUD_SETUP_STEPS = [
   "create-vm",
   "install-server",
@@ -166,10 +162,7 @@ export type BoatCloudConfigureEnvironmentInput = typeof BoatCloudConfigureEnviro
 export const BoatCloudEmptyInput = Schema.Struct({});
 export type BoatCloudEmptyInput = typeof BoatCloudEmptyInput.Type;
 
-/**
- * How many repositories the snapshot checks out.
- * @public
- */
+/** How many repositories the snapshot checks out. */
 export const BOAT_CLOUD_SNAPSHOT_REPOSITORIES = 10;
 
 export const BoatCloudRunSetupInput = Schema.Struct({

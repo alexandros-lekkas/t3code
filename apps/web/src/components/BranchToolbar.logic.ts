@@ -407,3 +407,14 @@ export function shouldIncludeBranchPickerItem(input: {
     lowerItemValue.includes(sanitizedQuery)
   );
 }
+
+/** Boat cloud in the Run on menu: a VM is picked for the draft when it sends. */
+export interface CloudEnvironmentOption {
+  readonly selected: boolean;
+  readonly onSelect: () => void;
+  /** Back to the machine the draft is on now. */
+  readonly onLeave: () => void;
+}
+
+/** Radio value for Boat cloud; it cannot collide with server-minted environment IDs. */
+export const BOAT_CLOUD_VALUE = "cloud";
