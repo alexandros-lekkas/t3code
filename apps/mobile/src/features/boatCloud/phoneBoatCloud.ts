@@ -66,6 +66,11 @@ const DISCONNECTED: BoatCloudStatus = {
   environment: null,
   environments: [],
   environmentsError: null,
+  // The phone keeps the machine holder's defaults: a VM per thread, at the smallest size.
+  shareMachines: false,
+  defaultMachineType: "small",
+  machineTypes: [],
+  environmentUsage: [],
 };
 
 export const phoneBoatCloudAtom = Atom.make<BoatCloudStatus>(DISCONNECTED).pipe(
@@ -164,6 +169,11 @@ export function refreshPhoneBoatCloud(): Promise<void> {
             repositories: [],
             backedUpAt: null,
             environment: sandbox.environment ?? null,
+            machineType: sandbox.type ?? null,
+            vcpu: sandbox.vcpu ?? null,
+            memoryGB: sandbox.memoryGB ?? null,
+            usage: null,
+            stats: null,
           })),
         environment,
         environments: listed,
@@ -191,7 +201,14 @@ const spares = makeSpareKeeper();
 /** Keeps one spare VM ready for this phone's next start. */
 const keepSpare = (api: BoatApi, environment: string | null) =>
   Effect.suspend(() =>
-    snapshotName === null ? Effect.void : spares.keep(api, snapshotName, environment),
+    snapshotName === null
+      ? Effect.void
+      : spares.keep(
+          api,
+          snapshotName,
+          environment,
+          appAtomRegistry.get(phoneBoatCloudAtom).defaultMachineType,
+        ),
   );
 
 let loaded: Promise<void> | null = null;
@@ -343,16 +360,19 @@ export function startOnPhone(input: {
           retryable: false,
         });
       }
-      const { environment } = appAtomRegistry.get(phoneBoatCloudAtom);
+      const { environment, shareMachines, defaultMachineType } =
+        appAtomRegistry.get(phoneBoatCloudAtom);
       const started = yield* startMachine({
         api,
         repository,
         baseBranch: input.baseBranch,
         environment,
         snapshot: snapshotName,
-        readySpare: yield* spares.take(snapshotName, environment),
+        readySpare: yield* spares.take(snapshotName, environment, defaultMachineType),
         // The phone keeps no record of stopped VMs, so it resumes them only for load.
         knownWorkspaceRoots: () => [],
+        shareMachines,
+        machineType: defaultMachineType,
         paired: input.paired ?? [],
         report: input.report,
       });
