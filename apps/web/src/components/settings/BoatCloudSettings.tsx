@@ -8,7 +8,7 @@ import {
   type EnvironmentId,
 } from "@t3tools/contracts";
 import { msg, useGT, useMessages } from "gt-react";
-import { CheckIcon, CircleDotIcon, CircleIcon, XIcon } from "lucide-react";
+import { CheckIcon, CircleIcon, XIcon } from "lucide-react";
 import { type FormEvent, useState } from "react";
 
 import {
@@ -22,6 +22,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { BoatIcon } from "../Icons";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { Spinner } from "../ui/spinner";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
 import { SecretInput } from "./SecretInput";
@@ -55,12 +56,10 @@ const ACCESS_KEYS = Object.keys(ACCESS_LABELS) as ReadonlyArray<keyof BoatCloudE
 
 type StepState = "done" | "active" | "failed" | "pending";
 
-// Static glyphs: setup takes minutes, and a spinner would repaint the whole time.
 function StepIcon({ state }: { readonly state: StepState }) {
   if (state === "done") return <CheckIcon aria-hidden className="size-4 text-success-foreground" />;
   if (state === "failed") return <XIcon aria-hidden className="size-4 text-error-foreground" />;
-  if (state === "active")
-    return <CircleDotIcon aria-hidden className="size-4 text-info-foreground" />;
+  if (state === "active") return <Spinner aria-hidden size="md" tone="muted" />;
   return <CircleIcon aria-hidden className="size-4 text-muted-foreground" />;
 }
 
@@ -351,20 +350,17 @@ export function BoatCloudSettings() {
                   : gt("Builds the image new VMs start from.")
           }
           control={
-            <Button
-              variant="outline"
-              size="xs"
-              disabled={setup.status === "running"}
-              onClick={rebuild}
-            >
-              {setup.status === "running"
-                ? gt("Setting up")
-                : setup.status === "ready"
+            setup.status === "running" ? (
+              <span className="text-xs text-muted-foreground">{gt("Setting up")}</span>
+            ) : (
+              <Button variant="outline" size="xs" onClick={rebuild}>
+                {setup.status === "ready"
                   ? gt("Rebuild snapshot")
                   : setup.status === "failed"
                     ? gt("Retry")
                     : gt("Set up")}
-            </Button>
+              </Button>
+            )
           }
         />
       ) : null}

@@ -1,12 +1,13 @@
 import { useAtomValue } from "@effect/atom-react";
 import type { BoatCloudStartStep, BoatCloudStepProgress } from "@t3tools/contracts";
 import { msg, useGT, useMessages } from "gt-react";
-import { CircleCheckIcon, CircleDotIcon, CircleIcon, CircleXIcon } from "lucide-react";
+import { CircleCheckIcon, CircleIcon, CircleXIcon } from "lucide-react";
 
 import { boatCloudStartProgressAtom, clearBoatCloudStartProgress } from "../../boatCloud";
 import type { DraftId, DraftSessionState } from "../../composerDraftStore";
 import { cn } from "../../lib/utils";
 import { BoatIcon } from "../Icons";
+import { Spinner } from "../ui/spinner";
 import type { ComposerBannerStackItem } from "./ComposerBannerStack";
 
 const STEP_LABELS: Record<BoatCloudStartStep, string> = {
@@ -27,7 +28,6 @@ const STEP_STATE_LABELS: Record<BoatCloudStepProgress["state"], string> = {
   failed: msg("Failed"),
 };
 
-// Static on purpose: a start can take a minute, and a spinner repaints the whole time.
 function StepIcon({ state }: { readonly state: BoatCloudStepProgress["state"] }) {
   switch (state) {
     case "done":
@@ -35,7 +35,7 @@ function StepIcon({ state }: { readonly state: BoatCloudStepProgress["state"] })
     case "failed":
       return <CircleXIcon aria-hidden className="size-3.5 shrink-0 text-destructive-foreground" />;
     case "active":
-      return <CircleDotIcon aria-hidden className="size-3.5 shrink-0 text-foreground" />;
+      return <Spinner aria-hidden size="sm" className="shrink-0" />;
     case "pending":
       return <CircleIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />;
   }
