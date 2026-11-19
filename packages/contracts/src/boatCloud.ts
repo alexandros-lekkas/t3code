@@ -238,7 +238,7 @@ export const BoatCloudSession = Schema.Struct({
 });
 export type BoatCloudSession = typeof BoatCloudSession.Type;
 
+/** The message only: what went wrong on Boat or the VM stays in the server's log. */
 export class BoatCloudError extends Schema.TaggedError<BoatCloudError>()("BoatCloudError", {
   message: Schema.String,
-  cause: Schema.optional(Schema.Defect()),
 }) {}
