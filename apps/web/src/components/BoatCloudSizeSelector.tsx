@@ -57,7 +57,7 @@ const SIZE_LETTERS: Record<BoatCloudMachineType, string> = {
   xlarge: "XL",
 };
 
-/** A size as its clothing-size letter in a small muted tile, sized like the icons beside it. */
+/** A size as its clothing-size letter in a small muted square tile, sized like the icons beside it. */
 function BoatCloudSizeBadge({
   machineType,
   size,
@@ -66,16 +66,19 @@ function BoatCloudSizeBadge({
   readonly size: ComposerControlSize;
 }) {
   if (!isMachineType(machineType)) return null;
+  const letters = SIZE_LETTERS[machineType];
+  // A square the size of the icons beside it; two letters shrink to fit rather than widen it.
+  const wide = letters.length > 1;
   return (
     <span
       aria-hidden
       data-composer-control-icon
       className={cn(
-        "inline-flex shrink-0 items-center justify-center rounded-xs border border-muted-foreground/45 font-semibold text-muted-foreground tabular-nums leading-none tracking-tighter",
-        size === "xs" ? "h-3 w-3.5 text-5xs" : "h-3.5 w-4 text-4xs",
+        "inline-flex shrink-0 items-center justify-center overflow-hidden whitespace-nowrap rounded-xs border border-muted-foreground/45 font-semibold text-muted-foreground tabular-nums leading-none tracking-tighter",
+        size === "xs" ? "size-3 text-5xs" : cn("size-4", wide ? "text-5xs" : "text-4xs"),
       )}
     >
-      {SIZE_LETTERS[machineType]}
+      {letters}
     </span>
   );
 }
