@@ -262,6 +262,8 @@ export class BoatCloudService extends Context.Service<
   BoatCloudService,
   {
     readonly subscribe: Stream.Stream<BoatCloudStatus>;
+    /** The status now, then as it changes, without the Boat reads `subscribe` starts. */
+    readonly changes: Stream.Stream<BoatCloudStatus>;
     readonly connect: (
       input: BoatCloudConnectInput,
     ) => Effect.Effect<BoatCloudStatus, BoatCloudError>;
@@ -1397,6 +1399,7 @@ const make = Effect.gen(function* () {
         Effect.as(SubscriptionRef.changes(statusRef)),
       ),
     ),
+    changes: SubscriptionRef.changes(statusRef),
     connect,
     disconnect,
     runSetup,
