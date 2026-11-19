@@ -414,6 +414,7 @@ import {
 import { SecretRequestAnswerInput, SecretRequestError } from "./secretRequest.ts";
 import {
   BoatCloudAcquireInput,
+  BoatCloudClaudeTokenInput,
   BoatCloudConfigureEnvironmentInput,
   BoatCloudConfigureMachinesInput,
   BoatCloudConnectInput,
@@ -617,6 +618,7 @@ export const WS_METHODS = {
   boatCloudWakeMachine: "boatCloud.wakeMachine",
   boatCloudDeleteMachine: "boatCloud.deleteMachine",
   boatCloudRefreshUsage: "boatCloud.refreshUsage",
+  boatCloudClaudeToken: "boatCloud.claudeToken",
 
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
   cloudInstallRelayClient: "cloud.installRelayClient",
@@ -2298,6 +2300,12 @@ const WsBoatCloudRefreshUsageRpc = Rpc.make(WS_METHODS.boatCloudRefreshUsage, {
   error: BoatCloudErrors,
 });
 
+const WsBoatCloudClaudeTokenRpc = Rpc.make(WS_METHODS.boatCloudClaudeToken, {
+  payload: BoatCloudClaudeTokenInput,
+  success: BoatCloudStatus,
+  error: BoatCloudErrors,
+});
+
 const WsBoatCloudAcquireRpc = Rpc.make(WS_METHODS.boatCloudAcquire, {
   payload: BoatCloudAcquireInput,
   success: BoatCloudSession,
@@ -2455,6 +2463,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsBoatCloudWakeMachineRpc,
   WsBoatCloudDeleteMachineRpc,
   WsBoatCloudRefreshUsageRpc,
+  WsBoatCloudClaudeTokenRpc,
   WsServerReportClientActivityRpc,
   WsCloudGetRelayClientStatusRpc,
   WsCloudInstallRelayClientRpc,

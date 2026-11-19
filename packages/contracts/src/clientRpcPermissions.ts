@@ -88,6 +88,7 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.boatCloudStopMachine]: AuthOrchestrationOperateScope,
   [WS_METHODS.boatCloudWakeMachine]: AuthOrchestrationOperateScope,
   [WS_METHODS.boatCloudDeleteMachine]: AuthSettingsWriteScope,
+  [WS_METHODS.boatCloudClaudeToken]: AuthSettingsWriteScope,
   [ORCHESTRATION_V2_WS_METHODS.stopWorkflow]: AuthOrchestrationOperateScope,
   // Force stop kills agent processes, as Stop on a terminal does.
   [ORCHESTRATION_V2_WS_METHODS.forceStopThread]: AuthOrchestrationOperateScope,

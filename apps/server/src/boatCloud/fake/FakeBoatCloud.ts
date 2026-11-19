@@ -18,6 +18,7 @@ import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../../config.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
 import * as BoatCloud from "../BoatCloudService.ts";
+import * as BoatLocalSignIns from "../BoatLocalSignIns.ts";
 import {
   FAKE_ACCOUNT,
   FAKE_RUNNING_VM,
@@ -41,12 +42,15 @@ export const FAKE_SEED_ENV_VAR = "T3CODE_BOAT_CLOUD_FAKE_SEED";
 const FAKE_NO_AGENTS_ENV_VAR = "T3CODE_BOAT_CLOUD_FAKE_NO_AGENTS";
 /** Simulates an account without Boat's GitHub app. */
 const FAKE_NO_GITHUB_ENV_VAR = "T3CODE_BOAT_CLOUD_FAKE_NO_GITHUB";
+/** Simulates this machine signed in to Claude and Codex, with dummy values; unset, it has none. */
+const FAKE_LOCAL_SIGN_INS_ENV_VAR = "T3CODE_BOAT_CLOUD_FAKE_LOCAL_SIGNINS";
 
 interface FakeLayerOptions {
   readonly delayScale?: number;
   readonly seed?: boolean;
   readonly noAgents?: boolean;
   readonly noGithub?: boolean;
+  readonly localSignIns?: boolean;
 }
 
 const FAKE_API_KEY = "fake-boat-key";
@@ -200,6 +204,7 @@ export const layerFake = (options: FakeLayerOptions = {}) =>
             layerFakeHttp(options),
             layerMemorySecretStore,
             layerFakeConfig(options.seed ?? false),
+            BoatLocalSignIns.layerStatic(options.localSignIns ?? false),
           ),
         ),
       ),
@@ -260,16 +265,23 @@ const layerFakeLocal = Layer.effect(
   }),
 );
 
-/** The real BoatCloudService, or the fake one when the env var is set on a dev server. */
-export const layerWith = <E, R>(fakeLocal: Layer.Layer<FakeBoatLocal, E, R>) => {
+/**
+ * The real BoatCloudService, reading this machine's sign-ins with `realSignIns`, or the fake
+ * one when the env var is set on a dev server.
+ */
+export const layerWith = <E, R, SE, SR>(
+  fakeLocal: Layer.Layer<FakeBoatLocal, E, R>,
+  realSignIns: Layer.Layer<BoatLocalSignIns.BoatLocalSignIns, SE, SR>,
+) => {
   type Selected = Layer.Layer<
     BoatCloud.BoatCloudService,
-    E,
+    E | SE,
     | R
-    | Layer.Services<typeof BoatCloud.layer>
+    | SR
+    | Exclude<Layer.Services<typeof BoatCloud.layer>, BoatLocalSignIns.BoatLocalSignIns>
     | Exclude<Layer.Services<ReturnType<typeof layerFake>>, FakeBoatLocal>
   >;
-  const real: Selected = BoatCloud.layer;
+  const real: Selected = BoatCloud.layer.pipe(Layer.provide(realSignIns));
   const fake = (options: FakeLayerOptions): Selected =>
     layerFake(options).pipe(Layer.provide(fakeLocal));
   return Layer.unwrap(
@@ -293,9 +305,10 @@ export const layerWith = <E, R>(fakeLocal: Layer.Layer<FakeBoatLocal, E, R>) => 
         seed: yield* on(FAKE_SEED_ENV_VAR),
         noAgents: yield* on(FAKE_NO_AGENTS_ENV_VAR),
         noGithub: yield* on(FAKE_NO_GITHUB_ENV_VAR),
+        localSignIns: yield* on(FAKE_LOCAL_SIGN_INS_ENV_VAR),
       });
     }).pipe(Effect.orDie),
   );
 };
 
-export const layer = layerWith(layerFakeLocal);
+export const layer = layerWith(layerFakeLocal, BoatLocalSignIns.layer);

@@ -5,11 +5,12 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import { assert, describe, it } from "@effect/vitest";
-import type { BoatCloudStatus } from "@t3tools/contracts";
+import { BOAT_CLOUD_NO_LOCAL_SIGN_INS, type BoatCloudStatus } from "@t3tools/contracts";
 
 import {
   ADD_PROJECT_SCRIPT,
   VM_BACKUP_ARCHIVE,
+  agentSignInsScript,
   backupScript,
   baseBranchCheckScript,
   boatCloudBlocker,
@@ -21,6 +22,7 @@ import {
   parseStats,
   parseRepository,
   pickMachine,
+  prepareSnapshotScript,
   snapshotBuildOf,
   snapshotNameOf,
   prepareWorktreeScript,
@@ -273,6 +275,7 @@ describe("boatCloudBlocker", () => {
     defaultMachineType: "small",
     machineTypes: [],
     environmentUsage: [],
+    localSignIns: BOAT_CLOUD_NO_LOCAL_SIGN_INS,
     ...overrides,
   });
 
@@ -292,6 +295,59 @@ describe("boatCloudBlocker", () => {
     assert.isNull(boatCloudBlocker(status()));
     // Unknown sign-ins leave the VM's own server to decide.
     assert.isNull(boatCloudBlocker(status({ environments: [environment(null)] })));
+  });
+
+  it("counts this machine's sign-ins only while they are passed", () => {
+    const local = (enabled: boolean) => ({
+      ...BOAT_CLOUD_NO_LOCAL_SIGN_INS,
+      enabled,
+      available: [{ driver: "codex" as const, source: "login" as const, expiresAt: null }],
+    });
+    const withoutBoat = { environments: [environment([])] };
+    assert.isNull(boatCloudBlocker(status({ ...withoutBoat, localSignIns: local(true) })));
+    assert.strictEqual(
+      boatCloudBlocker(status({ ...withoutBoat, localSignIns: local(false) })),
+      "no-agents",
+    );
+  });
+});
+
+describe("agentSignInsScript", () => {
+  const run = (script: string, env: Record<string, string>) =>
+    NodeChildProcess.spawnSync(
+      "bash",
+      ["-c", `${script}printf '%s|%s' "\${CLAUDE_CODE_OAUTH_TOKEN-}" "\${OPENAI_API_KEY-}"`],
+      { env: { PATH: process.env.PATH ?? "", ...env }, encoding: "utf8" },
+    ).stdout;
+  const signIns = {
+    claude: { CLAUDE_CODE_OAUTH_TOKEN: "dummy-claude-'token" },
+    codex: { environment: { OPENAI_API_KEY: "dummy-openai-key" } },
+  };
+
+  it("fills each provider the Boat profile left unsigned, and keeps the profile's own", () => {
+    const script = agentSignInsScript(signIns);
+    assert.strictEqual(run(script, {}), "dummy-claude-'token|dummy-openai-key");
+    // A Boat API key signs Claude in, so the holder's token stays out; Codex still gets its.
+    assert.strictEqual(run(script, { ANTHROPIC_API_KEY: "boat" }), "|dummy-openai-key");
+    assert.strictEqual(run(script, { CHATGPT_ACCOUNT_ID: "boat" }), "dummy-claude-'token|");
+    assert.strictEqual(agentSignInsScript(null), "");
+  });
+
+  it("leaves no sign-in in the snapshot", () => {
+    const unset =
+      prepareSnapshotScript
+        .split("\n")
+        .find((line) => line.startsWith("systemctl --user unset-environment"))
+        ?.split(" ") ?? [];
+    for (const name of ["CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "T3_BOAT_CODEX_AUTH_DIGEST"]) {
+      assert.include(unset, name);
+    }
+    // The Codex file a holder wrote, told apart by its empty refresh token, goes too.
+    assert.include(prepareSnapshotScript, `"refresh_token":""`);
+    assert.include(
+      agentSignInsScript({ claude: null, codex: { authFile: "{}" } }),
+      "/home/user/.codex/auth.json",
+    );
   });
 });
 

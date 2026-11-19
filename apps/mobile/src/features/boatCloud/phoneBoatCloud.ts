@@ -7,6 +7,7 @@ import {
   BoatCloudMachineType,
   type BoatCloudSession,
   type BoatCloudStatus,
+  BOAT_CLOUD_NO_LOCAL_SIGN_INS,
 } from "@t3tools/contracts";
 import {
   BOAT_MACHINE_SPECS,
@@ -85,6 +86,8 @@ const DISCONNECTED: BoatCloudStatus = {
   defaultMachineType: "small",
   machineTypes: machineTypeOptions(null),
   environmentUsage: [],
+  // A phone has no Claude or Codex sign-in of its own to pass on.
+  localSignIns: BOAT_CLOUD_NO_LOCAL_SIGN_INS,
 };
 
 export const phoneBoatCloudAtom = Atom.make<BoatCloudStatus>(DISCONNECTED).pipe(

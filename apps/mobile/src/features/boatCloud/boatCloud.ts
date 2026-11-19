@@ -16,7 +16,7 @@ import {
   type BoatCloudStepProgress,
   type EnvironmentId,
 } from "@t3tools/contracts";
-import { boatCloudProviderDrivers } from "@t3tools/shared/boatCloudVm";
+import { boatCloudAgentDrivers } from "@t3tools/shared/boatCloudVm";
 import * as Effect from "effect/Effect";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { msg } from "gt-react-native";
@@ -120,11 +120,7 @@ export function useBoatCloudStarterStatus(
 
 /** The providers a new VM from this starter has sign-ins for, or null when unknown. */
 export function useBoatCloudProviderDrivers(preferredEnvironmentId: EnvironmentId | null) {
-  const status = useBoatCloudStarterStatus(preferredEnvironmentId);
-  const chosen = status?.environments.find(
-    (environment) => environment.name === status.environment,
-  );
-  return chosen?.agentCredentials ? boatCloudProviderDrivers(chosen.agentCredentials) : null;
+  return boatCloudAgentDrivers(useBoatCloudStarterStatus(preferredEnvironmentId));
 }
 
 function errorMessage(error: unknown) {

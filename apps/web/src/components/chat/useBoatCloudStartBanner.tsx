@@ -33,7 +33,9 @@ const WAKING_MACHINE_LABEL = msg("Waking the VM");
 const BLOCKER_LABELS: Record<BoatCloudBlocker, string> = {
   "not-connected": msg("Boat is not connected."),
   "no-snapshot": msg("Boat is still setting up."),
-  "no-agents": msg("The Boat environment has no Claude or ChatGPT sign-in."),
+  "no-agents": msg(
+    "Neither this computer nor the Boat environment has a Claude or ChatGPT sign-in.",
+  ),
 };
 
 const STEP_STATE_LABELS: Record<BoatCloudStepProgress["state"], string> = {

@@ -7,6 +7,7 @@ import {
   BoatCloudRootEnvironmentEdits,
   BoatCloudSecretFilePath,
   BoatCloudSetup,
+  BoatCloudLocalSignIn,
   BoatCloudSnapshot,
   OrchestratorMcpFailure,
   SecretRef,
@@ -58,6 +59,9 @@ const BoatCloudStatusTool = Tool.make("t3_boat_cloud_status", {
     environmentsError: Schema.NullOr(Schema.String),
     shareMachines: Schema.Boolean,
     defaultMachineType: BoatCloudMachineType,
+    useLocalSignIns: Schema.Boolean,
+    /** Which providers this machine can sign in on its VMs, and from where; never values. */
+    localSignIns: Schema.Array(BoatCloudLocalSignIn),
     machines: Schema.Array(Machine),
   }),
 })
@@ -68,17 +72,20 @@ const BoatCloudStatusTool = Tool.make("t3_boat_cloud_status", {
 const BoatCloudConfigureTool = Tool.make("t3_boat_cloud_configure", {
   ...shared,
   description:
-    "Set what new Boat VMs start with: the Boat environment, the default size, and whether threads share VMs. Running VMs keep theirs. Omitted fields are unchanged. Live full-access or default caller thread only.",
+    "Set what new Boat VMs start with: the Boat environment, the default size, whether threads share VMs, and whether VMs get this machine's own Claude and Codex sign-ins where the Boat environment has none. Running VMs keep theirs until they start or wake. Omitted fields are unchanged. Live full-access or default caller thread only.",
   parameters: Schema.Struct({
     boatEnvironment: Schema.optionalKey(BoatEnvironmentName),
     defaultMachineType: Schema.optionalKey(BoatCloudMachineType),
     shareMachines: Schema.optionalKey(Schema.Boolean),
+    useLocalSignIns: Schema.optionalKey(Schema.Boolean),
   }),
   success: Schema.Struct({
     environment: Schema.NullOr(Schema.String),
     environments: Schema.Array(BoatCloudEnvironment),
     shareMachines: Schema.Boolean,
     defaultMachineType: BoatCloudMachineType,
+    useLocalSignIns: Schema.Boolean,
+    localSignIns: Schema.Array(BoatCloudLocalSignIn),
   }),
 })
   .annotate(Tool.Destructive, true)

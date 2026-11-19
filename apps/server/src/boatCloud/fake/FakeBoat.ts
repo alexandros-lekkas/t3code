@@ -10,7 +10,6 @@ import {
   prepareSnapshotScript,
   restoreScript,
   snapshotNameOf,
-  startServerScript,
   statsScript,
 } from "@t3tools/shared/boatCloudVm";
 import * as Clock from "effect/Clock";
@@ -288,7 +287,8 @@ export const makeFakeBoat = Effect.fn("FakeBoat.make")(function* (options: FakeB
   /** Canned output for the scripts Boat cloud runs, told apart by what they contain. */
   const runCommand = Effect.fnUntraced(function* (sandbox: FakeSandbox, command: string) {
     const now = yield* Clock.currentTimeMillis;
-    if (command.startsWith(startServerScript(null))) {
+    // Only the server start can print this marker; sign-ins vary what comes before it.
+    if (command.includes(NOT_HOSTED_MARKER)) {
       yield* stepDelay(1500, 3000);
       sandbox.lastActive = now;
       const descriptor = encodeJson({ environmentId: yield* options.target.environmentId });

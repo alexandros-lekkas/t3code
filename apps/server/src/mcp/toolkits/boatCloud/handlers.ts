@@ -78,12 +78,14 @@ export const layer = McpToolAccess.toLayer(BoatCloudToolkit, {
         environmentsError: status.environmentsError,
         shareMachines: status.shareMachines,
         defaultMachineType: status.defaultMachineType,
+        useLocalSignIns: status.localSignIns.enabled,
+        localSignIns: status.localSignIns.available,
         machines: status.machines.map(withoutStats),
       };
     }),
   ),
   t3_boat_cloud_configure: McpToolAccess.writesEnvironment(
-    ({ boatEnvironment, defaultMachineType, shareMachines }, check) =>
+    ({ boatEnvironment, defaultMachineType, shareMachines, useLocalSignIns }, check) =>
       underCallerLock(
         () =>
           Effect.gen(function* () {
@@ -109,6 +111,7 @@ export const layer = McpToolAccess.toLayer(BoatCloudToolkit, {
               .configureMachines({
                 ...(defaultMachineType === undefined ? {} : { defaultMachineType }),
                 ...(shareMachines === undefined ? {} : { shareMachines }),
+                ...(useLocalSignIns === undefined ? {} : { useLocalSignIns }),
               })
               .pipe(Effect.mapError(boatFailure));
             return {
@@ -116,6 +119,8 @@ export const layer = McpToolAccess.toLayer(BoatCloudToolkit, {
               environments: next.environments,
               shareMachines: next.shareMachines,
               defaultMachineType: next.defaultMachineType,
+              useLocalSignIns: next.localSignIns.enabled,
+              localSignIns: next.localSignIns.available,
             };
           }),
         check,

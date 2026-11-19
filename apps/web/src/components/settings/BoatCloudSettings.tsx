@@ -28,12 +28,14 @@ import {
 import {
   BOAT_AGENTS_DASHBOARD_URL,
   BOAT_ENVIRONMENT_DASHBOARD_URL,
+  boatCloudAgentDrivers,
   boatCloudBlocker,
   boatCloudChosenEnvironment,
-  boatCloudEnvironmentDrivers,
+  boatCloudLocalDrivers,
 } from "@t3tools/shared/boatCloudVm";
 import { BoatIcon } from "../Icons";
 import { Badge } from "../ui/badge";
+import { Input } from "../ui/input";
 import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
@@ -156,6 +158,25 @@ const AGENT_PROVIDERS = [
   { driver: "codex", label: "Codex" },
 ] as const;
 
+/** A check or a cross before each provider's name. */
+function ProviderList({ drivers }: { readonly drivers: ReadonlySet<string> }) {
+  const gt = useGT();
+  return (
+    <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
+      {AGENT_PROVIDERS.map(({ driver, label }) => (
+        <span key={driver} className="flex items-center gap-1">
+          {drivers.has(driver) ? (
+            <CheckIcon aria-label={gt("Signed in")} className="size-3.5 text-success-foreground" />
+          ) : (
+            <XIcon aria-label={gt("No sign-in")} className="size-3.5 text-muted-foreground" />
+          )}
+          {label}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 function ExternalLinkButton({
   href,
   children,
@@ -230,7 +251,9 @@ function EnvironmentRows({
     return <SettingsRow title={gt("Boat environment")} description={status.environmentsError} />;
   }
   const blocker = boatCloudBlocker(status);
-  const drivers = boatCloudEnvironmentDrivers(selected);
+  const localDrivers = boatCloudLocalDrivers(status);
+  // Boat's own sign-ins may be unknown; this computer's still count.
+  const drivers = boatCloudAgentDrivers(status) ?? (localDrivers.size > 0 ? localDrivers : null);
   const turnOn = (access: Partial<BoatCloudEnvironmentAccess>) => (
     <Button
       variant="outline"
@@ -289,35 +312,20 @@ function EnvironmentRows({
               </StatusTitle>
             }
             description={
-              !selected.passAgentsCredentials ? (
+              drivers !== null && drivers.size > 0 ? (
+                <ProviderList drivers={drivers} />
+              ) : !selected.passAgentsCredentials ? (
                 gt("This Boat environment withholds agent sign-ins.")
               ) : drivers === null ? (
                 gt("Boat did not say which sign-ins it has.")
-              ) : drivers.size === 0 ? (
-                gt("Add a Claude or ChatGPT sign-in to this Boat environment.")
               ) : (
-                <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                  {AGENT_PROVIDERS.map(({ driver, label }) => (
-                    <span key={driver} className="flex items-center gap-1">
-                      {drivers.has(driver) ? (
-                        <CheckIcon
-                          aria-label={gt("Signed in")}
-                          className="size-3.5 text-success-foreground"
-                        />
-                      ) : (
-                        <XIcon
-                          aria-label={gt("No sign-in")}
-                          className="size-3.5 text-muted-foreground"
-                        />
-                      )}
-                      {label}
-                    </span>
-                  ))}
-                </span>
+                gt(
+                  "Sign in to Claude Code or Codex here, or add a sign-in to this Boat environment.",
+                )
               )
             }
             control={
-              !selected.passAgentsCredentials ? (
+              !selected.passAgentsCredentials && localDrivers.size === 0 ? (
                 turnOn({ passAgentsCredentials: true })
               ) : (
                 <ExternalLinkButton href={BOAT_AGENTS_DASHBOARD_URL}>
@@ -326,6 +334,7 @@ function EnvironmentRows({
               )
             }
           />
+          <LocalSignInRows status={status} />
           <SettingsRow
             title={
               <StatusTitle state={github === null ? "pending" : github ? "done" : "failed"}>
@@ -379,7 +388,139 @@ function EnvironmentRows({
   );
 }
 
-/** Boat cloud's section of Settings, Environments. */
+/**
+ * This computer's own Claude and Codex sign-ins, which its VMs get where the Boat environment
+ * has none. Per machine: each holder passes what it is signed in to.
+ */
+function LocalSignInRows({ status }: { readonly status: BoatCloudStatus }) {
+  const gt = useGT();
+  const { holderEnvironmentId } = usePrimaryBoatCloudStatus();
+  const configure = useAtomCommand(serverEnvironment.configureBoatCloudMachines);
+  const claudeToken = useAtomCommand(serverEnvironment.boatCloudClaudeToken);
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  if (holderEnvironmentId === null) return null;
+  const local = status.localSignIns;
+  const run = async (input: Parameters<typeof claudeToken>[0]["input"]) => {
+    setBusy(true);
+    await claudeToken({ environmentId: holderEnvironmentId, input });
+    setBusy(false);
+  };
+  const claudeLogin = local.available.find(
+    (signIn) => signIn.driver === "claudeAgent" && signIn.source === "login",
+  );
+  const flow = local.claudeTokenFlow;
+  return (
+    <>
+      <SettingsRow
+        title={gt("Use this computer's sign-ins")}
+        description={
+          local.available.length === 0 ? (
+            gt("Sign in to Claude Code or Codex on this computer.")
+          ) : (
+            <ProviderList drivers={new Set(local.available.map((signIn) => signIn.driver))} />
+          )
+        }
+        control={
+          <Switch
+            aria-label={gt("Use this computer's sign-ins")}
+            checked={local.enabled}
+            onCheckedChange={(checked) =>
+              void configure({
+                environmentId: holderEnvironmentId,
+                input: { useLocalSignIns: Boolean(checked) },
+              })
+            }
+          />
+        }
+      />
+      {local.enabled ? (
+        <SettingsRow
+          title={gt("Claude token")}
+          description={
+            flow?.state === "running" ? (
+              <span className="flex flex-col gap-2">
+                {gt("Finish signing in to Claude in the browser.")}
+                {flow.url ? (
+                  <form
+                    className="flex w-full min-w-0 gap-2 sm:w-80"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      const value = code.trim();
+                      if (value === "") return;
+                      setCode("");
+                      void run({ action: "code", code: value });
+                    }}
+                  >
+                    <Input
+                      size="sm"
+                      aria-label={gt("Code from the sign-in page")}
+                      placeholder={gt("Code from the sign-in page")}
+                      value={code}
+                      onChange={(event) => setCode(event.target.value)}
+                    />
+                    <Button type="submit" size="sm" variant="outline" disabled={busy}>
+                      {gt("Submit")}
+                    </Button>
+                  </form>
+                ) : null}
+              </span>
+            ) : flow?.state === "failed" ? (
+              (flow.error ?? gt("Could not create the token."))
+            ) : local.claudeTokenStored ? (
+              gt("VMs use a long-lived token.")
+            ) : claudeLogin?.expiresAt ? (
+              gt("VMs get your Claude login until {time}. A token lasts a year.", {
+                time: new Date(claudeLogin.expiresAt).toLocaleTimeString([], {
+                  hour: "numeric",
+                  minute: "2-digit",
+                }),
+              })
+            ) : (
+              gt("A token lasts a year.")
+            )
+          }
+          control={
+            flow?.state === "running" ? (
+              <span className="flex gap-2">
+                {flow.url ? (
+                  <ExternalLinkButton href={flow.url}>{gt("Open sign-in page")}</ExternalLinkButton>
+                ) : null}
+                <Button
+                  variant="outline"
+                  size="xs"
+                  disabled={busy}
+                  onClick={() => void run({ action: "cancel" })}
+                >
+                  {gt("Cancel")}
+                </Button>
+              </span>
+            ) : local.claudeTokenStored ? (
+              <Button
+                variant="destructive-outline"
+                size="xs"
+                disabled={busy}
+                onClick={() => void run({ action: "remove" })}
+              >
+                {gt("Remove")}
+              </Button>
+            ) : (
+              <Button
+                variant="outline"
+                size="xs"
+                disabled={busy}
+                onClick={() => void run({ action: "create" })}
+              >
+                {gt("Create token")}
+              </Button>
+            )
+          }
+        />
+      ) : null}
+    </>
+  );
+}
+
 /** How new cloud threads get VMs. Every key holder gets the same choice. */
 function MachineRows({
   status,

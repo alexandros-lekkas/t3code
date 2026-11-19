@@ -18,6 +18,7 @@ import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
 import { SPARE_NAME as SPARE } from "@t3tools/shared/boatCloudVm";
 import * as BoatCloud from "./BoatCloudService.ts";
+import * as BoatLocalSignIns from "./BoatLocalSignIns.ts";
 
 const ACCOUNT = "me@example.com";
 
@@ -140,6 +141,19 @@ const fakeBoat = (
   return { http, calls, bodies };
 };
 
+/** A Boat environment whose credential profile signs no agent in. */
+const noSignInEnvironment = {
+  id: "env-base",
+  name: "base",
+  isDefault: true,
+  passGithub: true,
+  passSandboxCredentials: false,
+  passSecrets: false,
+  passAgentsCredentials: true,
+  credentialProfileId: null,
+};
+const noSignInProfile = { id: "p1", name: "default", isDefault: true, connected: [] };
+
 const OLD_HAND_OUT = "1960-01-01T00:00:00.000Z";
 const storedMachine = (sandboxId: string, environmentId: string | null, environment: string) => ({
   sandboxId,
@@ -176,9 +190,15 @@ const seed = (
 const withService = <A, E, R>(
   http: HttpClient.HttpClient,
   use: (service: BoatCloud.BoatCloudService["Service"]) => Effect.Effect<A, E, R>,
+  signIns: Layer.Layer<BoatLocalSignIns.BoatLocalSignIns> = BoatLocalSignIns.layerStatic(false),
 ) =>
   Effect.flatMap(Effect.service(BoatCloud.BoatCloudService), use).pipe(
-    Effect.provide(BoatCloud.layer.pipe(Layer.provide(Layer.succeed(HttpClient.HttpClient, http)))),
+    Effect.provide(
+      BoatCloud.layer.pipe(
+        Layer.provide(Layer.succeed(HttpClient.HttpClient, http)),
+        Layer.provide(signIns),
+      ),
+    ),
   );
 
 it.layer(dependencies)("BoatCloudService", (it) => {
@@ -395,7 +415,9 @@ it.layer(dependencies)("BoatCloudService", (it) => {
       const status = yield* Effect.gen(function* () {
         const boatCloud = yield* BoatCloud.BoatCloudService;
         return yield* boatCloud.connect({ apiKey: "boat_test" });
-      }).pipe(Effect.provide(BoatCloud.layer));
+      }).pipe(
+        Effect.provide(BoatCloud.layer.pipe(Layer.provide(BoatLocalSignIns.layerStatic(false)))),
+      );
 
       assert.isTrue(status.connected);
       assert.strictEqual(status.account, ACCOUNT);
@@ -462,29 +484,12 @@ it.layer(dependencies)("BoatCloudService", (it) => {
     }),
   );
 
-  it.effect("refuses a start before making a VM when the environment has no agent sign-in", () =>
+  it.effect("refuses a start before making a VM when no sign-in reaches it", () =>
     Effect.gen(function* () {
       yield* seed([]);
       const boat = fakeBoat({}, undefined, undefined, (call) => {
-        if (call === "GET /environments") {
-          return {
-            environments: [
-              {
-                id: "env-base",
-                name: "base",
-                isDefault: true,
-                passGithub: true,
-                passSandboxCredentials: false,
-                passSecrets: false,
-                passAgentsCredentials: true,
-                credentialProfileId: null,
-              },
-            ],
-          };
-        }
-        if (call === "GET /credential-profiles") {
-          return { profiles: [{ id: "p1", name: "default", isDefault: true, connected: [] }] };
-        }
+        if (call === "GET /environments") return { environments: [noSignInEnvironment] };
+        if (call === "GET /credential-profiles") return { profiles: [noSignInProfile] };
         return undefined;
       });
       const error = yield* withService(boat.http, (service) =>
@@ -492,8 +497,50 @@ it.layer(dependencies)("BoatCloudService", (it) => {
           service.acquire({ requestId: "start-1", repositoryUrl: "https://github.com/acme/app" }),
         ),
       );
-      assert.include(error.message, "no Claude or ChatGPT sign-in");
+      assert.include(error.message, "has a Claude or ChatGPT sign-in");
       assert.notInclude(boat.calls, "POST /sandboxes");
+
+      // This machine's own sign-ins count, but not once they are turned off.
+      const commands: Array<string> = [];
+      const signedIn = fakeBoat(
+        {},
+        (_sandboxId, script) => {
+          commands.push(script);
+          return Effect.succeed(
+            script.includes("systemctl --user start t3code.service")
+              ? `${JSON.stringify({ environmentId: "env-new" })}\n--- t3 pairing ---\n${JSON.stringify({ credential: "code", expiresAt: "2999-01-01T00:00:00.000Z" })}`
+              : "",
+          );
+        },
+        undefined,
+        (call) => {
+          if (call === "GET /environments") return { environments: [noSignInEnvironment] };
+          if (call === "GET /credential-profiles") return { profiles: [noSignInProfile] };
+          return undefined;
+        },
+      );
+      const { session, refused } = yield* withService(
+        signedIn.http,
+        (service) =>
+          Effect.gen(function* () {
+            const session = yield* service.acquire({
+              requestId: "start-2",
+              repositoryUrl: "https://github.com/acme/app",
+            });
+            yield* service.configureMachines({ useLocalSignIns: false });
+            const refused = yield* Effect.flip(
+              service.acquire({
+                requestId: "start-3",
+                repositoryUrl: "https://github.com/acme/app",
+              }),
+            );
+            return { session, refused };
+          }),
+        BoatLocalSignIns.layerStatic(true),
+      );
+      assert.strictEqual(session.sandboxId, "vm-new");
+      assert.isTrue(commands.some((command) => command.includes("fake-claude-token")));
+      assert.include(refused.message, "has a Claude or ChatGPT sign-in");
     }),
   );
 
