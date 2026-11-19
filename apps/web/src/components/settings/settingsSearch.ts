@@ -1417,7 +1417,7 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "boat-cloud",
-    title: msg("Boat cloud"),
+    title: msg("Boat"),
     to: "/settings/connections",
     searchTerms: [msg("cloud remote vm sandbox boat.dev api key snapshot")],
   },

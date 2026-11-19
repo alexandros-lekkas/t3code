@@ -1371,7 +1371,7 @@ function OpenCommandPaletteDialog(props: {
         kind: "action",
         value: "action:new-boat-cloud-thread",
         searchTerms: ["boat", "cloud", "vm", "remote", "new thread"],
-        title: gt("New Boat cloud thread"),
+        title: gt("New Boat thread"),
         icon: <BoatIcon className={ITEM_ICON_CLASS} />,
         run: async () => {
           const opened = await handleNewThread(contextualProjectRef, {

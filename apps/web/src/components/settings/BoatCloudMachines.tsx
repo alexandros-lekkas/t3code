@@ -1,14 +1,22 @@
 import type { BoatCloudMachine, BoatCloudStatus, EnvironmentId } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
 import { msg, T, useGT, useMessages } from "gt-react";
-import { RefreshCwIcon } from "lucide-react";
+import { MoreVertical, RefreshCwIcon } from "lucide-react";
 import { useState } from "react";
 
 import { useNowMinute } from "../../hooks/useNowMinute";
-import { useQuietThreadShells } from "../../state/entities";
-import { useOpenedBoatCloudThreadRefs } from "../../state/boatCloudThreads";
+import { useVisibleThreadShells } from "../../state/entities";
+import { boatCloudMachineOfThread } from "../../boatCloudMachines.logic";
+import { useBoatCloudThreadMachines } from "../../state/boatCloudThreads";
+import { useEnvironments } from "../../state/environments";
+import { serverEnvironment } from "../../state/server";
+import { useAtomCommand } from "../../state/use-atom-command";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
-import { formatBoatCloudCost, useBoatCloudSizeLine } from "../BoatCloudSizeSelector";
+import {
+  formatBoatCloudCost,
+  formatHourlyPrice,
+  useBoatCloudSizeLine,
+} from "../BoatCloudSizeSelector";
 import { BoatIcon } from "../Icons";
 import {
   AlertDialog,
@@ -19,82 +27,93 @@ import {
   AlertDialogPopup,
   AlertDialogTitle,
 } from "../ui/alert-dialog";
-import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { Spinner } from "../ui/spinner";
-import { SettingsRow } from "./settingsLayout";
+import { SettingsRow, SettingsSection } from "./settingsLayout";
 
-const MACHINE_STATE: Record<
-  BoatCloudMachine["state"],
-  { readonly label: string; readonly variant: "success" | "info" | "secondary" | "warning" }
-> = {
-  running: { label: msg("Running", { $context: "VM state" }), variant: "success" },
-  starting: { label: msg("Waking", { $context: "VM state" }), variant: "info" },
-  stopped: { label: msg("Sleeping", { $context: "VM state" }), variant: "secondary" },
-  gone: { label: msg("Saved copy", { $context: "VM state" }), variant: "warning" },
+const MACHINE_STATE: Record<BoatCloudMachine["state"], string> = {
+  running: msg("Running", { $context: "VM state" }),
+  starting: msg("Waking", { $context: "VM state" }),
+  stopped: msg("Sleeping", { $context: "VM state" }),
+  gone: msg("Saved copy", { $context: "VM state" }),
 };
-
-/** Stop, wake, delete and refresh for the VMs; null while the holder's server has none. */
-export interface BoatCloudMachineActions {
-  readonly stop: (sandboxId: string) => Promise<unknown>;
-  readonly wake: (sandboxId: string) => Promise<unknown>;
-  readonly remove: (sandboxId: string) => Promise<unknown>;
-  readonly refresh: () => Promise<unknown>;
-}
 
 const repositoryName = (repository: string) => repository.split("/").slice(1).join("/");
 
-/** The cloud threads this browser opened on each VM's environment. */
-function useThreadsByEnvironment() {
-  const opened = useOpenedBoatCloudThreadRefs();
-  const shells = useQuietThreadShells();
-  const openedKeys = new Set(opened.map((ref) => `${ref.environmentId}:${ref.threadId}`));
-  const byEnvironment = new Map<EnvironmentId, Array<(typeof shells)[number]>>();
+interface MachineThread {
+  readonly environmentId: EnvironmentId;
+  readonly id: string;
+  readonly title: string;
+}
+
+/** The listed cloud threads on each VM, by sandbox. */
+function useThreadsByMachine(status: BoatCloudStatus) {
+  const shells = useVisibleThreadShells();
+  const threadMachines = useBoatCloudThreadMachines();
+  const { environments } = useEnvironments();
+  const boatCloudEnvironments = new Set(
+    environments.flatMap((environment) =>
+      environment.boatCloud ? [environment.environmentId] : [],
+    ),
+  );
+  const byMachine = new Map<string, Array<MachineThread>>();
   for (const shell of shells) {
-    if (!openedKeys.has(`${shell.environmentId}:${shell.id}`)) continue;
     if (shell.lineage.relationshipToParent === "subagent") continue;
-    const list = byEnvironment.get(shell.environmentId) ?? [];
+    const machine = boatCloudMachineOfThread({
+      status,
+      threadMachines,
+      ref: { environmentId: shell.environmentId, threadId: shell.id },
+      onBoatCloud: boatCloudEnvironments.has(shell.environmentId),
+    });
+    if (machine === null) continue;
+    const list = byMachine.get(machine.sandboxId) ?? [];
     list.push(shell);
-    byEnvironment.set(shell.environmentId, list);
+    byMachine.set(machine.sandboxId, list);
   }
-  return byEnvironment;
+  return byMachine;
 }
 
 function MachineRow({
   machine,
   threads,
+  machineTypes,
+  environmentUsage,
+  holderEnvironmentId,
   onDelete,
-  actions,
 }: {
   readonly machine: BoatCloudMachine;
-  readonly threads: ReadonlyArray<{
-    readonly environmentId: EnvironmentId;
-    readonly id: string;
-    readonly title: string;
-  }>;
-  readonly onDelete: ((machine: BoatCloudMachine, name: string) => void) | null;
-  readonly actions: BoatCloudMachineActions | null;
+  readonly threads: ReadonlyArray<MachineThread>;
+  readonly machineTypes: BoatCloudStatus["machineTypes"];
+  readonly environmentUsage: BoatCloudStatus["environmentUsage"];
+  readonly holderEnvironmentId: EnvironmentId;
+  readonly onDelete: (machine: BoatCloudMachine, name: string) => void;
 }) {
   const gt = useGT();
   const m = useMessages();
   const sizeLine = useBoatCloudSizeLine();
+  const stop = useAtomCommand(serverEnvironment.boatCloudStopMachine);
+  const wake = useAtomCommand(serverEnvironment.boatCloudWakeMachine);
   const [busy, setBusy] = useState(false);
   const state = MACHINE_STATE[machine.state];
   const repositories = machine.repositories.map(repositoryName).join(", ");
-  const spare = threads.length === 0 && machine.repositories.length === 0;
-  const name = threads[0]?.title ?? (repositories || gt("Ready spare"));
+  const first = threads[0];
+  const name = first?.title ?? (repositories || gt("Ready spare"));
+  const option = machineTypes.find((candidate) => candidate.id === machine.machineType);
+  // The environment's figure is read with the usage refresh; the VM's own only after a reconcile.
+  const usage =
+    environmentUsage.find((entry) => entry.sandboxId === machine.sandboxId) ?? machine.usage;
   const description = [
-    threads.length > 0 ? repositories : null,
+    m(state),
     sizeLine(machine) || null,
-    machine.usage === null
-      ? null
-      : formatBoatCloudCost(machine.usage.seconds, machine.usage.dollars),
+    option === undefined ? null : formatHourlyPrice(option),
+    usage === null ? null : formatBoatCloudCost(usage.seconds, usage.dollars),
   ]
     .filter(Boolean)
     .join(" · ");
-  const run = async (action: () => Promise<unknown>) => {
+  const run = async (command: typeof stop) => {
     setBusy(true);
-    await action();
+    await command({ environmentId: holderEnvironmentId, input: { sandboxId: machine.sandboxId } });
     setBusy(false);
   };
   return (
@@ -102,63 +121,55 @@ function MachineRow({
       title={
         <span className="flex min-w-0 items-center gap-2">
           <BoatIcon aria-hidden className="size-3.5" />
-          {threads.length > 0 ? (
-            <span className="flex min-w-0 items-center gap-1">
-              <Link
-                to="/$environmentId/$threadId"
-                params={{ environmentId: threads[0]!.environmentId, threadId: threads[0]!.id }}
-                className="truncate hover:underline"
-              >
-                {threads[0]!.title}
-              </Link>
-              {threads.length > 1 ? (
-                <span className="shrink-0 text-muted-foreground">
-                  {gt("+{count}", { count: threads.length - 1 })}
-                </span>
-              ) : null}
-            </span>
+          {first ? (
+            <Link
+              to="/$environmentId/$threadId"
+              params={{ environmentId: first.environmentId, threadId: first.id }}
+              className="truncate hover:underline"
+            >
+              {first.title}
+            </Link>
           ) : (
-            <span className={spare ? "truncate text-muted-foreground" : "truncate"}>{name}</span>
+            // No thread here is listed on this client, so the VM reads by what it holds.
+            <span className="truncate font-normal text-muted-foreground">{name}</span>
           )}
+          {threads.length > 1 ? (
+            <span className="shrink-0 font-normal text-muted-foreground">
+              {gt("+{count}", { count: threads.length - 1 })}
+            </span>
+          ) : null}
         </span>
       }
-      description={description || undefined}
+      description={description}
       control={
-        <span className="flex items-center gap-2">
-          <Badge variant={state.variant}>{m(state.label)}</Badge>
-          {actions && machine.state === "running" ? (
-            <Button
-              size="xs"
-              variant="outline"
-              disabled={busy}
-              onClick={() => void run(() => actions.stop(machine.sandboxId))}
-            >
-              {busy ? <Spinner aria-hidden size="xs" /> : null}
-              <T>Stop</T>
-            </Button>
-          ) : null}
-          {actions && (machine.state === "stopped" || machine.state === "gone") ? (
-            <Button
-              size="xs"
-              variant="outline"
-              disabled={busy}
-              onClick={() => void run(() => actions.wake(machine.sandboxId))}
-            >
-              {busy ? <Spinner aria-hidden size="xs" /> : null}
-              <T>Wake</T>
-            </Button>
-          ) : null}
-          {onDelete ? (
-            <Button
-              size="xs"
-              variant="ghost-destructive"
-              disabled={busy}
-              onClick={() => onDelete(machine, name)}
-            >
+        <Menu>
+          <MenuTrigger
+            render={
+              <Button
+                size="icon-sm"
+                variant="ghost-muted"
+                disabled={busy}
+                aria-label={gt("Machine actions")}
+              />
+            }
+          >
+            {busy ? <Spinner aria-hidden size="xs" /> : <MoreVertical aria-hidden />}
+          </MenuTrigger>
+          <MenuPopup align="end">
+            {machine.state === "running" ? (
+              <MenuItem onClick={() => void run(stop)}>
+                <T>Stop</T>
+              </MenuItem>
+            ) : machine.state === "stopped" || machine.state === "gone" ? (
+              <MenuItem onClick={() => void run(wake)}>
+                <T>Wake</T>
+              </MenuItem>
+            ) : null}
+            <MenuItem variant="destructive" onClick={() => onDelete(machine, name)}>
               <T>Delete</T>
-            </Button>
-          ) : null}
-        </span>
+            </MenuItem>
+          </MenuPopup>
+        </Menu>
       }
     />
   );
@@ -166,15 +177,18 @@ function MachineRow({
 
 function DeleteMachineDialog({
   request,
+  holderEnvironmentId,
   onClose,
-  onConfirm,
 }: {
   readonly request: { readonly machine: BoatCloudMachine; readonly name: string } | null;
+  readonly holderEnvironmentId: EnvironmentId;
   readonly onClose: () => void;
-  readonly onConfirm: (sandboxId: string) => Promise<unknown>;
 }) {
   const gt = useGT();
+  const remove = useAtomCommand(serverEnvironment.boatCloudDeleteMachine);
   const [busy, setBusy] = useState(false);
+  const machine = request?.machine;
+  const running = machine?.state === "running" || machine?.state === "starting";
   return (
     <AlertDialog
       open={request !== null}
@@ -182,15 +196,20 @@ function DeleteMachineDialog({
         if (!open && !busy) onClose();
       }}
     >
-      {request ? (
+      {request && machine ? (
         <AlertDialogPopup>
           <AlertDialogHeader>
             <AlertDialogTitle>{gt("Delete {name}?", { name: request.name })}</AlertDialogTitle>
             <AlertDialogDescription>
-              <T>
-                The VM and everything on it go away: uncommitted and unpushed work, provider
-                sessions, and its saved copy. Its threads cannot wake it again.
-              </T>
+              {running
+                ? gt(
+                    "It is running. Work since its last saved copy is lost; its threads can wake it from that copy.",
+                  )
+                : machine.backedUpAt !== null
+                  ? gt(
+                      "Boat deletes the VM. Its threads can wake it from this machine's saved copy.",
+                    )
+                  : gt("Boat deletes the VM and everything on it.")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -202,7 +221,10 @@ function DeleteMachineDialog({
               disabled={busy}
               onClick={() => {
                 setBusy(true);
-                void onConfirm(request.machine.sandboxId).finally(() => {
+                void remove({
+                  environmentId: holderEnvironmentId,
+                  input: { sandboxId: machine.sandboxId, ...(running ? { force: true } : {}) },
+                }).finally(() => {
                   setBusy(false);
                   onClose();
                 });
@@ -218,17 +240,18 @@ function DeleteMachineDialog({
   );
 }
 
-/** Every Boat VM this machine handed out, named after the threads on it, inside the Boat cloud section. */
-export function BoatCloudMachineRows({
+/** Every Boat VM this machine handed out, named after the threads on it. */
+export function BoatCloudMachinesSection({
   status,
-  actions,
+  holderEnvironmentId,
 }: {
   readonly status: BoatCloudStatus;
-  readonly actions: BoatCloudMachineActions | null;
+  readonly holderEnvironmentId: EnvironmentId;
 }) {
   const gt = useGT();
   const nowMinute = useNowMinute();
-  const threadsByEnvironment = useThreadsByEnvironment();
+  const refresh = useAtomCommand(serverEnvironment.boatCloudRefreshUsage);
+  const threadsByMachine = useThreadsByMachine(status);
   const [refreshing, setRefreshing] = useState(false);
   const [deleting, setDeleting] = useState<{
     readonly machine: BoatCloudMachine;
@@ -239,20 +262,17 @@ export function BoatCloudMachineRows({
     .toSorted()
     .at(0);
   return (
-    <>
-      <SettingsRow
-        title={gt("Machines")}
-        description={
-          status.machines.length === 0
-            ? gt("None yet. A cloud thread starts one when it sends.")
-            : updatedAt
+    <SettingsSection
+      id="boat-cloud-machines"
+      title={gt("Machines")}
+      headerAction={
+        status.machines.length > 0 ? (
+          <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            {updatedAt
               ? gt("Updated {time}", {
                   time: formatRelativeTimeLabel(updatedAt, Date.parse(`${nowMinute}:00Z`)),
                 })
-              : undefined
-        }
-        control={
-          actions && status.machines.length > 0 ? (
+              : null}
             <Button
               size="icon-xs"
               variant="ghost-muted"
@@ -260,34 +280,37 @@ export function BoatCloudMachineRows({
               disabled={refreshing}
               onClick={() => {
                 setRefreshing(true);
-                void actions.refresh().finally(() => setRefreshing(false));
+                void refresh({ environmentId: holderEnvironmentId, input: {} }).finally(() =>
+                  setRefreshing(false),
+                );
               }}
             >
               {refreshing ? <Spinner aria-hidden size="xs" /> : <RefreshCwIcon aria-hidden />}
             </Button>
-          ) : null
-        }
+          </span>
+        ) : null
+      }
+    >
+      {status.machines.length === 0 ? (
+        <SettingsRow title={gt("None yet. A Boat thread starts one when it sends.")} />
+      ) : (
+        status.machines.map((machine) => (
+          <MachineRow
+            key={machine.sandboxId}
+            machine={machine}
+            threads={threadsByMachine.get(machine.sandboxId) ?? []}
+            machineTypes={status.machineTypes}
+            environmentUsage={status.environmentUsage}
+            holderEnvironmentId={holderEnvironmentId}
+            onDelete={(target, name) => setDeleting({ machine: target, name })}
+          />
+        ))
+      )}
+      <DeleteMachineDialog
+        request={deleting}
+        holderEnvironmentId={holderEnvironmentId}
+        onClose={() => setDeleting(null)}
       />
-      {status.machines.map((machine) => (
-        <MachineRow
-          key={machine.sandboxId}
-          machine={machine}
-          threads={
-            machine.environmentId === null
-              ? []
-              : (threadsByEnvironment.get(machine.environmentId) ?? [])
-          }
-          onDelete={actions ? (target, name) => setDeleting({ machine: target, name }) : null}
-          actions={actions}
-        />
-      ))}
-      {actions ? (
-        <DeleteMachineDialog
-          request={deleting}
-          onClose={() => setDeleting(null)}
-          onConfirm={actions.remove}
-        />
-      ) : null}
-    </>
+    </SettingsSection>
   );
 }

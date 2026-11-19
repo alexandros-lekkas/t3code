@@ -168,14 +168,18 @@ function SelectItem({
   className,
   children,
   hideIndicator: _hideIndicator = false,
+  indicator = "fill",
   ...props
 }: SelectPrimitive.Item.Props & {
   hideIndicator?: boolean;
+  /** How the chosen row reads: a soft fill, or a trailing check for rows that already carry detail. */
+  indicator?: "fill" | "check";
 }) {
   return (
     <SelectPrimitive.Item
       className={cn(
-        "flex min-h-8 in-data-[side=none]:min-w-[calc(var(--anchor-width)+1.25rem)] cursor-pointer items-center rounded-sm px-2 py-1 text-base outline-none data-selected:bg-foreground/[0.08] data-disabled:pointer-events-none data-disabled:cursor-not-allowed data-highlighted:bg-accent data-highlighted:text-accent-foreground data-disabled:opacity-64 sm:min-h-7 sm:text-sm [&_svg:not([class*='size-'])]:size-4.5 sm:[&_svg:not([class*='size-'])]:size-4 [&_svg]:pointer-events-none [&_svg]:shrink-0",
+        "flex min-h-8 in-data-[side=none]:min-w-[calc(var(--anchor-width)+1.25rem)] cursor-pointer items-center rounded-sm px-2 py-1 text-base outline-none data-disabled:pointer-events-none data-disabled:cursor-not-allowed data-highlighted:bg-accent data-highlighted:text-accent-foreground data-disabled:opacity-64 sm:min-h-7 sm:text-sm [&_svg:not([class*='size-'])]:size-4.5 sm:[&_svg:not([class*='size-'])]:size-4 [&_svg]:pointer-events-none [&_svg]:shrink-0",
+        indicator === "fill" ? "data-selected:bg-foreground/[0.08]" : "gap-3",
         className,
       )}
       data-slot="select-item"
@@ -187,6 +191,24 @@ function SelectItem({
       >
         {children}
       </SelectPrimitive.ItemText>
+      {indicator === "check" ? (
+        <SelectPrimitive.ItemIndicator className="flex shrink-0" data-slot="select-item-indicator">
+          <svg
+            aria-hidden
+            fill="none"
+            height="24"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="1.75"
+            viewBox="0 0 24 24"
+            width="24"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <path d="M5.252 12.7 10.2 18.63 18.748 5.37" />
+          </svg>
+        </SelectPrimitive.ItemIndicator>
+      ) : null}
     </SelectPrimitive.Item>
   );
 }

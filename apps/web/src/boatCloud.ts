@@ -28,6 +28,7 @@ import {
 } from "@t3tools/contracts";
 import { boatCloudProviderDrivers, parseRepository } from "@t3tools/shared/boatCloudVm";
 import { AsyncResult, Atom } from "effect/reactivity";
+import { useEffect } from "react";
 
 import {
   type BoatCloudStartProgress,
@@ -39,6 +40,7 @@ import {
   wakingProgress,
   withHolderSteps,
 } from "./boatCloudStart.logic";
+import { boatCloudMachinesToPair, managedBoatCloudMachine } from "./boatCloudMachines.logic";
 import type { DraftId } from "./composerDraftStore";
 import { stackedThreadToast, toastManager } from "./components/ui/toast";
 import { environmentCatalog } from "./connection/catalog";
@@ -236,6 +238,7 @@ interface BoatCloudPrepareInput {
 export interface BoatCloudTarget {
   readonly project: EnvironmentProject;
   readonly worktree: BoatCloudSession["worktree"] | null;
+  readonly sandboxId: string;
 }
 
 /**
@@ -403,7 +406,7 @@ async function prepareBoatCloudProjectNow(
     );
     markEnded("project");
     logTiming("ready");
-    return { project, worktree };
+    return { project, worktree, sandboxId: session.sandboxId };
   } finally {
     stopWatchingHolder();
   }
@@ -506,7 +509,7 @@ function wakeBoatCloudMachine(input: {
       { label: serverEnvironment.wakeBoatCloud.label, reportFailure: false, reportDefect: true },
     );
     if (woken._tag === "Failure") {
-      reportFailure(m(msg("Could not wake the Boat cloud machine")), woken);
+      reportFailure(m(msg("Could not wake the Boat machine")), woken);
       return false;
     }
     updateWake(environmentId, markAcquired);
@@ -516,7 +519,7 @@ function wakeBoatCloudMachine(input: {
       toastManager.add(
         stackedThreadToast({
           type: "error",
-          title: m(msg("Could not reconnect to Boat cloud")),
+          title: m(msg("Could not reconnect to Boat")),
           description: attachFailure,
         }),
       );
@@ -541,7 +544,7 @@ function wakeBoatCloudMachine(input: {
       toastManager.add(
         stackedThreadToast({
           type: "error",
-          title: m(msg("Could not reconnect to Boat cloud")),
+          title: m(msg("Could not reconnect to Boat")),
           description: m(msg("The machine is on, but this client did not reach it in time.")),
         }),
       );
@@ -625,4 +628,98 @@ export function boatCloudSnapshotRepositories(): Array<string> {
     ),
     BOAT_CLOUD_SNAPSHOT_REPOSITORIES,
   );
+}
+
+const pairingAttempted = new Set<string>();
+
+/** Pairs this client with a running VM it never saw, and says nothing when that fails. */
+async function pairQuietly(holderEnvironmentId: EnvironmentId, environmentId: EnvironmentId) {
+  const woken = await runAtomCommand(
+    appAtomRegistry,
+    serverEnvironment.wakeBoatCloud,
+    { environmentId: holderEnvironmentId, input: { environmentId } },
+    { label: serverEnvironment.wakeBoatCloud.label, reportFailure: false, reportDefect: false },
+  );
+  if (woken._tag === "Success") await attach(woken.value);
+}
+
+/**
+ * Lists the threads on running VMs this machine handed out that this client never paired with,
+ * such as the ones an agent launched, by pairing with each VM once.
+ */
+export function useBoatCloudMachinePairing() {
+  const { holderEnvironmentId, status } = usePrimaryBoatCloudStatus();
+  const catalog = useAtomValue(environmentCatalog.catalogValueAtom);
+  const toPair =
+    holderEnvironmentId === null
+      ? []
+      : boatCloudMachinesToPair({
+          status,
+          knownEnvironmentIds: new Set(catalog.entries.keys()),
+          attemptedSandboxIds: pairingAttempted,
+        });
+  // Sandbox and environment ids hold no spaces, so one string carries the list into the effect.
+  const pairKey = toPair
+    .map((machine) => `${machine.sandboxId} ${machine.environmentId}`)
+    .join(" ");
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- pairs with VMs over the network, outside React
+  useEffect(() => {
+    if (holderEnvironmentId === null || pairKey === "") return;
+    const ids = pairKey.split(" ");
+    for (let index = 0; index < ids.length; index += 2) {
+      const sandboxId = ids[index]!;
+      if (pairingAttempted.has(sandboxId)) continue;
+      pairingAttempted.add(sandboxId);
+      void pairQuietly(holderEnvironmentId, ids[index + 1] as EnvironmentId);
+    }
+  }, [holderEnvironmentId, pairKey]);
+}
+
+/**
+ * Connects this client to the VM serving an environment this machine handed out, waking it
+ * when it sleeps, so a link to one of its threads opens. False when it is no such VM or failed.
+ */
+export function connectBoatCloudEnvironment(environmentId: EnvironmentId): Promise<boolean> {
+  if (isConnected(environmentId)) return Promise.resolve(true);
+  const holderEnvironmentId = readPrimaryEnvironmentId();
+  if (holderEnvironmentId === null || holderEnvironmentId === environmentId) {
+    return Promise.resolve(false);
+  }
+  const status = AsyncResult.getOrElse(
+    appAtomRegistry.get(
+      serverEnvironment.boatCloudStatus({ environmentId: holderEnvironmentId, input: {} }),
+    ),
+    () => null,
+  );
+  const machine = managedBoatCloudMachine(status, environmentId);
+  if (machine === null) return Promise.resolve(false);
+  return wakeBoatCloudMachine({
+    holderEnvironmentId,
+    environmentId,
+    httpBaseUrl: machine.httpBaseUrl,
+  });
+}
+
+/** Whether this machine handed out the VM serving `environmentId`. */
+export function useManagedBoatCloudMachine(environmentId: EnvironmentId | null) {
+  const { status } = usePrimaryBoatCloudStatus();
+  return managedBoatCloudMachine(status, environmentId);
+}
+
+const connectAttempted = new Set<EnvironmentId>();
+
+/** Opening a thread on a VM this machine handed out, but this client never paired with, connects it. */
+export function useConnectBoatCloudThreadEnvironment(environmentId: EnvironmentId | null) {
+  const machine = useManagedBoatCloudMachine(environmentId);
+  const catalog = useAtomValue(environmentCatalog.catalogValueAtom);
+  const unpaired =
+    environmentId !== null && machine !== null && !catalog.entries.has(environmentId)
+      ? environmentId
+      : null;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- pairs with the VM over the network, outside React
+  useEffect(() => {
+    if (unpaired === null || connectAttempted.has(unpaired)) return;
+    connectAttempted.add(unpaired);
+    void connectBoatCloudEnvironment(unpaired);
+  }, [unpaired]);
 }

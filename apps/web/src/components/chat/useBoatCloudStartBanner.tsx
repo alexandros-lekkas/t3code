@@ -8,6 +8,7 @@ import type { DraftId, DraftSessionState } from "../../composerDraftStore";
 import { cn } from "../../lib/utils";
 import { BoatIcon } from "../Icons";
 import { Spinner } from "../ui/spinner";
+import { ComposerBanner } from "./ComposerBanner";
 import type { ComposerBannerStackItem } from "./ComposerBannerStack";
 
 const STEP_LABELS: Record<BoatCloudStartStep, string> = {
@@ -31,13 +32,13 @@ const STEP_STATE_LABELS: Record<BoatCloudStepProgress["state"], string> = {
 function StepIcon({ state }: { readonly state: BoatCloudStepProgress["state"] }) {
   switch (state) {
     case "done":
-      return <CircleCheckIcon aria-hidden className="size-3.5 shrink-0 text-success-foreground" />;
+      return <CircleCheckIcon aria-hidden className="size-3 shrink-0 text-success-foreground" />;
     case "failed":
-      return <CircleXIcon aria-hidden className="size-3.5 shrink-0 text-destructive-foreground" />;
+      return <CircleXIcon aria-hidden className="size-3 shrink-0 text-destructive-foreground" />;
     case "active":
-      return <Spinner aria-hidden size="sm" className="shrink-0" />;
+      return <Spinner aria-hidden size="xs" />;
     case "pending":
-      return <CircleIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />;
+      return <CircleIcon aria-hidden className="size-3 shrink-0 text-muted-foreground" />;
   }
 }
 
@@ -50,32 +51,28 @@ export function BoatCloudSteps({
   readonly waking?: boolean;
 }) {
   const m = useMessages();
-  return (
-    <ol className="grid gap-1 py-0.5">
-      {steps.map((entry) => (
-        <li
-          key={entry.step}
-          data-boat-cloud-step={entry.step}
-          data-state={entry.state}
-          className="flex min-w-0 items-center gap-2 text-xs"
+  // Rows of the banner's own grid, so each step icon sits in the header icon's column.
+  return steps.map((entry) => (
+    <ComposerBanner.Row key={entry.step} data-boat-cloud-step={entry.step} data-state={entry.state}>
+      <ComposerBanner.Icon>
+        <StepIcon state={entry.state} />
+      </ComposerBanner.Icon>
+      <ComposerBanner.Content className="gap-2 whitespace-nowrap">
+        <span className="sr-only">{m(STEP_STATE_LABELS[entry.state])}:</span>
+        <span
+          className={cn(
+            "truncate",
+            entry.state === "pending" ? "text-muted-foreground" : "text-foreground",
+          )}
         >
-          <StepIcon state={entry.state} />
-          <span className="sr-only">{m(STEP_STATE_LABELS[entry.state])}:</span>
-          <span
-            className={cn(
-              "truncate",
-              entry.state === "pending" ? "text-muted-foreground" : "text-foreground",
-            )}
-          >
-            {m(waking && entry.step === "machine" ? WAKING_MACHINE_LABEL : STEP_LABELS[entry.step])}
-          </span>
-          {entry.detail ? (
-            <span className="truncate text-muted-foreground">{entry.detail}</span>
-          ) : null}
-        </li>
-      ))}
-    </ol>
-  );
+          {m(waking && entry.step === "machine" ? WAKING_MACHINE_LABEL : STEP_LABELS[entry.step])}
+        </span>
+        {entry.detail ? (
+          <span className="truncate text-muted-foreground">{entry.detail}</span>
+        ) : null}
+      </ComposerBanner.Content>
+    </ComposerBanner.Row>
+  ));
 }
 
 /**
@@ -103,7 +100,7 @@ export function useBoatCloudStartBanner(
     group: "environment",
     variant: failed ? "error" : "info",
     icon: <BoatIcon aria-hidden />,
-    title: failed ? gt("Could not start on Boat cloud") : gt("Starting on Boat cloud"),
+    title: failed ? gt("Could not start on Boat") : gt("Starting on Boat"),
     ...(failed
       ? {
           description: progress.error,

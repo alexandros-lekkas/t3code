@@ -878,7 +878,7 @@ const layerEnvironmentWaker = Layer.succeed(
       if (!woken) {
         return yield* new EnvironmentRpcUnavailableError({
           environmentId,
-          message: "The Boat cloud machine did not wake up.",
+          message: "The Boat machine did not wake up.",
         });
       }
     }),

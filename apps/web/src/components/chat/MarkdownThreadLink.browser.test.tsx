@@ -27,6 +27,7 @@ vi.mock(import("../../state/environments"), () => ({
     { environmentId: EnvironmentId.make("remote"), label: "Remote" },
   ],
 }));
+vi.mock(import("../../boatCloud"), () => ({ useManagedBoatCloudMachine: () => null }));
 vi.mock(import("../ProjectFavicon"), () => ({
   ProjectFavicon: () => (
     <span role="img" aria-label="Essays project icon">

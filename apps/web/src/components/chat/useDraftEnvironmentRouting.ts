@@ -164,12 +164,21 @@ export function useDraftEnvironmentRouting(input: DraftEnvironmentRoutingInput) 
   const readRouting = useStableCallback(() => ({ input, loadBalancingCandidates }));
   const boatCloud = usePrimaryBoatCloudStatus();
   const pickedMachineType = useAtomValue(boatCloudDraftMachineTypeAtom(draftId ?? ""));
-  const machineType = pickedMachineType ?? boatCloud.status?.defaultMachineType ?? "small";
+  const wantedMachineType = pickedMachineType ?? boatCloud.status?.defaultMachineType ?? "small";
+  // The picker lists only sizes the plan can start, so a size it no longer allows becomes the first.
+  const availableMachineTypes = (boatCloud.status?.machineTypes ?? []).filter(
+    (option) => option.available,
+  );
+  const machineType =
+    availableMachineTypes.length === 0 ||
+    availableMachineTypes.some((option) => option.id === wantedMachineType)
+      ? wantedMachineType
+      : availableMachineTypes[0]!.id;
   /** What starting this draft on Boat cloud needs, or why it cannot start. */
   const boatCloudStart = (draft: NonNullable<ReturnType<typeof getDraftSession>>) => {
     if (boatCloud.holderEnvironmentId === null || !boatCloudReady(boatCloud.status)) {
       return {
-        title: gt("Boat cloud is not set up"),
+        title: gt("Boat is not set up"),
         description: gt("Finish setup in Settings, Environments."),
       };
     }
@@ -182,14 +191,14 @@ export function useDraftEnvironmentRouting(input: DraftEnvironmentRoutingInput) 
     const repositoryUrl = identity?.origin?.remoteUrl ?? identity?.locator.remoteUrl;
     if (!repositoryUrl) {
       return {
-        title: gt("Boat cloud needs a git remote"),
+        title: gt("Boat needs a git remote"),
         description: gt("Push this project to a remote Boat can clone."),
       };
     }
     if (!draft.branch) {
       return {
         title: gt("Choose a base branch"),
-        description: gt("Boat cloud starts a new worktree from it."),
+        description: gt("Boat starts a new worktree from it."),
       };
     }
     return {
@@ -222,7 +231,7 @@ export function useDraftEnvironmentRouting(input: DraftEnvironmentRoutingInput) 
       clearBoatCloudStartProgress(draftId);
       return false;
     }
-    const { project, worktree } = target;
+    const { project, worktree, sandboxId } = target;
     const baseBranch = currentDraft.branch ?? originalDraft.branch;
     // The VM cut the worktree from the base the start asked for; a base picked since needs a new one.
     const readyWorktree = worktree?.baseBranch === baseBranch ? worktree : null;
@@ -243,10 +252,10 @@ export function useDraftEnvironmentRouting(input: DraftEnvironmentRoutingInput) 
       }),
     );
     // The thread is listed from its first event, before the route moves to it.
-    rememberOpenedBoatCloudThread({
-      environmentId: project.environmentId,
-      threadId: currentDraft.threadId,
-    });
+    rememberOpenedBoatCloudThread(
+      { environmentId: project.environmentId, threadId: currentDraft.threadId },
+      sandboxId,
+    );
     return true;
   };
   /** The send that followed a move to Boat cloud went out, so its start is over. */

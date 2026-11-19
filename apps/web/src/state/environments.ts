@@ -31,7 +31,7 @@ export interface EnvironmentPresentation extends BaseEnvironmentPresentation {
   readonly boatCloud: boolean;
 }
 
-export const BOAT_CLOUD_LABEL = "Boat cloud";
+export const BOAT_CLOUD_LABEL = "Boat";
 
 function projectEnvironmentPresentation(
   environmentId: EnvironmentId,

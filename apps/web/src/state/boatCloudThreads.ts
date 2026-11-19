@@ -1,13 +1,25 @@
 import { useAtomValue } from "@effect/atom-react";
 import { createBoatCloudThreadListAtoms } from "@t3tools/client-runtime/state/threads";
-import { ScopedThreadRef, type ThreadId } from "@t3tools/contracts";
+import {
+  type BoatCloudMachine,
+  type BoatCloudStatus,
+  type EnvironmentId,
+  ScopedThreadRef,
+  type ThreadId,
+} from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
-import { Atom } from "effect/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { useEffect } from "react";
 
 import { environmentCatalog } from "../connection/catalog";
 import { getLocalStorageItem, setLocalStorageItem } from "../hooks/useLocalStorage";
+import {
+  boatCloudMachineOfThread,
+  boatCloudThreadMachineKey as machineKey,
+} from "../boatCloudMachines.logic";
 import { appAtomRegistry } from "../rpc/atomRegistry";
+import { primaryEnvironmentIdAtom } from "./primaryEnvironment";
+import { serverEnvironment } from "./server";
 
 const STORAGE_KEY = "t3code:boat-cloud-opened-threads";
 const MAX_REMEMBERED = 500;
@@ -32,8 +44,48 @@ export const boatCloudThreadList = createBoatCloudThreadListAtoms({
   openedThreadsAtom,
 });
 
-/** Call only with a thread on a Boat cloud VM. */
-export function rememberOpenedBoatCloudThread(ref: ScopedThreadRef): void {
+const MACHINES_STORAGE_KEY = "t3code:boat-cloud-thread-machines";
+/** `environmentId:threadId` to the Boat sandbox the thread started on. */
+const ThreadMachines = Schema.Record(Schema.String, Schema.String);
+
+function readStoredMachines(): Readonly<Record<string, string>> {
+  try {
+    return getLocalStorageItem(MACHINES_STORAGE_KEY, ThreadMachines) ?? {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * The VM each thread this browser started went to. A VM's environment can serve threads of
+ * several starts (and a fake Boat serves every VM from one), so the sandbox names the VM.
+ */
+const threadMachinesAtom = Atom.make(readStoredMachines()).pipe(
+  Atom.keepAlive,
+  Atom.withLabel("boat-cloud-thread-machines"),
+);
+
+function rememberThreadMachine(ref: ScopedThreadRef, sandboxId: string) {
+  const key = machineKey(ref);
+  if (appAtomRegistry.get(threadMachinesAtom)[key] === sandboxId) return;
+  const entries = Object.entries({ ...readStoredMachines(), [key]: sandboxId });
+  const next = Object.fromEntries(entries.slice(-MAX_REMEMBERED));
+  appAtomRegistry.set(threadMachinesAtom, next);
+  try {
+    setLocalStorageItem(MACHINES_STORAGE_KEY, next, ThreadMachines);
+  } catch {
+    // The mapping still holds for this session.
+  }
+}
+
+/** The sandbox each started thread runs on, by `environmentId:threadId`. */
+export function useBoatCloudThreadMachines(): Readonly<Record<string, string>> {
+  return useAtomValue(threadMachinesAtom);
+}
+
+/** Call only with a thread on a Boat cloud VM; `sandboxId` when this browser started it there. */
+export function rememberOpenedBoatCloudThread(ref: ScopedThreadRef, sandboxId?: string): void {
+  if (sandboxId !== undefined) rememberThreadMachine(ref, sandboxId);
   const same = (other: ScopedThreadRef) =>
     other.environmentId === ref.environmentId && other.threadId === ref.threadId;
   if (appAtomRegistry.get(openedThreadsAtom).some(same)) return;
@@ -73,7 +125,54 @@ export function useOpenBoatCloudThread(ref: ScopedThreadRef | null): boolean {
   return unlisted;
 }
 
-/** The Boat cloud threads this browser started or opened, as refs. */
-export function useOpenedBoatCloudThreadRefs(): ReadonlyArray<ScopedThreadRef> {
-  return useAtomValue(openedThreadsAtom);
+/** This machine's Boat status, while its server supports Boat cloud. */
+const primaryBoatCloudStatusAtom = Atom.make((get): BoatCloudStatus | null => {
+  const environmentId = get(primaryEnvironmentIdAtom);
+  if (environmentId === null) return null;
+  const config = get(serverEnvironment.configValueAtom(environmentId));
+  if (config?.environment.capabilities.boatCloud !== true) return null;
+  return AsyncResult.getOrElse(
+    get(serverEnvironment.boatCloudStatus({ environmentId, input: {} })),
+    () => null,
+  );
+}).pipe(Atom.withLabel("boat-cloud-primary-status"));
+
+const boatCloudThreadMachineAtom = Atom.family((key: string) => {
+  const [environmentId, threadId] = JSON.parse(key) as [EnvironmentId, ThreadId];
+  return Atom.make((get) =>
+    boatCloudMachineOfThread({
+      status: get(primaryBoatCloudStatusAtom),
+      threadMachines: get(threadMachinesAtom),
+      ref: { environmentId, threadId },
+      onBoatCloud: get(boatCloudThreadList.onBoatCloudAtom(environmentId)),
+    }),
+  ).pipe(Atom.withLabel(`boat-cloud-thread-machine:${key}`));
+});
+
+const NO_MACHINE_ATOM = Atom.make<BoatCloudMachine | null>(null).pipe(
+  Atom.withLabel("boat-cloud-thread-machine:none"),
+);
+
+/** The Boat VM a thread runs on, with its live figures; null when it is not on Boat cloud. */
+export function useBoatCloudThreadMachine(ref: ScopedThreadRef | null): BoatCloudMachine | null {
+  return useAtomValue(
+    ref === null
+      ? NO_MACHINE_ATOM
+      : boatCloudThreadMachineAtom(JSON.stringify([ref.environmentId, ref.threadId])),
+  );
+}
+
+const boatCloudThreadMachineStateAtom = Atom.family((key: string) =>
+  Atom.make((get) => get(boatCloudThreadMachineAtom(key))?.state ?? null).pipe(
+    Atom.withLabel(`boat-cloud-thread-machine-state:${key}`),
+  ),
+);
+
+/** Only the VM's state, so a list row re-renders when it sleeps or wakes, not on every sample. */
+export function useBoatCloudThreadMachineState(
+  ref: ScopedThreadRef,
+): BoatCloudMachine["state"] | null {
+  return useAtomValue(
+    boatCloudThreadMachineStateAtom(JSON.stringify([ref.environmentId, ref.threadId])),
+  );
 }

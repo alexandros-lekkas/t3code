@@ -266,7 +266,8 @@ function sameApartFromStreaming(
 
 /**
  * A Boat cloud VM keeps the threads of every device and repository that used it, so a
- * client lists only the VM threads it started or opened, from `openedThreadsAtom`.
+ * client lists only the VM threads it started or opened, from `openedThreadsAtom`, and the
+ * ones an agent launched there.
  */
 export function createBoatCloudThreadListAtoms(input: {
   readonly catalogValueAtom: Atom.Atom<EnvironmentCatalogState>;

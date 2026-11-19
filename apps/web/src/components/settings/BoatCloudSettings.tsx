@@ -20,16 +20,17 @@ import { type EnvironmentPresentation, useEnvironments } from "../../state/envir
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import {
+  availableBoatCloudMachineTypes,
   BoatCloudMachineTypeItemLabel,
   useBoatCloudMachineTypeLabel,
 } from "../BoatCloudSizeSelector";
-import { BoatGlyph } from "../Icons";
+import { BoatIcon } from "../Icons";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
-import { BoatCloudMachineRows } from "./BoatCloudMachines";
+import { BoatCloudMachinesSection } from "./BoatCloudMachines";
 import { SecretInput } from "./SecretInput";
 import { SettingsRow, SettingsSection } from "./settingsLayout";
 import { useSearchableSetting } from "./settingsSearch";
@@ -261,28 +262,33 @@ function MachineRows({
     );
     setBusy(false);
   };
+  const sizes = availableBoatCloudMachineTypes(status.machineTypes);
+  // A saved default the plan no longer allows reads as the first size it does.
+  const defaultSize = sizes.some((option) => option.id === status.defaultMachineType)
+    ? status.defaultMachineType
+    : (sizes[0]?.id ?? status.defaultMachineType);
   return (
     <>
-      {status.machineTypes.length > 0 ? (
+      {sizes.length > 0 ? (
         <SettingsRow
           title={gt("Default size")}
-          description={gt("New cloud threads start on it unless they pick another.")}
+          description={gt("New Boat threads start on it unless they pick another.")}
           control={
             <Select
-              value={status.defaultMachineType}
+              value={defaultSize}
               onValueChange={(value) => {
-                const option = status.machineTypes.find((candidate) => candidate.id === value);
-                if (option?.available && option.id !== status.defaultMachineType) {
+                const option = sizes.find((candidate) => candidate.id === value);
+                if (option && option.id !== status.defaultMachineType) {
                   void apply({ defaultMachineType: option.id });
                 }
               }}
             >
               <SelectTrigger size="sm" aria-label={gt("Default size")} disabled={busy}>
-                <SelectValue>{label(status.defaultMachineType)}</SelectValue>
+                <SelectValue>{label(defaultSize)}</SelectValue>
               </SelectTrigger>
               <SelectPopup align="end" alignItemWithTrigger={false}>
-                {status.machineTypes.map((option) => (
-                  <SelectItem key={option.id} value={option.id} disabled={!option.available}>
+                {sizes.map((option) => (
+                  <SelectItem key={option.id} value={option.id} indicator="check">
                     <BoatCloudMachineTypeItemLabel option={option} />
                   </SelectItem>
                 ))}
@@ -346,107 +352,111 @@ export function BoatCloudSettings() {
   if (status === null) return null;
 
   return (
-    <SettingsSection
-      {...searchableSetting("boat-cloud")}
-      icon={<BoatGlyph aria-hidden className="size-5" />}
-    >
-      <SettingsRow
-        title={
-          connected ? (
-            <span className="wrap-anywhere">{status.account ?? gt("Boat API key")}</span>
-          ) : (
-            gt("Boat API key")
-          )
-        }
-        description={
-          connected
-            ? gt("Connected")
-            : gt("Run threads on boat.dev VMs. The key needs these scopes: {scopes}.", {
-                scopes: BOAT_CLOUD_REQUIRED_SCOPES.join(", "),
-              })
-        }
-        control={
-          connected && holderEnvironmentId !== null ? (
-            <Button
-              size="xs"
-              variant="destructive-outline"
-              onClick={() => {
-                for (const holder of holders) {
-                  void disconnect({ environmentId: holder.environmentId, input: {} });
-                }
-              }}
-            >
-              {gt("Disconnect")}
-            </Button>
-          ) : (
-            <ApiKeyForm holders={holders} setupEnvironmentId={holderEnvironmentId} />
-          )
-        }
-      />
-      {connected && setup ? (
+    <>
+      <SettingsSection
+        {...searchableSetting("boat-cloud")}
+        icon={<BoatIcon aria-hidden className="size-5" />}
+      >
         <SettingsRow
           title={
-            <span className="flex items-center gap-2">
-              <StepIcon
-                state={
-                  setup.status === "ready"
-                    ? "done"
-                    : setup.status === "failed"
-                      ? "failed"
-                      : setup.status === "running"
-                        ? "active"
-                        : "pending"
-                }
-              />
-              {gt("Snapshot")}
-            </span>
+            connected ? (
+              <span className="wrap-anywhere">{status.account ?? gt("Boat API key")}</span>
+            ) : (
+              gt("Boat API key")
+            )
           }
           description={
-            setup.status === "ready"
-              ? gt("New VMs start from it.")
-              : setup.status === "failed"
-                ? (setup.error ?? gt("Setup failed."))
-                : setup.status === "running" && setup.step !== null
-                  ? gt("Step {step} of {total}: {label}", {
-                      step: setupStepIndex + 1,
-                      total: BOAT_CLOUD_SETUP_STEPS.length,
-                      label: m(STEP_LABELS[setup.step]),
-                    })
-                  : gt("Builds the image new VMs start from.")
+            connected
+              ? gt("Connected")
+              : gt("Run threads on boat.dev VMs. The key needs these scopes: {scopes}.", {
+                  scopes: BOAT_CLOUD_REQUIRED_SCOPES.join(", "),
+                })
           }
           control={
-            setup.status === "running" ? (
-              <span className="text-xs text-muted-foreground">{gt("Setting up")}</span>
-            ) : (
-              <Button variant="outline" size="xs" onClick={rebuild}>
-                {setup.status === "ready"
-                  ? gt("Rebuild snapshot")
-                  : setup.status === "failed"
-                    ? gt("Retry")
-                    : gt("Set up")}
+            connected && holderEnvironmentId !== null ? (
+              <Button
+                size="xs"
+                variant="destructive-outline"
+                onClick={() => {
+                  for (const holder of holders) {
+                    void disconnect({ environmentId: holder.environmentId, input: {} });
+                  }
+                }}
+              >
+                {gt("Disconnect")}
               </Button>
+            ) : (
+              <ApiKeyForm holders={holders} setupEnvironmentId={holderEnvironmentId} />
             )
           }
         />
+        {connected && setup ? (
+          <SettingsRow
+            title={
+              <span className="flex items-center gap-2">
+                <StepIcon
+                  state={
+                    setup.status === "ready"
+                      ? "done"
+                      : setup.status === "failed"
+                        ? "failed"
+                        : setup.status === "running"
+                          ? "active"
+                          : "pending"
+                  }
+                />
+                {gt("Snapshot")}
+              </span>
+            }
+            description={
+              setup.status === "ready"
+                ? gt("New VMs start from it.")
+                : setup.status === "failed"
+                  ? (setup.error ?? gt("Setup failed."))
+                  : setup.status === "running" && setup.step !== null
+                    ? gt("Step {step} of {total}: {label}", {
+                        step: setupStepIndex + 1,
+                        total: BOAT_CLOUD_SETUP_STEPS.length,
+                        label: m(STEP_LABELS[setup.step]),
+                      })
+                    : gt("Builds the image new VMs start from.")
+            }
+            control={
+              setup.status === "running" ? (
+                <span className="text-xs text-muted-foreground">{gt("Setting up")}</span>
+              ) : (
+                <Button variant="outline" size="xs" onClick={rebuild}>
+                  {setup.status === "ready"
+                    ? gt("Rebuild snapshot")
+                    : setup.status === "failed"
+                      ? gt("Retry")
+                      : gt("Set up")}
+                </Button>
+              )
+            }
+          />
+        ) : null}
+        {connected ? <EnvironmentRows status={status} holders={holders} /> : null}
+        {connected ? <MachineRows status={status} holders={holders} /> : null}
+        {connected && machines.length > 1
+          ? machines.map((machine) => (
+              <KeyHolderRow
+                key={machine.environmentId}
+                environment={machine}
+                state={holderStates.get(machine.environmentId)}
+              />
+            ))
+          : null}
+        {connected && missingKey.length > 0 ? (
+          <SettingsRow
+            title={gt("Enable on the others")}
+            control={<ApiKeyForm holders={missingKey} setupEnvironmentId={null} />}
+          />
+        ) : null}
+      </SettingsSection>
+      {connected && holderEnvironmentId !== null ? (
+        <BoatCloudMachinesSection status={status} holderEnvironmentId={holderEnvironmentId} />
       ) : null}
-      {connected ? <EnvironmentRows status={status} holders={holders} /> : null}
-      {connected ? <MachineRows status={status} holders={holders} /> : null}
-      {connected && machines.length > 1
-        ? machines.map((machine) => (
-            <KeyHolderRow
-              key={machine.environmentId}
-              environment={machine}
-              state={holderStates.get(machine.environmentId)}
-            />
-          ))
-        : null}
-      {connected && missingKey.length > 0 ? (
-        <SettingsRow
-          title={gt("Enable on the others")}
-          control={<ApiKeyForm holders={missingKey} setupEnvironmentId={null} />}
-        />
-      ) : null}
-      {connected ? <BoatCloudMachineRows status={status} actions={null} /> : null}
-    </SettingsSection>
+    </>
   );
 }

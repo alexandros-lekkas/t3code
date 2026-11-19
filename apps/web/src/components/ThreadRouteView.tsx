@@ -18,6 +18,7 @@ import {
   useQuietThreadShell,
 } from "../state/entities";
 import { appAtomRegistry } from "../rpc/atomRegistry";
+import { useConnectBoatCloudThreadEnvironment } from "../boatCloud";
 import { useOpenBoatCloudThread } from "../state/boatCloudThreads";
 import { useEnvironmentShellStatus } from "../state/shell";
 import { environmentThreadShells, threadFamilies, useEnvironmentThread } from "../state/threads";
@@ -125,6 +126,7 @@ export function ThreadRouteView({
     ? { environmentId: draftSession.environmentId, threadId: draftSession.threadId }
     : draftRedirect;
   const openingBoatCloudThread = useOpenBoatCloudThread(serverThreadRef ?? draftThreadRef ?? null);
+  useConnectBoatCloudThreadEnvironment(serverThreadRef?.environmentId ?? null);
   // A VM thread is hidden until this device opens it, and opening it here lists it next render.
   const isHidden = (ref: ScopedThreadRef) =>
     !openingBoatCloudThread && hiddenKeys.has(threadKey(ref));

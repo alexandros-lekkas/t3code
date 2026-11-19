@@ -27,7 +27,7 @@ import { T, useGT } from "gt-react";
 import { memo, useState, type ComponentProps } from "react";
 import { ThreadDetailsCard } from "./ThreadDetailsCard";
 import { ThreadDetailsSandbox } from "./ThreadDetailsSandbox";
-import { useEnvironment } from "../../state/environments";
+import { useBoatCloudThreadMachineState } from "../../state/boatCloudThreads";
 import { OpenInPicker } from "./OpenInPicker";
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import { ThreadAutomationsPanel } from "./ThreadAutomationsPanel";
@@ -104,7 +104,11 @@ interface ThreadDetailsPanelProps extends Pick<
 export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
   const visible = useClientSettings(resolveThreadDetailsVisibility);
   const gt = useGT();
-  const onBoatCloud = useEnvironment(props.environmentId)?.boatCloud === true;
+  const onBoatCloud =
+    useBoatCloudThreadMachineState({
+      environmentId: props.environmentId,
+      threadId: props.threadId,
+    }) !== null;
   const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
   const fileScripts = useT3ProjectFileScripts(
     props.environmentId,
@@ -295,8 +299,8 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                 />
               ) : null}
 
-              {onBoatCloud && !props.draftId ? (
-                <ThreadDetailsSandbox environmentId={props.environmentId} />
+              {visible.sandbox && onBoatCloud && !props.draftId ? (
+                <ThreadDetailsSandbox threadRef={activeThreadRef} />
               ) : null}
 
               {visible.usage ? <ThreadDetailsUsage {...props.usage} /> : null}
