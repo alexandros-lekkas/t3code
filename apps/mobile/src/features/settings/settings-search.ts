@@ -101,7 +101,6 @@ const SETTINGS_SEARCH_TERMS = {
     msg("group projects", { $context: "settings search keyword" }),
     msg("organization", { $context: "settings search keyword" }),
     msg("sidebar", { $context: "settings search keyword" }),
-    msg("working section", { $context: "settings search keyword" }),
     msg("new threads", { $context: "settings search keyword" }),
     msg("last project", { $context: "settings search keyword" }),
   ],
@@ -161,6 +160,7 @@ const SETTINGS_SEARCH_TERMS = {
   ],
   SettingsLabs: [
     msg("beta", { $context: "settings search keyword" }),
+    msg("working section", { $context: "settings search keyword" }),
     msg("linked environments", { $context: "settings search keyword" }),
     msg("link machine", { $context: "settings search keyword" }),
     msg("fast worktree checkout", { $context: "settings search keyword" }),

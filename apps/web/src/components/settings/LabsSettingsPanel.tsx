@@ -8,7 +8,13 @@ import { useT3ConnectAuthPrompt } from "../clerk/useT3ConnectAuthPrompt";
 import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
 import { ScopedSwitch } from "./ScopedSwitch";
-import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
+import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts";
+import {
+  SettingResetButton,
+  SettingsPageContainer,
+  SettingsRow,
+  SettingsSection,
+} from "./settingsLayout";
 import { useSearchableSetting } from "./settingsSearch";
 import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings";
 import { useOptionalSettingsScope, useSettingsScope } from "./SettingsScopeContext";
@@ -21,6 +27,7 @@ export function LabsSettingsPanel() {
     <SettingsPageContainer>
       <SettingsSection id="beta" title={gt("Beta")}>
         <BoringSidebarRow />
+        <WorkingShelfRow />
         {/* Clerk is only mounted when this build has T3 Connect. */}
         {hasCloudPublicConfig() ? <GuestLinksRowWithSignIn /> : <GuestLinksRow />}
         <LinkedEnvironmentsRow />
@@ -57,6 +64,47 @@ function BoringSidebarRow() {
         </div>
       ) : null}
     </SettingsRow>
+  );
+}
+
+/** Fork: upstream shows this in General and defaults it on. */
+function WorkingShelfRow() {
+  const searchableSetting = useSearchableSetting();
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  const gt = useGT();
+  return (
+    <SettingsRow
+      {...searchableSetting("working-shelf")}
+      description={
+        <T>
+          Fold working and monitoring threads into a Working section. They return to the top of the
+          inbox when they need you. The boring sidebar in Labs has no Working section.
+        </T>
+      }
+      resetAction={
+        settings.sidebarWorkingShelfEnabled !==
+        DEFAULT_UNIFIED_SETTINGS.sidebarWorkingShelfEnabled ? (
+          <SettingResetButton
+            ariaLabel={gt("Reset working section to default")}
+            onClick={() =>
+              updateSettings({
+                sidebarWorkingShelfEnabled: DEFAULT_UNIFIED_SETTINGS.sidebarWorkingShelfEnabled,
+              })
+            }
+          />
+        ) : null
+      }
+      control={
+        <Switch
+          checked={settings.sidebarWorkingShelfEnabled}
+          onCheckedChange={(checked) =>
+            updateSettings({ sidebarWorkingShelfEnabled: Boolean(checked) })
+          }
+          aria-label={gt("Working section")}
+        />
+      }
+    />
   );
 }
 
