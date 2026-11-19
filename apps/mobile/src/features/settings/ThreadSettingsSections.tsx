@@ -45,6 +45,7 @@ export function SettingsLabsRouteScreen() {
         contentContainerClassName="gap-6 px-5 pt-4"
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
       >
+        <WorkingSectionSettings />
         <MachineBetaSection
           title={gt("Linked environments")}
           icon="link"
@@ -214,7 +215,7 @@ export function WorkingSectionSettings() {
   const savePreferences = useAtomSet(updateMobilePreferencesAtom);
   const preferences = useAtomValue(mobilePreferencesAtom);
   const workingShelfEnabled =
-    AsyncResult.isSuccess(preferences) && preferences.value.workingShelfEnabled !== false;
+    AsyncResult.isSuccess(preferences) && preferences.value.workingShelfEnabled === true;
 
   return (
     <View className="gap-3">

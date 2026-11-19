@@ -14,7 +14,7 @@ import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/
 import { ListChoiceRow as SettingsChoiceRow } from "../../components/ui/ListChoiceRow";
 import { SettingsSection } from "./components/SettingsSection";
 import { LanguageSettingsSection } from "./SettingsLanguageRouteScreen";
-import { NewThreadSettingsSection, WorkingSectionSettings } from "./ThreadSettingsSections";
+import { NewThreadSettingsSection } from "./ThreadSettingsSections";
 
 const GROUPING_OPTIONS: ReadonlyArray<{
   readonly mode: SidebarProjectGroupingMode;
@@ -72,7 +72,6 @@ export function SettingsProjectGroupingRouteScreen() {
             />
           ))}
         </SettingsSection>
-        <WorkingSectionSettings />
         <NewThreadSettingsSection />
       </ScrollView>
     </SettingsScreen>
