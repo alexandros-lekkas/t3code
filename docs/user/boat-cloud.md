@@ -17,16 +17,28 @@ and you can follow it from any client.
    boot, clones your most worked repositories, copies your machine's skills, and saves a Boat
    snapshot named `t3-code`. Every cloud VM starts from it. Choose **Rebuild snapshot** after you
    change your skills or update T3 Code.
-4. Under **Boat environment**, choose the Boat environment new VMs start on. It starts on Boat's default.
-   Its switches choose what VMs get: GitHub access, Boat credentials, secrets, and agent sign-ins.
-   Connect GitHub and add agent sign-ins in the Boat dashboard. Without GitHub access, private
-   repositories fail to clone. A VM keeps the environment it started on, even after it stops, so a
-   new choice only applies to new VMs.
+4. Under **Boat environment**, choose the Boat environment new VMs start on. It starts on Boat's
+   default, and the row says whether threads can start on it. Below it:
+   - **Agents** shows which providers the environment's sign-ins cover. A thread cannot start
+     without at least one: choose **Add sign-in** to add a Claude or ChatGPT sign-in on Boat's
+     [Agents & Proxying](https://boat.dev/dashboard?tab=agents) page.
+   - **GitHub** shows whether Boat's GitHub app is connected. Private repositories and pushes need
+     it. If you signed in to Boat with Google or email, choose **Connect** to open Boat's
+     [Environment](https://boat.dev/dashboard?tab=environment) page.
+   - **Secrets** gives VMs the environment's variables and secret files.
+   - **Boat key on VMs** puts a Boat key for your account on each VM, so agents there can start,
+     stop and delete VMs billed to you. T3 Code does not need it; leave it off unless an agent must
+     manage VMs itself.
+
+   A VM keeps the environment it started on, even after it stops, so a change only applies to new
+   VMs.
 
 ## Start a cloud thread
 
 In a new thread, open the machine picker and choose **Boat**, or use **New Boat thread**
-in the command palette. A VM starts getting ready as soon as you pick Boat. When you send the
+in the command palette. If Boat cannot start a thread yet, for example because its environment has
+no agent sign-in, the composer says so with a link to the setting to fix. A VM starts getting ready
+as soon as you pick Boat. When you send the
 first message, it shows in the thread right away, and the app lists each step as it runs: finding a
 VM, starting T3 Code, cloning or updating the repository, connecting, opening the project, and
 starting the thread, which lives on the VM from then on. T3 Code reuses a running VM that is under
@@ -36,8 +48,10 @@ snapshot. A VM from the snapshot is usually ready in under 10 seconds.
 Next to the machine picker, choose the VM size: Small, Medium, Large or Extra large. Each size lists its vCPUs, memory and hourly price;
 a size your Boat plan cannot start is shown with the reason. New threads use the **Default size**
 from the Boat section unless you pick another. With **Share machines** off, each cloud thread
-gets a VM of its own; turn it on to let threads join a running VM that has room. The thread's
-details panel shows its VM's size, state, CPU, memory, disk and cost.
+gets a VM of its own; turn it on to let threads join a running VM that has room. **Keep a ready
+machine** keeps an idle VM at the default size running while you use T3 Code, so a start skips the
+boot. That VM is billed at its hourly price; it is off by default, and turning it off deletes the
+idle VM. The thread's details panel shows its VM's size, state, CPU, memory, disk and cost.
 
 A cloud thread always works in a new worktree, so several threads can share a VM. You choose only
 the base branch. The thread keeps your model and access settings, and its attachments go with it.

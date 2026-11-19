@@ -701,6 +701,8 @@ export const makeSpareKeeper = () => {
   let keeping = false;
   /** A keep asked for while one ran, run once that one ends since a start may have taken its spare. */
   let queued: Effect.Effect<void> | null = null;
+  /** Bumped by a release, so a keep that was running when it came deletes what it readied. */
+  let generation = 0;
 
   const keep = (
     api: BoatApi,
@@ -715,6 +717,7 @@ export const makeSpareKeeper = () => {
         return Effect.void;
       }
       keeping = true;
+      const keptFor = generation;
       return ensureSpare({
         api,
         snapshot,
@@ -725,9 +728,11 @@ export const makeSpareKeeper = () => {
         created,
       }).pipe(
         Effect.tap((spare) =>
-          Effect.sync(() => {
-            ready = taken.has(spare.sandboxId) ? null : spare;
-          }),
+          keptFor === generation
+            ? Effect.sync(() => {
+                ready = taken.has(spare.sandboxId) ? null : spare;
+              })
+            : api.delete(spare.sandboxId),
         ),
         Effect.catchCause((cause) =>
           Effect.logWarning("boat cloud could not keep a spare VM ready", { cause }),
@@ -747,8 +752,27 @@ export const makeSpareKeeper = () => {
       );
     });
 
+  /**
+   * Deletes every spare no start of this holder took, so none is billed on. Holders sharing
+   * the key share spares, and the setting is applied on all of them.
+   */
+  const release = Effect.fn("BoatCloud.releaseSpares")(function* (api: BoatApi) {
+    generation += 1;
+    queued = null;
+    ready = null;
+    const spares = (yield* api.listSandboxes(MACHINE_LABEL_FILTER)).filter(
+      (sandbox) => sandbox.name === SPARE_NAME && !taken.has(sandbox.id),
+    );
+    yield* Effect.forEach(spares, (sandbox) => api.delete(sandbox.id), {
+      concurrency: "unbounded",
+      discard: true,
+    });
+    for (const sandbox of spares) created.delete(sandbox.id);
+  });
+
   return {
     keep,
+    release,
     /** The ready spare for this snapshot, environment and size, which no later start gets. */
     take: (snapshot: string, environment: string | null, machineType?: BoatMachineType) =>
       Effect.map(Clock.currentTimeMillis, (now) => {

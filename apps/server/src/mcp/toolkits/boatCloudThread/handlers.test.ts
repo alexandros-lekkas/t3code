@@ -78,7 +78,9 @@ const readyStatus: BoatCloudStatus = {
   environment: null,
   environments: [],
   environmentsError: null,
+  githubConnected: true,
   shareMachines: false,
+  keepReadyMachine: false,
   defaultMachineType: "small",
   machineTypes,
   environmentUsage: [],
@@ -337,12 +339,33 @@ it.effect("refuses before starting a VM when Boat cannot serve the request", () 
       code: "orchestration_error",
       message: expect.stringContaining("still building its snapshot"),
     });
+    const noSignIns = yield* harness({
+      status: {
+        environment: "base",
+        environments: [
+          {
+            id: "env-base",
+            name: "base",
+            isDefault: true,
+            passGithub: true,
+            passSandboxCredentials: false,
+            passSecrets: false,
+            passAgentsCredentials: true,
+            agentCredentials: [],
+          },
+        ],
+      },
+    });
+    expect(yield* noSignIns.call({ title: "T", message: "M" })).toMatchObject({
+      code: "capability_denied",
+      message: expect.stringContaining("no Claude or ChatGPT sign-in"),
+    });
     const linksOff = yield* harness({ linksEnabled: false });
     expect(yield* linksOff.call({ title: "T", message: "M" })).toMatchObject({
       code: "capability_denied",
       message: expect.stringContaining("Settings → Labs"),
     });
-    for (const refused of [disconnected, building, linksOff])
+    for (const refused of [disconnected, building, noSignIns, linksOff])
       expect(refused.recorded.acquired).toEqual([]);
 
     // The holder's own refusal, such as an unfinished setup, reaches the agent as it said it.

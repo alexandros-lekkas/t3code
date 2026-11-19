@@ -319,6 +319,20 @@ describe("the ready spare", () => {
     }),
   );
 
+  it.effect("is deleted on release, except one a start already took", () =>
+    Effect.gen(function* () {
+      const vm = runningVm("env-1", { spare: true });
+      const keeper = makeSpareKeeper();
+      yield* keep(vm, keeper);
+      assert.strictEqual((yield* keeper.take(SNAPSHOT, "base"))?.sandboxId, "vm-1");
+      yield* keep(vm, keeper);
+      yield* keeper.release(vm.api);
+      assert.include(vm.calls, "DELETE /sandboxes/vm-2");
+      assert.notInclude(vm.calls, "DELETE /sandboxes/vm-1");
+      assert.isNull(yield* keeper.take(SNAPSHOT, "base"));
+    }),
+  );
+
   it.effect("is forgotten once Boat lists it taken by another holder", () =>
     Effect.gen(function* () {
       const vm = runningVm("env-1", { spare: true });

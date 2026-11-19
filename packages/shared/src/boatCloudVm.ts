@@ -2,6 +2,7 @@
  * What runs on Boat cloud VMs, and how a holder picks one. Boat VMs are Ubuntu
  * with systemd user services, git, Node and sqlite3, and the agent CLIs.
  */
+import type { BoatCloudEnvironment, BoatCloudStatus } from "@t3tools/contracts";
 
 const VM_HOME = "/home/user";
 const USERDATA_DB = `${VM_HOME}/.t3/userdata/statev2.sqlite`;
@@ -244,6 +245,49 @@ export function boatCloudProviderDrivers(credentials: ReadonlyArray<string>): Se
       .map(([driver]) => driver),
   );
 }
+
+/** Boat's dashboard page for an account's AI sign-ins and keys. */
+export const BOAT_AGENTS_DASHBOARD_URL = "https://boat.dev/dashboard?tab=agents";
+/** Boat's dashboard page for environments, where a Google or email account connects GitHub. */
+export const BOAT_ENVIRONMENT_DASHBOARD_URL = "https://boat.dev/dashboard?tab=environment";
+
+/** Why a new Boat thread cannot start yet. */
+export type BoatCloudBlocker = "not-connected" | "no-snapshot" | "no-agents";
+
+/** The Boat environment new VMs start on. */
+export function boatCloudChosenEnvironment(status: BoatCloudStatus | null) {
+  return status?.environments.find((environment) => environment.name === status.environment);
+}
+
+/**
+ * The providers new VMs can run: null when Boat's credentials are unknown, so every
+ * provider stays offered and the VM's own server decides.
+ */
+export function boatCloudEnvironmentDrivers(
+  environment: BoatCloudEnvironment | undefined,
+): Set<string> | null {
+  return environment?.agentCredentials
+    ? boatCloudProviderDrivers(environment.agentCredentials)
+    : null;
+}
+
+/** The first thing missing before a new Boat thread can start, or null when it can. */
+export function boatCloudBlocker(status: BoatCloudStatus | null): BoatCloudBlocker | null {
+  if (status?.connected !== true) return "not-connected";
+  if (status.setup.status !== "ready" && !status.snapshotReady) return "no-snapshot";
+  if (boatCloudEnvironmentDrivers(boatCloudChosenEnvironment(status))?.size === 0) {
+    return "no-agents";
+  }
+  return null;
+}
+
+/** The blocker as the server and agents read it. Clients show their own translated text. */
+export const BOAT_CLOUD_BLOCKER_MESSAGES: Record<BoatCloudBlocker, string> = {
+  "not-connected":
+    "Boat is not connected. Connect a Boat API key in Settings → Environments → Boat.",
+  "no-snapshot": "Boat is still setting up. Finish setup in Settings → Environments → Boat.",
+  "no-agents": `The Boat environment has no Claude or ChatGPT sign-in, so no agent can run on its VMs. Add one at ${BOAT_AGENTS_DASHBOARD_URL}.`,
+};
 
 /**
  * Boat sets its credentials only in the commands it runs, never in systemd services, so

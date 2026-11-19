@@ -37,6 +37,17 @@ export const FAKE_ENV_VAR = "T3CODE_BOAT_CLOUD_FAKE";
 const FAKE_URL_ENV_VAR = "T3CODE_BOAT_CLOUD_FAKE_URL";
 /** Starts the fake with a running and a sleeping VM instead of none. */
 export const FAKE_SEED_ENV_VAR = "T3CODE_BOAT_CLOUD_FAKE_SEED";
+/** Simulates a Boat environment whose profile has no AI sign-in. */
+const FAKE_NO_AGENTS_ENV_VAR = "T3CODE_BOAT_CLOUD_FAKE_NO_AGENTS";
+/** Simulates an account without Boat's GitHub app. */
+const FAKE_NO_GITHUB_ENV_VAR = "T3CODE_BOAT_CLOUD_FAKE_NO_GITHUB";
+
+interface FakeLayerOptions {
+  readonly delayScale?: number;
+  readonly seed?: boolean;
+  readonly noAgents?: boolean;
+  readonly noGithub?: boolean;
+}
 
 const FAKE_API_KEY = "fake-boat-key";
 const API_KEY_SECRET = "boat-cloud-api-key";
@@ -139,11 +150,18 @@ const layerFakeConfig = (seed: boolean) =>
     }).pipe(Effect.orDie),
   );
 
-const layerFakeHttp = (delayScale: number, seed: boolean) =>
+const layerFakeHttp = (options: FakeLayerOptions) =>
   Layer.effect(
     HttpClient.HttpClient,
     Effect.flatMap(FakeBoatLocal, (local) =>
-      makeFakeBoat({ version: packageJson.version, target: local.target, delayScale, seed }),
+      makeFakeBoat({
+        version: packageJson.version,
+        target: local.target,
+        delayScale: options.delayScale ?? 1,
+        seed: options.seed ?? false,
+        noAgents: options.noAgents ?? false,
+        noGithub: options.noGithub ?? false,
+      }),
     ).pipe(Effect.map((fake) => fake.http)),
   );
 
@@ -151,7 +169,7 @@ const layerFakeHttp = (delayScale: number, seed: boolean) =>
  * BoatCloudService on the fake Boat. A start's session points at the local checkout of the
  * repository, since the thread runs on this machine: the VM's path does not exist here.
  */
-export const layerFake = (options?: { readonly delayScale?: number; readonly seed?: boolean }) =>
+export const layerFake = (options: FakeLayerOptions = {}) =>
   Layer.effect(
     BoatCloud.BoatCloudService,
     Effect.gen(function* () {
@@ -179,9 +197,9 @@ export const layerFake = (options?: { readonly delayScale?: number; readonly see
       BoatCloud.layer.pipe(
         Layer.provide(
           Layer.mergeAll(
-            layerFakeHttp(options?.delayScale ?? 1, options?.seed ?? false),
+            layerFakeHttp(options),
             layerMemorySecretStore,
-            layerFakeConfig(options?.seed ?? false),
+            layerFakeConfig(options.seed ?? false),
           ),
         ),
       ),
@@ -252,7 +270,8 @@ export const layerWith = <E, R>(fakeLocal: Layer.Layer<FakeBoatLocal, E, R>) => 
     | Exclude<Layer.Services<ReturnType<typeof layerFake>>, FakeBoatLocal>
   >;
   const real: Selected = BoatCloud.layer;
-  const fake = (seed: boolean): Selected => layerFake({ seed }).pipe(Layer.provide(fakeLocal));
+  const fake = (options: FakeLayerOptions): Selected =>
+    layerFake(options).pipe(Layer.provide(fakeLocal));
   return Layer.unwrap(
     Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;
@@ -265,8 +284,16 @@ export const layerWith = <E, R>(fakeLocal: Layer.Layer<FakeBoatLocal, E, R>) => 
       yield* Effect.logWarning(
         `${FAKE_ENV_VAR} is set: Boat runs against a fake Boat, and its VMs are this server.`,
       );
-      const seed = (yield* Config.String(FAKE_SEED_ENV_VAR).pipe(Config.withDefault(""))).trim();
-      return fake(seed === "1" || seed === "true");
+      const on = (name: string) =>
+        Config.String(name).pipe(
+          Config.withDefault(""),
+          Config.map((value) => value.trim() === "1" || value.trim() === "true"),
+        );
+      return fake({
+        seed: yield* on(FAKE_SEED_ENV_VAR),
+        noAgents: yield* on(FAKE_NO_AGENTS_ENV_VAR),
+        noGithub: yield* on(FAKE_NO_GITHUB_ENV_VAR),
+      });
     }).pipe(Effect.orDie),
   );
 };
