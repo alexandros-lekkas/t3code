@@ -867,7 +867,7 @@ export const wakeMachine = Effect.fn("BoatCloud.wakeMachine")(function* (
       const listed = yield* api.getSandbox(sandboxId);
       if (listed === null) return yield* vmFailure("Boat deleted this VM.", "gone");
       if (machineStateOf(listed.state) === "stopped") {
-        yield* api.resume(sandboxId, IDLE_TTL_SECONDS, "default");
+        yield* api.resume(sandboxId, IDLE_TTL_SECONDS);
       } else {
         yield* api.extend(sandboxId, IDLE_TTL_SECONDS);
       }

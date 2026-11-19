@@ -15,6 +15,7 @@ import {
   type ReadySpare,
   startingSnapshot,
   startMachine,
+  wakeMachine,
 } from "./boatCloudStart.ts";
 import {
   NOT_HOSTED_MARKER,
@@ -52,6 +53,8 @@ const runningVm = (
   const names = new Map([["vm-1", vm.spare ? SPARE_NAME : "Boat cloud"]]);
   const environments = new Map([["vm-1", "base"]]);
   const states = new Map<string, string>();
+  /** The size each resume asked for, null when it kept the VM's own. */
+  const resumes: Array<unknown> = [];
   const listed = (id: string) => ({
     id,
     state: states.get(id) ?? "ready",
@@ -100,6 +103,11 @@ const runningVm = (
         return reply({ sandbox: listed(id) });
       }
       if (path.endsWith("/host")) return reply({ url: `${VM_URL}/` });
+      if (path.endsWith("/resume")) {
+        resumes.push(body.type ?? null);
+        states.set(id, "ready");
+        return reply({ sandbox: listed(id) });
+      }
       if (!command) return reply({});
       const script = typeof body.command === "string" ? body.command : "";
       commands.push(script);
@@ -121,7 +129,7 @@ const runningVm = (
       return reply({ exitCode: 0, stdout });
     }),
   );
-  return { api: makeBoatApi(http, "key"), calls, commands, states };
+  return { api: makeBoatApi(http, "key"), calls, commands, states, resumes };
 };
 
 const start = (
@@ -188,6 +196,17 @@ describe("startMachine on a running VM", () => {
       );
       assert.strictEqual(hosts.length, 1);
       assert.isAbove(hosts[0]!, vm.calls.indexOf("exec server"));
+    }),
+  );
+});
+
+describe("wakeMachine", () => {
+  it.effect("resumes a stopped VM at its own size", () =>
+    Effect.gen(function* () {
+      const vm = runningVm("env-1");
+      vm.states.set("vm-1", "stopped");
+      yield* wakeMachine(vm.api, "vm-1");
+      assert.deepStrictEqual(vm.resumes, [null]);
     }),
   );
 });
