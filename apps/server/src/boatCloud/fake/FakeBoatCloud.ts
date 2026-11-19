@@ -35,6 +35,8 @@ import {
 export const FAKE_ENV_VAR = "T3CODE_BOAT_CLOUD_FAKE";
 /** Overrides the URL fake VMs hand out, which is the dev server's own. */
 const FAKE_URL_ENV_VAR = "T3CODE_BOAT_CLOUD_FAKE_URL";
+/** Starts the fake with a running and a sleeping VM instead of none. */
+export const FAKE_SEED_ENV_VAR = "T3CODE_BOAT_CLOUD_FAKE_SEED";
 
 const FAKE_API_KEY = "fake-boat-key";
 const API_KEY_SECRET = "boat-cloud-api-key";
@@ -56,34 +58,36 @@ export class FakeBoatLocal extends Context.Service<
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 /** The registry a fresh fake starts with, in BoatCloudService's `state.json` shape. */
-const seedState = (now: string) => ({
+const seedState = (now: string, seed: boolean) => ({
   account: FAKE_ACCOUNT,
   environment: "default",
   snapshotRepositories: [],
-  machines: [
-    {
-      sandboxId: FAKE_RUNNING_VM,
-      environmentId: "fake-boat-env-run1",
-      label: machineLabelOf(FAKE_RUNNING_VM),
-      httpBaseUrl: null,
-      state: "running",
-      repositories: ["github.com/pingdotgg/t3code"],
-      backedUpAt: null,
-      acquiredAt: now,
-      environment: "default",
-    },
-    {
-      sandboxId: FAKE_STOPPED_VM,
-      environmentId: "fake-boat-env-stop",
-      label: machineLabelOf(FAKE_STOPPED_VM),
-      httpBaseUrl: null,
-      state: "stopped",
-      repositories: ["github.com/pingdotgg/t3code", "github.com/effect-ts/effect"],
-      backedUpAt: now,
-      acquiredAt: null,
-      environment: "default",
-    },
-  ],
+  machines: !seed
+    ? []
+    : [
+        {
+          sandboxId: FAKE_RUNNING_VM,
+          environmentId: "fake-boat-env-run1",
+          label: machineLabelOf(FAKE_RUNNING_VM),
+          httpBaseUrl: null,
+          state: "running",
+          repositories: ["github.com/pingdotgg/t3code"],
+          backedUpAt: null,
+          acquiredAt: now,
+          environment: "default",
+        },
+        {
+          sandboxId: FAKE_STOPPED_VM,
+          environmentId: "fake-boat-env-stop",
+          label: machineLabelOf(FAKE_STOPPED_VM),
+          httpBaseUrl: null,
+          state: "stopped",
+          repositories: ["github.com/pingdotgg/t3code", "github.com/effect-ts/effect"],
+          backedUpAt: now,
+          acquiredAt: null,
+          environment: "default",
+        },
+      ],
 });
 
 /** The key lives in memory and starts set, so the fake is connected from the start. */
@@ -117,28 +121,29 @@ const layerMemorySecretStore = Layer.sync(ServerSecretStore.ServerSecretStore, (
 });
 
 /** Its own state directory, reset on every start since the fake Boat lives in memory. */
-const layerFakeConfig = Layer.effect(
-  ServerConfig.ServerConfig,
-  Effect.gen(function* () {
-    const config = yield* ServerConfig.ServerConfig;
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const stateDir = path.join(config.stateDir, "boat-cloud-fake");
-    const directory = path.join(stateDir, "boat-cloud");
-    yield* fs.makeDirectory(directory, { recursive: true });
-    yield* fs.writeFileString(
-      path.join(directory, "state.json"),
-      encodeJson(seedState(DateTime.formatIso(yield* DateTime.now))),
-    );
-    return { ...config, stateDir };
-  }).pipe(Effect.orDie),
-);
+const layerFakeConfig = (seed: boolean) =>
+  Layer.effect(
+    ServerConfig.ServerConfig,
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const stateDir = path.join(config.stateDir, "boat-cloud-fake");
+      const directory = path.join(stateDir, "boat-cloud");
+      yield* fs.makeDirectory(directory, { recursive: true });
+      yield* fs.writeFileString(
+        path.join(directory, "state.json"),
+        encodeJson(seedState(DateTime.formatIso(yield* DateTime.now), seed)),
+      );
+      return { ...config, stateDir };
+    }).pipe(Effect.orDie),
+  );
 
-const layerFakeHttp = (delayScale: number) =>
+const layerFakeHttp = (delayScale: number, seed: boolean) =>
   Layer.effect(
     HttpClient.HttpClient,
     Effect.flatMap(FakeBoatLocal, (local) =>
-      makeFakeBoat({ version: packageJson.version, target: local.target, delayScale }),
+      makeFakeBoat({ version: packageJson.version, target: local.target, delayScale, seed }),
     ).pipe(Effect.map((fake) => fake.http)),
   );
 
@@ -146,7 +151,7 @@ const layerFakeHttp = (delayScale: number) =>
  * BoatCloudService on the fake Boat. A start's session points at the local checkout of the
  * repository, since the thread runs on this machine: the VM's path does not exist here.
  */
-export const layerFake = (options?: { readonly delayScale?: number }) =>
+export const layerFake = (options?: { readonly delayScale?: number; readonly seed?: boolean }) =>
   Layer.effect(
     BoatCloud.BoatCloudService,
     Effect.gen(function* () {
@@ -174,9 +179,9 @@ export const layerFake = (options?: { readonly delayScale?: number }) =>
       BoatCloud.layer.pipe(
         Layer.provide(
           Layer.mergeAll(
-            layerFakeHttp(options?.delayScale ?? 1),
+            layerFakeHttp(options?.delayScale ?? 1, options?.seed ?? false),
             layerMemorySecretStore,
-            layerFakeConfig,
+            layerFakeConfig(options?.seed ?? false),
           ),
         ),
       ),
@@ -247,7 +252,7 @@ export const layerWith = <E, R>(fakeLocal: Layer.Layer<FakeBoatLocal, E, R>) => 
     | Exclude<Layer.Services<ReturnType<typeof layerFake>>, FakeBoatLocal>
   >;
   const real: Selected = BoatCloud.layer;
-  const fake: Selected = layerFake().pipe(Layer.provide(fakeLocal));
+  const fake = (seed: boolean): Selected => layerFake({ seed }).pipe(Layer.provide(fakeLocal));
   return Layer.unwrap(
     Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;
@@ -260,7 +265,8 @@ export const layerWith = <E, R>(fakeLocal: Layer.Layer<FakeBoatLocal, E, R>) => 
       yield* Effect.logWarning(
         `${FAKE_ENV_VAR} is set: Boat cloud runs against a fake Boat, and its VMs are this server.`,
       );
-      return fake;
+      const seed = (yield* Config.String(FAKE_SEED_ENV_VAR).pipe(Config.withDefault(""))).trim();
+      return fake(seed === "1" || seed === "true");
     }).pipe(Effect.orDie),
   );
 };

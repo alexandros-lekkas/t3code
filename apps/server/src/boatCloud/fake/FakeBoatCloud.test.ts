@@ -81,22 +81,32 @@ it.live("uses the real service when the env var is unset", () =>
   ),
 );
 
-it.live("uses the fake, connected to a demo account, when the env var is set", () =>
-  firstStatus.pipe(
-    Effect.map((status) => {
-      assert.isTrue(status.connected);
-      assert.strictEqual(status.account, FAKE_ACCOUNT);
-      assert.deepStrictEqual(
-        status.machines.map((machine) => machine.state),
-        ["running", "stopped"],
-      );
-    }),
-    Effect.provide(
-      FakeBoatCloud.layerWith(layerLocal).pipe(
-        Layer.provide(dependencies({ [FakeBoatCloud.FAKE_ENV_VAR]: "1" })),
+it.live.each([
+  { seed: undefined, states: [] },
+  { seed: "1", states: ["running", "stopped"] },
+])(
+  "uses the fake, connected to a demo account, when the env var is set (seed $seed)",
+  ({ seed, states }) =>
+    firstStatus.pipe(
+      Effect.map((status) => {
+        assert.isTrue(status.connected);
+        assert.strictEqual(status.account, FAKE_ACCOUNT);
+        assert.deepStrictEqual(
+          status.machines.map((machine) => machine.state),
+          states,
+        );
+      }),
+      Effect.provide(
+        FakeBoatCloud.layerWith(layerLocal).pipe(
+          Layer.provide(
+            dependencies({
+              [FakeBoatCloud.FAKE_ENV_VAR]: "1",
+              ...(seed ? { [FakeBoatCloud.FAKE_SEED_ENV_VAR]: seed } : {}),
+            }),
+          ),
+        ),
       ),
     ),
-  ),
 );
 
 it.live("acquires a fake VM through its steps and hands out this server", () =>
@@ -145,7 +155,7 @@ it.live("acquires a fake VM through its steps and hands out this server", () =>
   }).pipe(
     Effect.scoped,
     Effect.provide(
-      FakeBoatCloud.layerFake({ delayScale: 0 }).pipe(
+      FakeBoatCloud.layerFake({ delayScale: 0, seed: true }).pipe(
         Layer.provide(layerLocal),
         Layer.provide(dependencies({})),
       ),
@@ -171,7 +181,7 @@ it.live("rebuilds the snapshot and wakes the stopped VM", () =>
   }).pipe(
     Effect.scoped,
     Effect.provide(
-      FakeBoatCloud.layerFake({ delayScale: 0 }).pipe(
+      FakeBoatCloud.layerFake({ delayScale: 0, seed: true }).pipe(
         Layer.provide(layerLocal),
         Layer.provide(dependencies({})),
         // Setup copies the home's skills; this home has none.
