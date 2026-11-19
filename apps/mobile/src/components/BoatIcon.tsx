@@ -1,0 +1,35 @@
+import Svg, { Path, Rect } from "react-native-svg";
+
+import { useAppearancePreferences } from "../features/settings/appearance/AppearancePreferencesProvider";
+
+const BOAT_BLUE = "#263FA9";
+const BOAT_GLYPH =
+  "M490.123 361.461C494.464 361.461 497.985 364.978 497.985 369.323V403.916C497.985 408.256 494.464 411.777 490.123 411.777H473.317C468.941 411.777 465.396 415.327 465.396 419.699V454.232C465.396 458.573 461.875 462.094 457.534 462.094H84.3579C83.1446 462.094 81.9773 461.511 81.2263 460.558C52.4607 424.054 51.9691 423.595 7.86426 411.777C3.67043 410.653 0 408.256 0 403.916V369.323C0 364.978 3.52235 361.461 7.86426 361.461H490.123ZM234.167 4.81756C238.589 -2.56834 249.679 -1.18229 252.148 7.06463L321.938 240.22L244.366 338.334H51.9617C44.2696 338.334 39.5154 329.947 43.4665 323.347L234.167 4.81756ZM453.056 132.26C451.192 124.166 440.791 121.826 435.64 128.341L282.295 322.292C277.163 328.784 281.786 338.334 290.063 338.334H488.08C494.445 338.334 499.157 332.414 497.728 326.21L453.056 132.26Z";
+
+/**
+ * The boat.dev mark in its brand blue. On dark surfaces the blue glyph has too little
+ * contrast, so it sits white on a blue tile, as Boat's own app icon does.
+ */
+export function BoatIcon(props: { readonly size: number }) {
+  const { themeAppearance } = useAppearancePreferences();
+  if (themeAppearance === "dark") {
+    return (
+      // oxlint-disable-next-line t3code/no-untranslated-copy -- product name
+      <Svg accessibilityLabel="Boat" width={props.size} height={props.size} viewBox="0 0 640 640">
+        <Rect width={640} height={640} rx={144} fill={BOAT_BLUE} />
+        <Path d={BOAT_GLYPH} fill="#FFFFFF" transform="translate(141 155) scale(0.72)" />
+      </Svg>
+    );
+  }
+  return (
+    <Svg
+      // oxlint-disable-next-line t3code/no-untranslated-copy -- product name
+      accessibilityLabel="Boat"
+      width={props.size}
+      height={(props.size * 463) / 498}
+      viewBox="0 0 498 463"
+    >
+      <Path d={BOAT_GLYPH} fill={BOAT_BLUE} />
+    </Svg>
+  );
+}

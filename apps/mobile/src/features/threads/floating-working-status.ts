@@ -28,6 +28,8 @@ export type FloatingWorkingStatus =
   | { readonly kind: "preparing"; readonly label: string }
   | {
       readonly kind: "connection";
+      /** A Boat VM that stopped itself reads as asleep, not broken. */
+      readonly tone?: "sleeping" | "waking";
       readonly label: string;
       readonly onPress: () => void;
     };
@@ -58,6 +60,8 @@ export function connectionFloatingStatus(
     readonly connectionState: EnvironmentConnectionPhase;
     readonly environmentLabel: string | null;
     readonly onReconnect: () => void;
+    /** Set while the thread's Boat VM is stopped. */
+    readonly boatCloudSleep?: "sleeping" | "waking" | null;
   },
   resolve: MessageResolver = m,
 ): FloatingWorkingStatus | null {
@@ -68,6 +72,27 @@ export function connectionFloatingStatus(
     onPress: input.onReconnect,
   });
 
+  // A Boat VM reads as asleep in any unconnected phase, so a real diagnostic outranks it.
+  if (
+    input.boatCloudSleep &&
+    input.connectionState !== "offline" &&
+    input.connectionState !== "unsupported" &&
+    input.connectionState !== "connected"
+  ) {
+    return input.boatCloudSleep === "waking"
+      ? {
+          kind: "connection",
+          tone: "waking",
+          label: resolve(msg("Waking {environmentLabel}…", { environmentLabel })),
+          onPress: input.onReconnect,
+        }
+      : {
+          kind: "connection",
+          tone: "sleeping",
+          label: resolve(msg("Sleeping. Your next message wakes it.")),
+          onPress: input.onReconnect,
+        };
+  }
   switch (input.connectionState) {
     case "offline":
       return unavailable(resolve(msg("You are offline")));
