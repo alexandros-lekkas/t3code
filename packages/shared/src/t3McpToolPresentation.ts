@@ -57,6 +57,8 @@ export type T3McpToolSummaryAction =
   | "environment-update"
   | "theme-read"
   | "theme-set"
+  | "boat-cloud-read"
+  | "boat-cloud-update"
   | "attachment-prepare"
   | "attachment-discard"
   | "attachment-send"
@@ -420,6 +422,35 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
   ),
   t3_theme_read: tool(["Read", "Reading", "Read", "themes"], "theme-read"),
   t3_theme_set: tool(["Set", "Setting", "Set", "the theme"], "theme-set"),
+  t3_boat_cloud_status: tool(["Read", "Reading", "Read", "Boat cloud"], "boat-cloud-read"),
+  t3_boat_cloud_configure: tool(
+    ["Configure", "Configuring", "Configured", "Boat cloud"],
+    "boat-cloud-update",
+  ),
+  t3_boat_cloud_root_environment_update: tool(
+    ["Update", "Updating", "Updated", "the Boat cloud environment"],
+    "boat-cloud-update",
+  ),
+  t3_boat_cloud_snapshot_rebuild: tool(
+    ["Rebuild", "Rebuilding", "Started rebuilding", "the Boat cloud snapshot"],
+    "boat-cloud-update",
+  ),
+  t3_boat_cloud_machine: tool(
+    ["Manage", "Managing", "Managed", "a Boat cloud VM"],
+    "boat-cloud-update",
+  ),
+  t3_boat_cloud_machine_stop: tool(
+    ["Stop", "Stopping", "Stopped", "a Boat cloud VM"],
+    "boat-cloud-update",
+  ),
+  t3_boat_cloud_machine_wake: tool(
+    ["Wake", "Waking", "Woke", "a Boat cloud VM"],
+    "boat-cloud-update",
+  ),
+  t3_boat_cloud_machine_delete: tool(
+    ["Delete", "Deleting", "Deleted", "a Boat cloud VM"],
+    "boat-cloud-update",
+  ),
   t3_thread_launch: tool(["Launch", "Launching", "Launched", "a project thread"], "thread-create"),
   t3_project_list: tool(["List", "Listing", "Listed", "projects"], "project-list"),
   t3_project_read: tool(["Read", "Reading", "Read", "a project"], "project-read"),
@@ -511,6 +542,7 @@ const ACTION_TOOLS: Readonly<Record<string, (action: string) => string | undefin
   preview_act: (action) => `preview_${action}`,
   t3_queue: (action) => `t3_queue_${action}`,
   t3_pending_request: (action) => `t3_pending_request_${action}`,
+  t3_boat_cloud_machine: (action) => `t3_boat_cloud_machine_${action}`,
   t3_thread_transfer: (action) =>
     ({ fork: "t3_thread_fork", merge_back: "t3_thread_merge_back", status: "t3_thread_transfers" })[
       action

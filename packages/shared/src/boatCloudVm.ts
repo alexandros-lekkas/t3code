@@ -69,6 +69,13 @@ export const snapshotNameOf = (version: string, withSkills: boolean) =>
 export const isBoatCloudSnapshot = (name: string) =>
   name === SNAPSHOT_PREFIX || name.startsWith(`${SNAPSHOT_PREFIX}-`);
 
+/** The t3 build a snapshot name records, or null for a name from before builds were named. */
+export const snapshotBuildOf = (name: string) => {
+  const match = /^t3-code-(\d+)-(\d+)-(\d+)(-skills)?$/u.exec(name);
+  if (match === null) return null;
+  return { version: `${match[1]}.${match[2]}.${match[3]}`, withSkills: match[4] !== undefined };
+};
+
 /**
  * Installs that version with T3 Code's installer, which checks the archive's checksum and
  * unpacks it into the runtime layout `t3 service install` expects.

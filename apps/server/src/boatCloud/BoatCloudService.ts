@@ -12,6 +12,10 @@ import {
   BOAT_CLOUD_MACHINE_TYPES,
   BoatCloudMachineType,
   BoatCloudMachineUsage,
+  type BoatCloudMachine,
+  type BoatCloudRootEnvironment,
+  type BoatCloudRootEnvironmentEdits,
+  type BoatCloudSnapshot,
   type BoatCloudRunSetupInput,
   BoatCloudMachineState,
   type BoatCloudSession,
@@ -29,7 +33,9 @@ import {
   type BoatApi,
   BoatApiError,
   type BoatLimits,
+  type BoatEnvironmentOutline,
   type BoatSandbox,
+  type BoatSnapshot,
   cloudEnvironments,
   makeBoatApi,
 } from "@t3tools/shared/boatCloudApi";
@@ -64,6 +70,7 @@ import {
   parseStats,
   restoreScript,
   statsScript,
+  snapshotBuildOf,
 } from "@t3tools/shared/boatCloudVm";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -104,6 +111,7 @@ const IDLE_STOP_SECONDS = IDLE_TTL_SECONDS - 60;
  */
 const USAGE_REFRESH_INTERVAL = Duration.minutes(1);
 const STATS_REFRESH_INTERVAL = Duration.seconds(30);
+const USAGE_REFRESH_COOLDOWN = Duration.seconds(10);
 
 const StoredMachine = Schema.Struct({
   sandboxId: Schema.String,
@@ -279,8 +287,76 @@ export class BoatCloudService extends Context.Service<
       input: BoatCloudAcquireInput,
     ) => Effect.Effect<BoatCloudSession, BoatCloudError>;
     readonly wake: (input: BoatCloudWakeInput) => Effect.Effect<BoatCloudSession, BoatCloudError>;
+    /** The status with what only Boat knows: the snapshot, the root environment, VM sizes and usage. */
+    readonly inspect: Effect.Effect<BoatCloudInspection, BoatCloudError>;
+    /** Edits the chosen Boat environment, or the one named. Secret values are never read back. */
+    readonly updateRootEnvironment: (
+      input: BoatCloudRootEnvironmentUpdate,
+    ) => Effect.Effect<BoatCloudRootEnvironmentUpdated, BoatCloudError>;
+    /** Backs a managed VM up and stops it. */
+    readonly stopMachine: (sandboxId: string) => Effect.Effect<BoatCloudMachine, BoatCloudError>;
+    /** Turns a managed VM on and starts its T3 server, without a pairing code. */
+    readonly wakeMachine: (sandboxId: string) => Effect.Effect<BoatCloudMachine, BoatCloudError>;
+    /**
+     * Deletes a managed VM. A running one needs `force`. This machine keeps its backup, so a
+     * thread's VM stays listed as gone and waking it restores it.
+     */
+    readonly deleteMachine: (input: {
+      readonly sandboxId: string;
+      readonly force: boolean;
+    }) => Effect.Effect<void, BoatCloudError>;
+    /** Reads every VM's usage and load now, rate-limited, and returns the status. */
+    readonly refreshUsage: Effect.Effect<BoatCloudStatus>;
   }
 >()("t3/boatCloud/BoatCloudService") {}
+
+export interface BoatCloudInspection {
+  readonly status: BoatCloudStatus;
+  readonly snapshot: BoatCloudSnapshot | null;
+  readonly rootEnvironment: BoatCloudRootEnvironment | null;
+}
+
+export interface BoatCloudRootEnvironmentUpdate extends BoatCloudRootEnvironmentEdits {
+  /** A Boat environment's name or id; the one new VMs start on when absent. */
+  readonly environment?: string | undefined;
+  readonly setVariables?: ReadonlyArray<{ readonly key: string; readonly value: string }>;
+  readonly setSecretFiles?: ReadonlyArray<{ readonly path: string; readonly contents: string }>;
+}
+
+export interface BoatCloudRootEnvironmentUpdated {
+  readonly rootEnvironment: BoatCloudRootEnvironment;
+  /** Null when VMs were not upgraded. */
+  readonly upgraded: { readonly machines: number; readonly failed: number } | null;
+}
+
+const rootEnvironmentOf = (outline: BoatEnvironmentOutline): BoatCloudRootEnvironment => ({
+  id: outline.id,
+  name: outline.name,
+  isDefault: outline.isDefault,
+  version: outline.version,
+  safeForThirdParties: outline.safeForThirdParties,
+  passGithub: outline.passGithub,
+  passSandboxCredentials: outline.passSandboxCredentials,
+  passSecrets: outline.passSecrets,
+  passAgentsCredentials: outline.passAgentsCredentials,
+  variables: outline.variables,
+  secretFiles: outline.secretFiles,
+  repositories: outline.repositories.map(({ fullName, baseBranch }) => ({
+    repository: fullName,
+    baseBranch,
+  })),
+  versions: outline.versions,
+});
+
+const snapshotOf = (snapshot: BoatSnapshot): BoatCloudSnapshot => {
+  const build = snapshotBuildOf(snapshot.name);
+  return {
+    name: snapshot.name,
+    t3Version: build?.version ?? null,
+    withSkills: build?.withSkills ?? false,
+    builtAt: snapshot.createdAt ?? null,
+  };
+};
 
 const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
@@ -730,7 +806,7 @@ const make = Effect.gen(function* () {
       stopping.set(sandboxId, stopped);
       return true;
     });
-    if (!began) return;
+    if (!began) return false;
     yield* Effect.gen(function* () {
       if (machine.environmentId !== null) {
         // The VM's own deadline is a minute away; the backup must not be cut off by it.
@@ -749,7 +825,7 @@ const make = Effect.gen(function* () {
       yield* updateMachine(machine.sandboxId, { state: "stopped" });
       // Its cost stops growing here, so the figure is read once more.
       yield* refreshUsage(api, [machine.sandboxId]).pipe(Effect.forkIn(scope));
-      yield* Effect.logInfo("boat cloud stopped an idle VM", { sandboxId: machine.sandboxId });
+      yield* Effect.logInfo("boat cloud stopped a VM", { sandboxId: machine.sandboxId });
     }).pipe(
       Effect.ensuring(
         Effect.suspend(() => {
@@ -758,6 +834,7 @@ const make = Effect.gen(function* () {
         }),
       ),
     );
+    return true;
   });
 
   /**
@@ -1193,7 +1270,11 @@ const make = Effect.gen(function* () {
     } satisfies BoatCloudSession;
   });
 
-  const wake = Effect.fn("BoatCloud.wake")(function* (input: BoatCloudWakeInput) {
+  const wake = (input: BoatCloudWakeInput) => wakeWith(input, true);
+  const wakeWith = Effect.fn("BoatCloud.wake")(function* (
+    input: BoatCloudWakeInput,
+    pair: boolean,
+  ) {
     const api = yield* requireApi;
     const { requestId } = input;
     const report = requestId === undefined ? undefined : reportStep(requestId);
@@ -1227,7 +1308,7 @@ const make = Effect.gen(function* () {
         () =>
           Effect.gen(function* () {
             const woken = yield* wakeMachine(api, sandboxId, {
-              pair: true,
+              pair,
               ...(report === undefined ? {} : { report }),
             });
             yield* updateMachine(sandboxId, {
@@ -1299,6 +1380,238 @@ const make = Effect.gen(function* () {
     }
     return yield* SubscriptionRef.get(statusRef);
   });
+
+  const inspect = Effect.gen(function* () {
+    const key = yield* readKey;
+    if (Option.isNone(key)) {
+      return {
+        status: yield* SubscriptionRef.get(statusRef),
+        snapshot: null,
+        rootEnvironment: null,
+      } satisfies BoatCloudInspection;
+    }
+    const api = makeBoatApi(http, key.value);
+    // Each part is optional, so a key missing one scope still shows the rest.
+    const [snapshots, outlines] = yield* Effect.all(
+      [
+        api.listSnapshots().pipe(Effect.orElseSucceed(() => null)),
+        api.environmentOutlines().pipe(Effect.orElseSucceed(() => [])),
+      ],
+      { concurrency: "unbounded" },
+    );
+    if (snapshots !== null) snapshotName = startingSnapshot(snapshots);
+    yield* refreshEnvironments(api);
+    yield* reconcile(api).pipe(Effect.ignore);
+    yield* refreshUsage(api).pipe(Effect.ignore);
+    const starting = snapshots?.find((snapshot) => snapshot.name === snapshotName);
+    const chosen = outlines.find((outline) => outline.name === state.environment);
+    return {
+      status: yield* SubscriptionRef.get(statusRef),
+      snapshot: starting === undefined ? null : snapshotOf(starting),
+      rootEnvironment: chosen === undefined ? null : rootEnvironmentOf(chosen),
+    } satisfies BoatCloudInspection;
+  }).pipe(cloudError("Could not read Boat cloud."), Effect.withSpan("BoatCloud.inspect"));
+
+  const updateRootEnvironment = Effect.fn("BoatCloud.updateRootEnvironment")(function* (
+    input: BoatCloudRootEnvironmentUpdate,
+  ) {
+    const api = yield* requireApi;
+    return yield* Effect.gen(function* () {
+      const named = input.environment ?? state.environment;
+      const outlines = yield* api.environmentOutlines();
+      const target = outlines.find((outline) =>
+        named === null
+          ? outline.isDefault
+          : outline.id === named || outline.name.toLowerCase() === named.toLowerCase(),
+      );
+      if (target === undefined) return yield* vmFailure("Boat has no such environment.");
+      const { id } = target;
+      const switches = {
+        ...(input.safeForThirdParties === undefined
+          ? {}
+          : { safeForThirdParties: input.safeForThirdParties }),
+        ...(input.passGithub === undefined ? {} : { passGithub: input.passGithub }),
+        ...(input.passSandboxCredentials === undefined
+          ? {}
+          : { passSandboxCredentials: input.passSandboxCredentials }),
+        ...(input.passSecrets === undefined ? {} : { passSecrets: input.passSecrets }),
+        ...(input.passAgentsCredentials === undefined
+          ? {}
+          : { passAgentsCredentials: input.passAgentsCredentials }),
+      };
+      if (Object.keys(switches).length > 0) yield* api.updateEnvironment(id, switches);
+      for (const { key, value } of input.setVariables ?? []) {
+        yield* api.setEnvironmentVariable(id, key, value);
+      }
+      for (const key of input.removeVariables ?? []) {
+        yield* api.removeEnvironmentVariable(id, key);
+      }
+      for (const { path: filePath, contents } of input.setSecretFiles ?? []) {
+        yield* api.setEnvironmentFile(id, filePath, contents);
+      }
+      for (const filePath of input.removeSecretFiles ?? []) {
+        yield* api.removeEnvironmentFile(id, filePath);
+      }
+      for (const { repository, baseBranch } of input.addRepositories ?? []) {
+        const repositoryId = yield* api.findRepository(repository);
+        if (repositoryId === null) {
+          return yield* vmFailure(
+            `Boat's GitHub app cannot reach ${repository}. Install it on that repository first.`,
+          );
+        }
+        yield* api.addEnvironmentRepository(id, repositoryId, baseBranch);
+      }
+      for (const repository of input.removeRepositories ?? []) {
+        const selected = target.repositories.find(
+          (candidate) => candidate.fullName.toLowerCase() === repository.toLowerCase(),
+        );
+        if (selected !== undefined) {
+          yield* api.removeEnvironmentRepository(id, selected.databaseId);
+        }
+      }
+      const upgraded =
+        input.upgradeMachines === true
+          ? yield* api
+              .upgradeEnvironment(id)
+              .pipe(Effect.map(({ upgraded, failed }) => ({ machines: upgraded, failed })))
+          : null;
+      const updated = (yield* api.environmentOutlines()).find((outline) => outline.id === id);
+      if (updated === undefined) return yield* vmFailure("Boat deleted the environment.");
+      // The switches feed the status every client shows.
+      if (Object.keys(switches).length > 0) yield* refreshEnvironments(api);
+      return { rootEnvironment: rootEnvironmentOf(updated), upgraded };
+    }).pipe(cloudError("Could not change the Boat environment."));
+  });
+
+  /** A VM this machine manages, as Boat lists it now. */
+  const managedMachine = Effect.fn("BoatCloud.managedMachine")(function* (
+    api: BoatApi,
+    sandboxId: string,
+  ) {
+    yield* reconcile(api);
+    const machine = findMachine(sandboxId);
+    if (machine === undefined) {
+      return yield* vmFailure("This T3 Code does not manage that Boat VM.");
+    }
+    return machine;
+  });
+
+  /** The VM as clients see it in the status. */
+  const publicMachine = (sandboxId: string) =>
+    Effect.flatMap(SubscriptionRef.get(statusRef), (status) => {
+      const machine = status.machines.find((candidate) => candidate.sandboxId === sandboxId);
+      return machine === undefined ? vmFailure("Boat deleted this VM.", "gone") : Effect.succeed(machine);
+    });
+
+  const busy = () =>
+    vmFailure("A thread is starting on that VM, or it is stopping. Try again soon.");
+
+  const stopMachine = Effect.fn("BoatCloud.stopMachine")(function* (sandboxId: string) {
+    const api = yield* requireApi;
+    return yield* Effect.gen(function* () {
+      const machine = yield* managedMachine(api, sandboxId);
+      if (machine.state === "running" || machine.state === "starting") {
+        if (!(yield* backupAndStop(api, machine))) return yield* busy();
+      }
+      return yield* publicMachine(sandboxId);
+    }).pipe(cloudError("Could not stop the Boat cloud machine."));
+  });
+
+  /** A thread's VM wakes through `wake`, which restores it when Boat deleted it. */
+  const wakeManaged = Effect.fn("BoatCloud.wakeMachine")(function* (sandboxId: string) {
+    const api = yield* requireApi;
+    const machine = yield* managedMachine(api, sandboxId).pipe(
+      cloudError("Could not wake the Boat cloud machine."),
+    );
+    if (machine.environmentId !== null) {
+      const woken = yield* wakeWith({ environmentId: machine.environmentId }, false);
+      return yield* publicMachine(woken.sandboxId).pipe(
+        cloudError("Could not wake the Boat cloud machine."),
+      );
+    }
+    return yield* Effect.acquireUseRelease(
+      claimWhenFree(sandboxId),
+      () =>
+        Effect.gen(function* () {
+          const woken = yield* wakeMachine(api, sandboxId, { pair: false });
+          yield* updateMachine(sandboxId, {
+            environmentId: woken.environmentId,
+            httpBaseUrl: woken.httpBaseUrl,
+            state: "running",
+            acquiredAt: yield* now,
+          });
+          return yield* publicMachine(sandboxId);
+        }),
+      () => release([sandboxId]),
+    ).pipe(cloudError("Could not wake the Boat cloud machine."));
+  });
+
+  const deleteMachine = Effect.fn("BoatCloud.deleteMachine")(function* (input: {
+    readonly sandboxId: string;
+    readonly force: boolean;
+  }) {
+    const api = yield* requireApi;
+    const { sandboxId } = input;
+    return yield* Effect.gen(function* () {
+      const machine = yield* managedMachine(api, sandboxId);
+      if (machine.state === "gone") return;
+      if (!input.force && (machine.state === "running" || machine.state === "starting")) {
+        return yield* vmFailure(
+          "That VM is running and may have live threads. Pass `force: true` to delete it anyway.",
+        );
+      }
+      // Starts never pick a VM that is stopping, and a wake waits for it.
+      const deleted = Deferred.makeUnsafe<void>();
+      const began = yield* Effect.sync(() => {
+        if (claims.has(sandboxId) || stopping.has(sandboxId)) return false;
+        stopping.set(sandboxId, deleted);
+        return true;
+      });
+      if (!began) return yield* busy();
+      yield* Effect.gen(function* () {
+        yield* api.delete(sandboxId);
+        // A VM with a backup stays listed as gone, so waking its threads restores it.
+        const backedUp =
+          machine.environmentId !== null &&
+          (yield* fs
+            .exists(backupPathOf(machine.environmentId))
+            .pipe(Effect.orElseSucceed(() => false)));
+        yield* commit((current) => ({
+          ...current,
+          machines: backedUp
+            ? current.machines.map((candidate) =>
+                candidate.sandboxId === sandboxId ? { ...candidate, state: "gone" } : candidate,
+              )
+            : current.machines.filter((candidate) => candidate.sandboxId !== sandboxId),
+        }));
+        yield* Effect.logInfo("boat cloud deleted a VM", { sandboxId, backedUp });
+      }).pipe(
+        Effect.ensuring(
+          Effect.suspend(() => {
+            stopping.delete(sandboxId);
+            return Deferred.succeed(deleted, undefined);
+          }),
+        ),
+      );
+    }).pipe(cloudError("Could not delete the Boat cloud machine."));
+  });
+
+  let usageRefreshedAt = 0;
+  /** Reads usage and load now, at most once per `USAGE_REFRESH_COOLDOWN`; later calls get the status. */
+  const refreshUsageNow = Effect.gen(function* () {
+    const key = yield* readKey;
+    const nowMillis = yield* Clock.currentTimeMillis;
+    if (Option.isSome(key) && nowMillis - usageRefreshedAt >= Duration.toMillis(USAGE_REFRESH_COOLDOWN)) {
+      usageRefreshedAt = nowMillis;
+      const api = makeBoatApi(http, key.value);
+      yield* reconcile(api).pipe(Effect.ignore);
+      yield* Effect.all([refreshUsage(api), refreshStats(api)], {
+        concurrency: 2,
+        discard: true,
+      }).pipe(Effect.ignore);
+    }
+    return yield* SubscriptionRef.get(statusRef);
+  }).pipe(Effect.withSpan("BoatCloud.refreshUsageNow"));
 
   const connect = Effect.fn("BoatCloud.connect")(function* (input: BoatCloudConnectInput) {
     const api = makeBoatApi(http, input.apiKey);
@@ -1404,6 +1717,12 @@ const make = Effect.gen(function* () {
     configureMachines,
     acquire,
     wake,
+    inspect,
+    updateRootEnvironment,
+    stopMachine,
+    wakeMachine: wakeManaged,
+    deleteMachine,
+    refreshUsage: refreshUsageNow,
   });
 });
 
