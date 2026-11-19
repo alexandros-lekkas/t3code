@@ -10,6 +10,7 @@ import {
   boatCloudMachineOfThread,
   boatCloudMachinesToPair,
   boatCloudThreadMachineKey,
+  draftStartsOwnBoatCloudMachine,
   managedBoatCloudMachine,
 } from "./boatCloudMachines.logic";
 
@@ -95,5 +96,19 @@ describe("boatCloudMachineOfThread", () => {
   it("names the VM serving a linked thread's environment", () => {
     expect(managedBoatCloudMachine(status([first]), vmEnvironment)?.sandboxId).toBe("first");
     expect(managedBoatCloudMachine(status([first]), pairedEnvironment)).toBeNull();
+  });
+});
+
+describe("draftStartsOwnBoatCloudMachine", () => {
+  it("is true for a Boat draft, so a sleeping VM its project sits on is not shown or woken", () => {
+    expect(draftStartsOwnBoatCloudMachine({ environmentSelection: "cloud" })).toBe(true);
+    expect(draftStartsOwnBoatCloudMachine({ environmentSelection: "manual" })).toBe(false);
+    expect(
+      draftStartsOwnBoatCloudMachine({
+        environmentSelection: "cloud",
+        promotedTo: { environmentId: vmEnvironment, threadId: ThreadId.make("t") },
+      }),
+    ).toBe(false);
+    expect(draftStartsOwnBoatCloudMachine(null)).toBe(false);
   });
 });

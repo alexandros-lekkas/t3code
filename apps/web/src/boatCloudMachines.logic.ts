@@ -60,3 +60,16 @@ export function boatCloudMachineOfThread(input: {
   const serving = status.machines.filter((machine) => machine.environmentId === ref.environmentId);
   return serving.length === 1 ? serving[0]! : null;
 }
+
+/**
+ * A draft on Boat starts a VM of its own when it sends, so the VM its project sits on now is
+ * neither woken nor shown as sleeping for it.
+ */
+export function draftStartsOwnBoatCloudMachine(
+  draft: {
+    readonly environmentSelection?: string | undefined;
+    readonly promotedTo?: unknown;
+  } | null,
+): boolean {
+  return draft?.environmentSelection === "cloud" && !draft.promotedTo;
+}

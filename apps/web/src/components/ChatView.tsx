@@ -26,6 +26,7 @@ import { useComposerFocus } from "./chat/useComposerFocus";
 import { useProjectCloneBanner } from "./chat/useProjectCloneBanner";
 import { useBoatCloudStartBanner } from "./chat/useBoatCloudStartBanner";
 import { useBoatCloudProviderDrivers, useBoatCloudSleep } from "../boatCloud";
+import { draftStartsOwnBoatCloudMachine } from "../boatCloudMachines.logic";
 import { useAttachmentPreviewHandoff } from "./chat/useAttachmentPreviewHandoff";
 import {
   applyOptimisticUserMessagesAction,
@@ -1224,7 +1225,7 @@ export default function ChatView(props: ChatViewProps) {
   const activeEnvironmentUnavailable =
     activeEnvironment !== null && activeEnvironment.connection.phase !== "connected";
   const boatCloudSleep = useBoatCloudSleep(
-    activeEnvironment?.environmentId ?? null,
+    draftStartsOwnBoatCloudMachine(draftThread) ? null : (activeEnvironment?.environmentId ?? null),
     activeEnvironment?.connection.phase ?? null,
   );
   // A sleeping Boat VM has no session to read grants from. The send wakes it, and its server checks.
@@ -1308,7 +1309,7 @@ export default function ChatView(props: ChatViewProps) {
     gitCwd,
   );
   const boatCloudDrivers = useBoatCloudProviderDrivers();
-  const cloudDraft = draftThread?.environmentSelection === "cloud" && !draftThread.promotedTo;
+  const cloudDraft = draftStartsOwnBoatCloudMachine(draftThread);
   // A cloud draft runs on a Boat VM, which can only sign in the providers its credentials cover.
   // With none, the Boat banner says what to fix, so the picker keeps this machine's providers.
   const providerStatuses =
