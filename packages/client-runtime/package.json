@@ -183,6 +183,10 @@
       "types": "./src/relay/index.ts",
       "default": "./src/relay/index.ts"
     },
+    "./state/boat-cloud-usage": {
+      "types": "./src/state/boatCloudUsage.ts",
+      "default": "./src/state/boatCloudUsage.ts"
+    },
     "./state/auth": {
       "types": "./src/state/auth.ts",
       "default": "./src/state/auth.ts"

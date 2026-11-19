@@ -50,3 +50,57 @@ describe("BoatApi.exec", () => {
     }),
   );
 });
+
+describe("BoatApi.usage", () => {
+  it.effect("reads Boat's billed seconds and dollars for one VM", () =>
+    Effect.gen(function* () {
+      let requested = "";
+      const http = HttpClient.make((request) =>
+        Effect.sync(() => {
+          requested = request.url + (request.urlParams.params.length > 0 ? "?" : "");
+          requested += request.urlParams.params.map(([key, value]) => `${key}=${value}`).join("&");
+          return HttpClientResponse.fromWeb(
+            request,
+            Response.json({
+              ok: true,
+              type: "sandbox.usage",
+              sandboxId: "bx_1",
+              sandboxType: "default",
+              billingMultiplier: 1,
+              since: "2026-11-18T03:14:44.234Z",
+              until: "2026-11-19T18:04:13.959Z",
+              seconds: 102596,
+              dollars: 1.02596,
+              secondsPerDollar: 100000,
+              running: true,
+            }),
+          );
+        }),
+      );
+      const usage = yield* makeBoatApi(http, "key").usage("bx_1", {
+        since: "2026-11-18T00:00:00Z",
+      });
+      assert.strictEqual(
+        requested,
+        "https://boat.dev/api/v1/sandboxes/bx_1/usage?since=2026-11-18T00:00:00Z",
+      );
+      assert.strictEqual(usage?.seconds, 102596);
+      assert.strictEqual(usage?.dollars, 1.02596);
+      assert.strictEqual(usage?.sandboxType, "default");
+    }),
+  );
+
+  it.effect("is null for a VM Boat no longer has", () =>
+    Effect.gen(function* () {
+      const http = HttpClient.make((request) =>
+        Effect.succeed(
+          HttpClientResponse.fromWeb(
+            request,
+            Response.json({ code: "not_found", message: "not_found" }, { status: 404 }),
+          ),
+        ),
+      );
+      assert.strictEqual(yield* makeBoatApi(http, "key").usage("bx_gone"), null);
+    }),
+  );
+});

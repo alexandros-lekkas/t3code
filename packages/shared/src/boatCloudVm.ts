@@ -655,6 +655,75 @@ export function parseMeasure(output: string): MachineMeasure | null {
   };
 }
 
+/**
+ * A VM's live load for a client to show: two `/proc/stat` CPU lines a second apart, the CPU
+ * count, MemTotal and MemAvailable in kB, then the root filesystem's size and used bytes.
+ */
+export const statsScript = `head -1 /proc/stat; sleep 1; head -1 /proc/stat
+nproc
+awk '/^MemTotal:/{t=$2} /^MemAvailable:/{a=$2} END{print t, a}' /proc/meminfo
+df -B1 --output=size,used / 2>/dev/null | tail -1`;
+
+export interface MachineStats {
+  readonly cpuPercent: number;
+  readonly cpus: number;
+  readonly memoryUsedBytes: number;
+  readonly memoryTotalBytes: number;
+  readonly diskUsedBytes: number | null;
+  readonly diskTotalBytes: number | null;
+}
+
+/** Reads `statsScript` output; null when the CPU or memory lines are missing. */
+export function parseStats(output: string): MachineStats | null {
+  const lines = output
+    .trim()
+    .split("\n")
+    .map((line) => line.trim());
+  const cpuTimes = (line: string | undefined) => {
+    if (line === undefined || !/^cpu\s/u.test(line)) return null;
+    const values = line.split(/\s+/u).slice(1).map(Number);
+    if (values.length < 4 || !values.every(Number.isFinite)) return null;
+    // Guest time is already counted in user time.
+    const total = values.slice(0, 8).reduce((sum, value) => sum + value, 0);
+    const idle = values[3]! + (values[4] ?? 0);
+    return { total, idle };
+  };
+  const before = cpuTimes(lines[0]);
+  const after = cpuTimes(lines[1]);
+  const cpus = Number(lines[2]);
+  const [memTotalKb, memAvailableKb] = (lines[3] ?? "").split(/\s+/u).map(Number);
+  if (
+    before === null ||
+    after === null ||
+    !Number.isFinite(cpus) ||
+    cpus <= 0 ||
+    memTotalKb === undefined ||
+    memAvailableKb === undefined ||
+    !Number.isFinite(memTotalKb) ||
+    !Number.isFinite(memAvailableKb) ||
+    memTotalKb <= 0
+  )
+    return null;
+  const elapsed = after.total - before.total;
+  const busy = elapsed - (after.idle - before.idle);
+  const cpuPercent = elapsed > 0 ? Math.min(100, Math.max(0, (busy / elapsed) * 100)) : 0;
+  const [diskTotal, diskUsed] = (lines[4] ?? "").split(/\s+/u).map(Number);
+  const disk =
+    diskTotal !== undefined &&
+    diskUsed !== undefined &&
+    Number.isFinite(diskTotal) &&
+    Number.isFinite(diskUsed) &&
+    diskTotal > 0;
+  return {
+    cpuPercent: Math.round(cpuPercent * 10) / 10,
+    cpus,
+    memoryUsedBytes: Math.max(0, memTotalKb - memAvailableKb) * 1024,
+    memoryTotalBytes: memTotalKb * 1024,
+    diskUsedBytes: disk ? diskUsed : null,
+    diskTotalBytes: disk ? diskTotal : null,
+  };
+}
+
 export interface MachineCandidate {
   readonly sandboxId: string;
   /** The Boat environment the VM runs; a thread only joins a VM on its holder's choice. */
@@ -665,6 +734,8 @@ export interface MachineCandidate {
   readonly usage: number | null;
   /** The warm spare, taken only after the VMs that already serve threads. */
   readonly spare?: boolean;
+  /** Boat's machine type; null when Boat did not say. */
+  readonly machineType?: string | null;
 }
 
 export type MachineChoice =
@@ -681,9 +752,25 @@ export function pickMachine(
   allCandidates: ReadonlyArray<MachineCandidate>,
   workspaceRoot: string,
   environment: string | null,
+  /** False keeps each thread on a VM of its own: only the spare, which serves none, is reused. */
+  shareMachines = true,
+  /**
+   * The size the thread asked for. A VM of another size is never picked, except a stopped
+   * spare, which resumes at this size. Null takes any size.
+   */
+  machineType: string | null = null,
 ): MachineChoice {
+  const fitsType = (candidate: MachineCandidate) =>
+    machineType === null ||
+    candidate.machineType === undefined ||
+    candidate.machineType === null ||
+    candidate.machineType === machineType ||
+    (candidate.spare === true && !candidate.running);
   const candidates = allCandidates.filter(
-    (candidate) => environment === null || candidate.environment === environment,
+    (candidate) =>
+      (environment === null || candidate.environment === environment) &&
+      (shareMachines || candidate.spare === true) &&
+      fitsType(candidate),
   );
   const hasCheckout = (candidate: MachineCandidate) =>
     candidate.workspaceRoots.includes(workspaceRoot);

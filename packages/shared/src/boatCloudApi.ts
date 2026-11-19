@@ -3,7 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import { HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/http";
-import type { BoatCloudEnvironment } from "@t3tools/contracts";
+import type { BoatCloudEnvironment, BoatCloudMachineType } from "@t3tools/contracts";
 
 /**
  * A thin client for the parts of the Boat v1 API that Boat cloud uses. It runs
@@ -30,8 +30,27 @@ export const BoatSandbox = Schema.Struct({
   labels: Schema.optional(Schema.NullOr(Schema.Record(Schema.String, Schema.String))),
   /** The environment's name. A sandbox keeps it for life; null for one attached to none. */
   environment: Schema.optional(Schema.NullOr(Schema.String)),
+  /** The machine type, such as `default`. */
+  type: Schema.optional(Schema.NullOr(Schema.String)),
+  vcpu: Schema.optional(Schema.NullOr(Schema.Number)),
+  memoryGB: Schema.optional(Schema.NullOr(Schema.Number)),
 });
 export type BoatSandbox = typeof BoatSandbox.Type;
+
+/** `GET /sandboxes/{id}/usage`: what one VM has been billed since it was created. */
+export const BoatSandboxUsage = Schema.Struct({
+  sandboxId: Schema.String,
+  sandboxType: Schema.optional(Schema.NullOr(Schema.String)),
+  billingMultiplier: Schema.optional(Schema.Number),
+  since: Schema.String,
+  until: Schema.String,
+  /** Billed seconds: time on, times the billing multiplier. */
+  seconds: Schema.Number,
+  dollars: Schema.Number,
+  secondsPerDollar: Schema.optional(Schema.Number),
+  running: Schema.optional(Schema.Boolean),
+});
+export type BoatSandboxUsage = typeof BoatSandboxUsage.Type;
 
 const BoatEnvironment = Schema.Struct({
   id: Schema.String,
@@ -83,7 +102,42 @@ export function cloudEnvironments(
   });
 }
 
-export type BoatMachineType = "small" | "default" | "large" | "xlarge";
+export type BoatMachineType = BoatCloudMachineType;
+
+/**
+ * Each size as Boat documents it (`boat new --help`): vCPUs, memory, and its rate as a
+ * multiple of the default size's.
+ */
+export const BOAT_MACHINE_SPECS: Readonly<
+  Record<
+    BoatMachineType,
+    { readonly vcpu: number; readonly memoryGB: number; readonly rate: number }
+  >
+> = {
+  small: { vcpu: 2, memoryGB: 4, rate: 0.5 },
+  default: { vcpu: 4, memoryGB: 8, rate: 1 },
+  large: { vcpu: 8, memoryGB: 16, rate: 2 },
+  xlarge: { vcpu: 16, memoryGB: 32, rate: 4 },
+};
+
+/** `GET /limits`: the account's plan limits and prices; only what Boat cloud reads. */
+export const BoatLimits = Schema.Struct({
+  machineTypes: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        type: Schema.String,
+        available: Schema.Boolean,
+        reason: Schema.optional(Schema.NullOr(Schema.String)),
+      }),
+    ),
+  ),
+  overagePrices: Schema.optional(
+    Schema.Struct({ vmHourDollars: Schema.optional(Schema.NullOr(Schema.Number)) }),
+  ),
+  /** What a dollar buys of plan credit, in default-size VM seconds. */
+  creditSecondsPerDollar: Schema.optional(Schema.NullOr(Schema.Number)),
+});
+export type BoatLimits = typeof BoatLimits.Type;
 
 const ErrorBody = Schema.Struct({
   code: Schema.optional(Schema.String),
@@ -241,6 +295,20 @@ export function makeBoatApi(http: HttpClient.HttpClient, apiKey: string) {
           Effect.map((response) => response.sandbox),
         ),
       ),
+    /** Boat's own billed time and dollars for one VM, from creation (or `since`) to now. */
+    usage: (id: string, range?: { readonly since?: string; readonly until?: string }) =>
+      orNull(
+        send(
+          HttpClientRequest.get(url(`/sandboxes/${id}/usage`)).pipe(
+            HttpClientRequest.setUrlParams({
+              ...(range?.since === undefined ? {} : { since: range.since }),
+              ...(range?.until === undefined ? {} : { until: range.until }),
+            }),
+          ),
+          BoatSandboxUsage,
+        ),
+      ),
+    limits: () => send(HttpClientRequest.get(url("/limits")), BoatLimits),
     createSandbox: (body: {
       readonly name: string;
       readonly type?: BoatMachineType;

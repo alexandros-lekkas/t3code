@@ -128,9 +128,11 @@ const start = (
   pairedEnvironmentId: string | null,
   readySpare: ReadySpare | null = null,
   onDeleted?: (sandboxId: string) => Effect.Effect<void>,
+  shareMachines?: boolean,
 ) =>
   startMachine({
     ...(onDeleted ? { onDeleted } : {}),
+    ...(shareMachines === undefined ? {} : { shareMachines }),
     api: vm.api,
     repository,
     baseBranch: null,
@@ -185,6 +187,30 @@ describe("startMachine on a running VM", () => {
       );
       assert.strictEqual(hosts.length, 1);
       assert.isAbove(hosts[0]!, vm.calls.indexOf("exec server"));
+    }),
+  );
+});
+
+describe("startMachine with one job per VM", () => {
+  it.effect(
+    "creates a VM instead of joining a free one that serves a thread, without probing it",
+    () =>
+      Effect.gen(function* () {
+        const vm = runningVm("env-1");
+        const started = yield* start(vm, null, null, undefined, false);
+        yield* started.checkout;
+        assert.strictEqual(started.sandboxId, "vm-2");
+        assert.include(vm.calls, "POST /sandboxes");
+        assert.notInclude(vm.calls, "exec measure");
+      }),
+  );
+
+  it.effect("still takes a free spare", () =>
+    Effect.gen(function* () {
+      const vm = runningVm("env-1", { spare: true });
+      const started = yield* start(vm, null, null, undefined, false);
+      assert.strictEqual(started.sandboxId, "vm-1");
+      assert.notInclude(vm.calls, "POST /sandboxes");
     }),
   );
 });

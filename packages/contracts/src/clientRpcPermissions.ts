@@ -82,6 +82,7 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.boatCloudDisconnect]: AuthSettingsWriteScope,
   [WS_METHODS.boatCloudRunSetup]: AuthSettingsWriteScope,
   [WS_METHODS.boatCloudConfigureEnvironment]: AuthSettingsWriteScope,
+  [WS_METHODS.boatCloudConfigureMachines]: AuthSettingsWriteScope,
   [WS_METHODS.boatCloudAcquire]: AuthOrchestrationOperateScope,
   [WS_METHODS.boatCloudWake]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_V2_WS_METHODS.stopWorkflow]: AuthOrchestrationOperateScope,
