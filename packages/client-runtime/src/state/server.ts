@@ -49,6 +49,7 @@ import * as EnvironmentRegistry from "../connection/registry.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import { safeErrorLogAttributes } from "../errors/safeLog.ts";
 import * as Persistence from "../platform/persistence.ts";
+import { boatCloudEnvironmentUsageOf } from "./boatCloudUsage.ts";
 import { runCachePersistence } from "./cachePersistence.ts";
 import {
   currentSession,
@@ -1439,6 +1440,39 @@ export function createServerEnvironmentAtoms<R, E>(
     concurrency: configConcurrency,
   });
 
+  const boatCloudStatus = createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+    label: "environment-data:server:boat-cloud:status",
+    tag: WS_METHODS.boatCloudSubscribe,
+  });
+  const boatCloudEnvironmentUsageFamily = Atom.family((key: string) => {
+    const [holderEnvironmentId, environmentId] = JSON.parse(key) as [EnvironmentId, EnvironmentId];
+    return Atom.make((get) =>
+      boatCloudEnvironmentUsageOf(
+        AsyncResult.getOrElse(
+          get(boatCloudStatus({ environmentId: holderEnvironmentId, input: {} })),
+          () => null,
+        ),
+        environmentId,
+      ),
+    ).pipe(
+      Atom.withLabel(
+        `environment-data:server:boat-cloud:environment-usage:${holderEnvironmentId}:${environmentId}`,
+      ),
+    );
+  });
+  /**
+   * One Boat cloud environment's VM, live stats and cost, read from the status of
+   * `holderEnvironmentId` (the environment holding the Boat key, which handed the VM out).
+   * Null while the status loads or when that holder does not know the environment.
+   */
+  const boatCloudEnvironmentUsage = (input: {
+    readonly holderEnvironmentId: EnvironmentId;
+    readonly environmentId: EnvironmentId;
+  }) =>
+    boatCloudEnvironmentUsageFamily(
+      JSON.stringify([input.holderEnvironmentId, input.environmentId]),
+    );
+
   return {
     configValueAtom,
     runStorageCleanup: createEnvironmentRpcCommand(runtime, {
@@ -1578,10 +1612,8 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:scheduled-tasks:live",
       tag: WS_METHODS.scheduledTasksSubscribe,
     }),
-    boatCloudStatus: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
-      label: "environment-data:server:boat-cloud:status",
-      tag: WS_METHODS.boatCloudSubscribe,
-    }),
+    boatCloudStatus,
+    boatCloudEnvironmentUsage,
     // A cold transcript scan is measured in seconds, so keep the result around
     // long enough that switching windows or re-rendering does not rescan. With
     // nothing to show yet, the server's last scan answers first, then a plain
@@ -1860,6 +1892,26 @@ export function createServerEnvironmentAtoms<R, E>(
     configureBoatCloudEnvironment: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:boat-cloud:configure-environment",
       tag: WS_METHODS.boatCloudConfigureEnvironment,
+    }),
+    configureBoatCloudMachines: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:boat-cloud:configure-machines",
+      tag: WS_METHODS.boatCloudConfigureMachines,
+    }),
+    boatCloudStopMachine: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:boat-cloud:stop-machine",
+      tag: WS_METHODS.boatCloudStopMachine,
+    }),
+    boatCloudWakeMachine: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:boat-cloud:wake-machine",
+      tag: WS_METHODS.boatCloudWakeMachine,
+    }),
+    boatCloudDeleteMachine: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:boat-cloud:delete-machine",
+      tag: WS_METHODS.boatCloudDeleteMachine,
+    }),
+    boatCloudRefreshUsage: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:boat-cloud:refresh-usage",
+      tag: WS_METHODS.boatCloudRefreshUsage,
     }),
     acquireBoatCloud: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:boat-cloud:acquire",

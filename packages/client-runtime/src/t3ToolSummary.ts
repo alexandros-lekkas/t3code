@@ -1156,6 +1156,40 @@ export function summarizeT3ToolCalls(
           );
       break;
     }
+    case "boat-cloud-read": {
+      const count = selected.length;
+      label = done
+        ? resolve(
+            msg(
+              "{count, plural, one {Checked Boat cloud {count} time} other {Checked Boat cloud {count} times}}",
+              { count },
+            ),
+          )
+        : resolve(
+            msg(
+              "{count, plural, one {Tried to check Boat cloud {count} time} other {Tried to check Boat cloud {count} times}}",
+              { count },
+            ),
+          );
+      break;
+    }
+    case "boat-cloud-update": {
+      const count = selected.length;
+      label = done
+        ? resolve(
+            msg(
+              "{count, plural, one {Changed Boat cloud {count} time} other {Changed Boat cloud {count} times}}",
+              { count },
+            ),
+          )
+        : resolve(
+            msg(
+              "{count, plural, one {Tried to change Boat cloud {count} time} other {Tried to change Boat cloud {count} times}}",
+              { count },
+            ),
+          );
+      break;
+    }
     case "environment-links": {
       const count = selected.length;
       label = done

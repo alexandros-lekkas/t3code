@@ -1,10 +1,14 @@
 import { assert, describe, it } from "@effect/vitest";
 import { EnvironmentId } from "@t3tools/contracts";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import { HttpClient, HttpClientResponse } from "effect/http";
+import * as TestClock from "effect/testing/TestClock";
 
 import { makeBoatApi } from "./boatCloudApi.ts";
 import {
+  buildSnapshot,
   latestCliRelease,
   makeSpareKeeper,
   needsSnapshot,
@@ -28,20 +32,31 @@ const VM_URL = `https://${SUBDOMAIN}-3773.on.boat.dev`;
 /**
  * Boat with one running, lightly loaded VM whose server answers as `serverEnvironmentId`.
  * Calls are recorded as `METHOD path`, a PATCH with its fields, a command by what it runs.
- * A created VM is `vm-2`, and a renamed one is listed under its new name.
+ * A created VM is `vm-2`, on the environment it was made on, and a renamed one is listed
+ * under its new name. `states` sets what Boat lists a VM as.
  */
 const runningVm = (
   serverEnvironmentId: string,
-  vm: { spare?: boolean; hostsItself?: boolean } = {},
+  vm: {
+    spare?: boolean;
+    hostsItself?: boolean;
+    /** vm-1 is too loaded to share. */
+    busy?: boolean;
+    renameFails?: boolean;
+    /** The server does not start on this VM. */
+    serverFailsOn?: string;
+  } = {},
 ) => {
   const calls: Array<string> = [];
   const commands: Array<string> = [];
   const names = new Map([["vm-1", vm.spare ? SPARE_NAME : "Boat cloud"]]);
+  const environments = new Map([["vm-1", "base"]]);
+  const states = new Map<string, string>();
   const listed = (id: string) => ({
     id,
-    state: "ready",
+    state: states.get(id) ?? "ready",
     subdomain: id === "vm-1" ? SUBDOMAIN : `box-${id}`,
-    environment: "base",
+    environment: environments.get(id) ?? "base",
     name: names.get(id),
     labels: { [SNAPSHOT_LABEL]: SNAPSHOT },
   });
@@ -63,11 +78,24 @@ const runningVm = (
       }
       if (path === "/sandboxes" && request.method === "POST") {
         names.set("vm-2", String(body.name));
+        environments.set("vm-2", String(body.environment ?? "base"));
         return reply({ sandbox: listed("vm-2") });
       }
       if (path === "/sandboxes") return reply({ sandboxes: [...names.keys()].map(listed) });
       const id = /^\/sandboxes\/([^/]+)/u.exec(path)?.[1] ?? "";
-      if (request.method === "PATCH" && typeof body.name === "string") names.set(id, body.name);
+      if (request.method === "PATCH" && typeof body.name === "string") {
+        if (vm.renameFails) {
+          return HttpClientResponse.fromWeb(
+            request,
+            Response.json({ code: "internal" }, { status: 500 }),
+          );
+        }
+        names.set(id, body.name);
+      }
+      if (request.method === "DELETE") {
+        names.delete(id);
+        return reply({});
+      }
       if (path === `/sandboxes/${id}` && request.method === "GET") {
         return reply({ sandbox: listed(id) });
       }
@@ -83,24 +111,29 @@ const runningVm = (
       let stdout = "";
       if (script.includes("/proc/loadavg")) {
         calls.push("exec measure");
-        stdout = "0.1 1000 900\n";
+        stdout = vm.busy && id === "vm-1" ? "0.9 1000 100\n" : "0.1 1000 900\n";
       } else if (script.includes("systemctl --user start t3code.service")) {
         calls.push("exec server");
+        if (vm.serverFailsOn === id) return reply({ exitCode: 1, stdout: "" });
         const head = vm.hostsItself === false ? `${NOT_HOSTED_MARKER}\n${descriptor}` : descriptor;
         stdout = script.includes(PAIRING_MARKER) ? `${head}\n${PAIRING_MARKER}\n${pairing}` : head;
       } else if (script.includes("auth pairing create")) stdout = pairing;
       return reply({ exitCode: 0, stdout });
     }),
   );
-  return { api: makeBoatApi(http, "key"), calls, commands };
+  return { api: makeBoatApi(http, "key"), calls, commands, states };
 };
 
 const start = (
   vm: ReturnType<typeof runningVm>,
   pairedEnvironmentId: string | null,
   readySpare: ReadySpare | null = null,
+  onDeleted?: (sandboxId: string) => Effect.Effect<void>,
+  shareMachines?: boolean,
 ) =>
   startMachine({
+    ...(onDeleted ? { onDeleted } : {}),
+    ...(shareMachines === undefined ? {} : { shareMachines }),
     api: vm.api,
     repository,
     baseBranch: null,
@@ -159,6 +192,46 @@ describe("startMachine on a running VM", () => {
   );
 });
 
+describe("startMachine with one job per VM", () => {
+  it.effect(
+    "creates a VM instead of joining a free one that serves a thread, without probing it",
+    () =>
+      Effect.gen(function* () {
+        const vm = runningVm("env-1");
+        const started = yield* start(vm, null, null, undefined, false);
+        yield* started.checkout;
+        assert.strictEqual(started.sandboxId, "vm-2");
+        assert.include(vm.calls, "POST /sandboxes");
+        assert.notInclude(vm.calls, "exec measure");
+      }),
+  );
+
+  it.effect("still takes a free spare", () =>
+    Effect.gen(function* () {
+      const vm = runningVm("env-1", { spare: true });
+      const started = yield* start(vm, null, null, undefined, false);
+      assert.strictEqual(started.sandboxId, "vm-1");
+      assert.notInclude(vm.calls, "POST /sandboxes");
+    }),
+  );
+});
+
+describe("startMachine on a new VM", () => {
+  it.effect("deletes the VM it created when the start then fails, and says so", () =>
+    Effect.gen(function* () {
+      const vm = runningVm("env-1", { busy: true, serverFailsOn: "vm-2" });
+      const deleted: Array<string> = [];
+      const error = yield* Effect.flip(
+        start(vm, null, null, (sandboxId) => Effect.sync(() => void deleted.push(sandboxId))),
+      );
+      assert.strictEqual(error.message, "T3 Code did not start on the VM.");
+      assert.include(vm.calls, "POST /sandboxes");
+      assert.include(vm.calls, "DELETE /sandboxes/vm-2");
+      assert.deepStrictEqual(deleted, ["vm-2"]);
+    }),
+  );
+});
+
 describe("the ready spare", () => {
   const keep = (vm: ReturnType<typeof runningVm>, keeper: ReturnType<typeof makeSpareKeeper>) =>
     keeper.keep(vm.api, SNAPSHOT, "base");
@@ -202,6 +275,47 @@ describe("the ready spare", () => {
       yield* keep(vm, keeper);
       assert.notInclude(vm.calls, "DELETE /sandboxes/vm-1");
       assert.strictEqual((yield* keeper.take(SNAPSHOT, "base"))?.sandboxId, "vm-2");
+    }),
+  );
+
+  it.effect(
+    "is never deleted by another holder while it runs, and fails its start when the rename never lands",
+    () =>
+      Effect.gen(function* () {
+        const vm = runningVm("env-1", { spare: true, renameFails: true });
+        const mac = makeSpareKeeper();
+        yield* keep(vm, mac);
+        const spare = yield* mac.take(SNAPSHOT, "base");
+        const started = yield* start(vm, null, spare);
+        const checkout = yield* Effect.forkChild(Effect.flip(started.checkout));
+        yield* TestClock.adjust(Duration.minutes(1));
+        yield* Fiber.join(checkout);
+        assert.strictEqual(
+          vm.calls.filter((call) => call === "PATCH /sandboxes/vm-1 name").length,
+          5,
+        );
+
+        // Another holder on another environment still sees vm-1 as a spare that is not its own.
+        const vps = makeSpareKeeper();
+        yield* vps.keep(vm.api, SNAPSHOT, "other");
+        assert.notInclude(vm.calls, "DELETE /sandboxes/vm-1");
+        assert.strictEqual((yield* vps.take(SNAPSHOT, "other"))?.sandboxId, "vm-2");
+
+        // Once Boat stopped it, a whole TTL went by with no thread keeping it on.
+        vm.states.set("vm-1", "stopped");
+        yield* vps.keep(vm.api, SNAPSHOT, "other");
+        assert.include(vm.calls, "DELETE /sandboxes/vm-1");
+      }),
+  );
+
+  it.effect("deletes a spare it made that no longer fits", () =>
+    Effect.gen(function* () {
+      const vm = runningVm("env-1");
+      const keeper = makeSpareKeeper();
+      yield* keeper.keep(vm.api, SNAPSHOT, "other");
+      assert.include(vm.calls, "POST /sandboxes");
+      yield* keeper.keep(vm.api, SNAPSHOT, "base");
+      assert.include(vm.calls, "DELETE /sandboxes/vm-2");
     }),
   );
 
@@ -256,4 +370,178 @@ describe("snapshot choice", () => {
     assert.isTrue(needsSnapshot([plain], "0.1.9", true));
     assert.isFalse(needsSnapshot([plain], "0.1.9", false));
   });
+});
+
+/**
+ * Boat as a snapshot build sees it. Saving a running VM starts a fresh capture that has not
+ * finished when the VM is deleted, so Boat then fails it, as it did a real setup. Saving a
+ * stopped (`archived`) VM settles at `ready` on the next poll, or at `failed` with `saveFails`.
+ * A failed save of the same name from an earlier VM is listed until it is deleted.
+ */
+const setupBoat = (options: { saveFails?: string } = {}) => {
+  const NAME = "t3-code-0-1-10";
+  const calls: Array<string> = [];
+  let state = "ready";
+  let stateAtSave: string | null = null;
+  const snapshots = new Map<string, Record<string, unknown>>([
+    [
+      NAME,
+      {
+        name: NAME,
+        status: "failed",
+        sourceSandboxId: "bx_old",
+        error: "no completed snapshot available for this sandbox",
+      },
+    ],
+  ]);
+  const http = HttpClient.make((request) =>
+    Effect.sync(() => {
+      const path = new URL(request.url).pathname.replace("/api/v1", "");
+      const body =
+        request.body._tag === "Uint8Array"
+          ? (JSON.parse(new TextDecoder().decode(request.body.body)) as Record<string, unknown>)
+          : {};
+      const reply = (json: unknown, status = 200) =>
+        HttpClientResponse.fromWeb(request, Response.json(json, { status }));
+      const listed = () => ({ id: "setup-1", state, subdomain: "box-setup", labels: {} });
+      if (!path.endsWith("/commands")) calls.push(`${request.method} ${path}`);
+      if (path === "/sandboxes" && request.method === "GET") return reply({ sandboxes: [] });
+      if (path === "/sandboxes" && request.method === "POST") return reply({ sandbox: listed() });
+      if (path === "/sandboxes/setup-1" && request.method === "GET") {
+        if (state === "deleted") return reply({ code: "not_found" }, 404);
+        // The stop's capture finishes between polls.
+        const answer = reply({ sandbox: listed() });
+        if (state === "archiving") state = "archived";
+        return answer;
+      }
+      if (path === "/sandboxes/setup-1/stop") {
+        state = "archiving";
+        return reply({ sandbox: listed() }, 202);
+      }
+      if (path === "/sandboxes/setup-1" && request.method === "DELETE") {
+        state = "deleted";
+        for (const snapshot of snapshots.values()) {
+          if (snapshot.status === "saving" && snapshot.sourceSandboxId === "setup-1") {
+            snapshot.status = "failed";
+            snapshot.error = "no completed snapshot available for this sandbox";
+          }
+        }
+        return reply({}, 202);
+      }
+      if (path === "/sandboxes/setup-1/commands") {
+        const starts = String(body.command).includes("systemctl --user start t3code.service");
+        const stdout = starts ? JSON.stringify({ environmentId: "env-setup" }) : "";
+        return reply({ exitCode: 0, stdout });
+      }
+      if (path === "/saved-snapshots" && request.method === "GET") {
+        const list = [...snapshots.values()].map((snapshot) => ({ ...snapshot }));
+        for (const snapshot of snapshots.values()) {
+          if (snapshot.status === "saving" && stateAtSave === "archived") {
+            if (options.saveFails === undefined) snapshot.status = "ready";
+            else Object.assign(snapshot, { status: "failed", error: options.saveFails });
+          }
+        }
+        return reply({ snapshots: list });
+      }
+      if (path === "/saved-snapshots" && request.method === "POST") {
+        stateAtSave = state;
+        snapshots.set(String(body.name), {
+          name: body.name,
+          status: "saving",
+          sourceSandboxId: body.sandboxId,
+          createdAt: "2026-11-19T18:11:32.050Z",
+        });
+        return reply({ ok: true }, 202);
+      }
+      if (path === `/saved-snapshots/${NAME}` && request.method === "DELETE") {
+        snapshots.delete(NAME);
+        return reply({});
+      }
+      return reply({ code: "not_found" }, 404);
+    }),
+  );
+  return {
+    api: makeBoatApi(http, "key"),
+    calls,
+    stateAtSave: () => stateAtSave,
+    snapshot: () => snapshots.get(NAME),
+  };
+};
+
+describe("buildSnapshot", () => {
+  const build = (boat: ReturnType<typeof setupBoat>, steps: Array<string>) =>
+    buildSnapshot({
+      api: boat.api,
+      version: "0.1.10",
+      repositories: [],
+      setStep: (step) => Effect.sync(() => void steps.push(step)),
+    });
+
+  it.effect("stops the setup VM and waits for its stop before saving it, then deletes it", () =>
+    Effect.gen(function* () {
+      const boat = setupBoat();
+      const steps: Array<string> = [];
+      const fiber = yield* Effect.forkChild(build(boat, steps));
+      yield* TestClock.adjust(Duration.minutes(1));
+      assert.strictEqual(yield* Fiber.join(fiber), "t3-code-0-1-10");
+      assert.strictEqual(boat.stateAtSave(), "archived");
+      assert.strictEqual(boat.snapshot()?.status, "ready");
+      const at = (call: string) => boat.calls.indexOf(call);
+      assert.isAbove(at("POST /sandboxes/setup-1/stop"), -1);
+      assert.isBelow(at("POST /sandboxes/setup-1/stop"), at("POST /saved-snapshots"));
+      // The failed save from an earlier VM goes first, so it is not read as this one failing.
+      assert.isBelow(at("DELETE /saved-snapshots/t3-code-0-1-10"), at("POST /saved-snapshots"));
+      assert.isBelow(at("POST /saved-snapshots"), at("DELETE /sandboxes/setup-1"));
+      assert.deepStrictEqual(steps, [
+        "create-vm",
+        "install-server",
+        "copy-skills",
+        "save-snapshot",
+      ]);
+    }),
+  );
+
+  it.effect("fails with Boat's reason when the save fails, and deletes the setup VM", () =>
+    Effect.gen(function* () {
+      const boat = setupBoat({ saveFails: "storage unavailable" });
+      const fiber = yield* Effect.forkChild(Effect.flip(build(boat, [])));
+      yield* TestClock.adjust(Duration.minutes(1));
+      const error = yield* Fiber.join(fiber);
+      assert.strictEqual(error.message, "Boat could not save the snapshot: storage unavailable.");
+      assert.include(boat.calls, "DELETE /sandboxes/setup-1");
+    }),
+  );
+
+  it.effect("gives up on a save that never settles instead of waiting forever", () =>
+    Effect.gen(function* () {
+      const boat = setupBoat();
+      // A VM that never finishes stopping.
+      const stuck = {
+        ...boat.api,
+        getSandbox: (id: string) =>
+          boat.api
+            .getSandbox(id)
+            .pipe(
+              Effect.map((sandbox) =>
+                sandbox?.state === "archived" ? { ...sandbox, state: "archiving" } : sandbox,
+              ),
+            ),
+      };
+      const fiber = yield* Effect.forkChild(
+        Effect.flip(
+          buildSnapshot({
+            api: stuck,
+            version: "0.1.10",
+            repositories: [],
+            setStep: () => Effect.void,
+          }),
+        ),
+      );
+      yield* TestClock.adjust(Duration.minutes(11));
+      const error = yield* Fiber.join(fiber);
+      assert.strictEqual(error.message, "Boat did not stop the setup VM in 10 minutes.");
+      assert.notInclude(boat.calls, "POST /saved-snapshots");
+      assert.include(boat.calls, "DELETE /sandboxes/setup-1");
+    }),
+  );
 });
