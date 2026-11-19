@@ -2354,6 +2354,7 @@ export const layerWsRpc = (
         [WS_METHODS.boatCloudRunSetup]: (input) => boatCloud.runSetup(input),
         [WS_METHODS.boatCloudConfigureEnvironment]: (input) =>
           boatCloud.configureEnvironment(input),
+        [WS_METHODS.boatCloudConfigureMachines]: (input) => boatCloud.configureMachines(input),
         [WS_METHODS.boatCloudAcquire]: (input) => boatCloud.acquire(input),
         [WS_METHODS.boatCloudWake]: (input) => boatCloud.wake(input),
         [WS_METHODS.guestShareCreate]: (input) =>

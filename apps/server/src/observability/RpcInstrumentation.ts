@@ -102,6 +102,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.boatCloudDisconnect]: "boatCloud",
   [WS_METHODS.boatCloudRunSetup]: "boatCloud",
   [WS_METHODS.boatCloudConfigureEnvironment]: "boatCloud",
+  [WS_METHODS.boatCloudConfigureMachines]: "boatCloud",
   [WS_METHODS.boatCloudAcquire]: "boatCloud",
   [WS_METHODS.boatCloudWake]: "boatCloud",
   [WS_METHODS.scheduledTasksSubscribe]: "scheduledTasks",

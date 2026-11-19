@@ -1,6 +1,6 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, it } from "@effect/vitest";
+import { assert, describe, it } from "@effect/vitest";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
@@ -8,7 +8,9 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -85,6 +87,29 @@ const fakeBoat = (
         });
       }
       if (path === "/environments") return reply({ environments: [] });
+      if (path === "/limits") {
+        return reply({
+          machineTypes: [
+            { type: "small", available: true, reason: null },
+            { type: "xlarge", available: false, reason: "needs the $100/month plan or higher" },
+          ],
+          overagePrices: { vmHourDollars: 0.036 },
+          creditSecondsPerDollar: 100000,
+        });
+      }
+      if (path.endsWith("/usage")) {
+        return reply({
+          ok: true,
+          sandboxId: id,
+          sandboxType: "default",
+          billingMultiplier: 1,
+          since: "2026-11-18T00:00:00.000Z",
+          until: "2026-11-18T01:00:00.000Z",
+          seconds: 3600,
+          dollars: 0.036,
+          running: true,
+        });
+      }
       if (path === "/credential-profiles") return reply({ profiles: [] });
       if (path === "/sandboxes" && request.method === "POST") {
         sandboxes["vm-new"] = {
@@ -116,12 +141,15 @@ const storedMachine = (sandboxId: string, environmentId: string | null, environm
   state: "running",
   repositories: [],
   backedUpAt: null,
-  acquiredAt: OLD_HAND_OUT,
+  acquiredAt: OLD_HAND_OUT as string | null,
   environment,
 });
 
 /** Writes the registry and the key a holder had before this server started. */
-const seed = (machines: ReadonlyArray<ReturnType<typeof storedMachine>>) =>
+const seed = (
+  machines: ReadonlyArray<ReturnType<typeof storedMachine>>,
+  extra: Record<string, unknown> = {},
+) =>
   Effect.gen(function* () {
     const config = yield* ServerConfig.ServerConfig;
     const fs = yield* FileSystem.FileSystem;
@@ -130,7 +158,7 @@ const seed = (machines: ReadonlyArray<ReturnType<typeof storedMachine>>) =>
     yield* fs.makeDirectory(directory, { recursive: true });
     yield* fs.writeFileString(
       path.join(directory, "state.json"),
-      JSON.stringify({ account: ACCOUNT, machines, environment: "base" }),
+      JSON.stringify({ account: ACCOUNT, machines, environment: "base", ...extra }),
     );
     const secrets = yield* ServerSecretStore.ServerSecretStore;
     yield* secrets.set("boat-cloud-api-key", new TextEncoder().encode("boat_test"));
@@ -148,7 +176,9 @@ const withService = <A, E, R>(
 it.layer(dependencies)("BoatCloudService", (it) => {
   it.effect("never stops a VM a start picked while the idle sweep probed it", () =>
     Effect.gen(function* () {
-      yield* seed([storedMachine("vm-1", null, "base"), storedMachine("vm-2", null, "other")]);
+      yield* seed([storedMachine("vm-1", null, "base"), storedMachine("vm-2", null, "other")], {
+        shareMachines: true,
+      });
       const measured = yield* Deferred.make<void>();
       const measureAnswers = yield* Deferred.make<void>();
       const otherStopped = yield* Deferred.make<void>();
@@ -252,4 +282,161 @@ it.layer(dependencies)("BoatCloudService", (it) => {
       assert.strictEqual(status.account, ACCOUNT);
     }),
   );
+
+  it.effect("with one job per VM, gives a new thread its own VM at the asked size", () =>
+    Effect.gen(function* () {
+      const directory = yield* seed([storedMachine("vm-1", "env-1", "base")]);
+      const created: Array<unknown> = [];
+      const boat = fakeBoat(
+        { "vm-1": { state: "ready", environment: "base", name: "Boat cloud" } },
+        (_sandboxId, script) =>
+          script.includes("systemctl --user start t3code.service")
+            ? Effect.succeed(
+                `${JSON.stringify({ environmentId: "env-new" })}\n--- t3 pairing ---\n${JSON.stringify({ credential: "code", expiresAt: "2999-01-01T00:00:00.000Z" })}`,
+              )
+            : Effect.succeed(""),
+      );
+      const wrapped = HttpClient.make((request) => {
+        if (request.method === "POST" && new URL(request.url).pathname === "/api/v1/sandboxes") {
+          const body = request.body;
+          if (body._tag === "Uint8Array")
+            created.push(JSON.parse(new TextDecoder().decode(body.body)));
+        }
+        return boat.http.execute(request);
+      });
+
+      const session = yield* withService(wrapped, (service) =>
+        service.acquire({
+          requestId: "start-1",
+          repositoryUrl: "https://github.com/acme/app",
+          machineType: "large",
+        }),
+      );
+
+      assert.strictEqual(session.sandboxId, "vm-new");
+      assert.notInclude(boat.calls, "exec vm-1");
+      assert.strictEqual((created[0] as { type: string }).type, "large");
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const stored = JSON.parse(yield* fs.readFileString(path.join(directory, "state.json")));
+      const vm = stored.machines.find(
+        (machine: { sandboxId: string }) => machine.sandboxId === "vm-new",
+      );
+      assert.strictEqual(vm.handOuts, 1);
+    }),
+  );
+
+  it.effect("keeps the machine settings and publishes them", () =>
+    Effect.gen(function* () {
+      const directory = yield* seed([]);
+      const boat = fakeBoat({});
+      const status = yield* withService(boat.http, (service) =>
+        service.configureMachines({ shareMachines: true, defaultMachineType: "default" }),
+      );
+      assert.isTrue(status.shareMachines);
+      assert.strictEqual(status.defaultMachineType, "default");
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const stored = JSON.parse(yield* fs.readFileString(path.join(directory, "state.json")));
+      assert.isTrue(stored.shareMachines);
+      assert.strictEqual(stored.defaultMachineType, "default");
+    }),
+  );
+
+  it.effect("reads Boat's cost and the VM's load once a client watches", () =>
+    Effect.gen(function* () {
+      yield* seed([{ ...storedMachine("vm-1", "env-1", "base"), acquiredAt: null }], {
+        shareMachines: false,
+      });
+      const boat = fakeBoat(
+        { "vm-1": { state: "ready", environment: "base", name: "Boat cloud" } },
+        (_sandboxId, script) =>
+          Effect.succeed(
+            script.includes("/proc/stat")
+              ? "cpu 100 0 100 800 0 0 0 0\ncpu 130 0 120 850 0 0 0 0\n4\n8000000 6000000\n1000 250\n"
+              : "",
+          ),
+      );
+      const status = yield* withService(boat.http, (service) =>
+        service.subscribe.pipe(
+          Stream.filter(
+            (status) =>
+              status.environmentUsage[0]?.usageUpdatedAt !== null &&
+              status.environmentUsage[0]?.stats !== null &&
+              status.machineTypes[0]?.hourlyDollars !== null,
+          ),
+          Stream.take(1),
+          Stream.runHead,
+        ),
+      );
+      const usage = Option.getOrThrow(status).environmentUsage[0]!;
+      assert.strictEqual(usage.environmentId, "env-1");
+      assert.strictEqual(usage.dollars, 0.036);
+      assert.strictEqual(usage.hours, 1);
+      assert.strictEqual(usage.machineType, "default");
+      assert.strictEqual(usage.vcpu, 4);
+      // Recorded before hand-outs were counted, so its figure may be shared.
+      assert.isTrue(usage.shared);
+      assert.strictEqual(usage.stats?.cpuPercent, 50);
+      assert.strictEqual(usage.stats?.diskUsedBytes, 250);
+      const types = Option.getOrThrow(status).machineTypes;
+      assert.deepStrictEqual(
+        types.map((type) => [type.id, type.hourlyDollars, type.priceSource, type.available]),
+        [
+          ["small", 0.018, "derived", true],
+          ["default", 0.036, "boat", true],
+          ["large", 0.072, "derived", true],
+          ["xlarge", 0.144, "derived", false],
+        ],
+      );
+    }),
+  );
+});
+
+describe("environmentUsageOf", () => {
+  const usage = (seconds: number, dollars: number, updatedAt: string) => ({
+    seconds,
+    dollars,
+    updatedAt,
+  });
+  const machine = {
+    ...storedMachine("vm-2", "env-1", "base"),
+    state: "running" as const,
+    environmentId: EnvironmentId.make("env-1"),
+    machineType: "small",
+    vcpu: 2,
+    memoryGB: 4,
+    usage: usage(1800, 0.009, "2026-11-19T00:01:00.000Z"),
+    handOuts: 1,
+  };
+
+  it("sums every VM an environment was restored onto, and marks a VM two starts shared", () => {
+    const [entry] = BoatCloud.environmentUsageOf(
+      [machine],
+      [
+        {
+          sandboxId: "vm-1",
+          environmentId: EnvironmentId.make("env-1"),
+          machineType: "small",
+          usage: usage(3600, 0.018, "2026-11-19T00:00:00.000Z"),
+        },
+      ],
+      new Map(),
+    );
+    assert.strictEqual(entry?.seconds, 5400);
+    assert.strictEqual(entry?.dollars, 0.027);
+    assert.strictEqual(entry?.machines, 2);
+    assert.strictEqual(entry?.usageUpdatedAt, "2026-11-19T00:00:00.000Z");
+    assert.isFalse(entry?.shared);
+    assert.isTrue(
+      BoatCloud.environmentUsageOf([{ ...machine, handOuts: 2 }], [], new Map())[0]?.shared,
+    );
+  });
+
+  it("lists no environment for a VM no thread was handed", () => {
+    assert.deepStrictEqual(
+      BoatCloud.environmentUsageOf([{ ...machine, environmentId: null }], [], new Map()),
+      [],
+    );
+  });
 });

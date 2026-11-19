@@ -60,8 +60,60 @@ export const BoatCloudSetup = Schema.Struct({
 });
 export type BoatCloudSetup = typeof BoatCloudSetup.Type;
 
+/** Boat's machine sizes, smallest first. */
+export const BOAT_CLOUD_MACHINE_TYPES = ["small", "default", "large", "xlarge"] as const;
+export const BoatCloudMachineType = Schema.Literals(BOAT_CLOUD_MACHINE_TYPES);
+export type BoatCloudMachineType = typeof BoatCloudMachineType.Type;
+
+/** One machine size a new cloud thread can start on, with Boat's price for it. */
+export const BoatCloudMachineTypeOption = Schema.Struct({
+  id: BoatCloudMachineType,
+  vcpu: Schema.Number,
+  memoryGB: Schema.Number,
+  /** Null until Boat's prices are read. */
+  hourlyDollars: Schema.NullOr(Schema.Number),
+  /**
+   * `boat`: Boat's own rate for this size (its VM-hour price, times the billing multiplier
+   * Boat reported for a VM of this size). `derived`: Boat's VM-hour price times the size
+   * ratio Boat documents (small half, large twice, xlarge four times).
+   */
+  priceSource: Schema.Literals(["boat", "derived"]),
+  /** Whether this account's plan can start it; `reason` says why not. */
+  available: Schema.Boolean,
+  reason: Schema.NullOr(Schema.String),
+});
+export type BoatCloudMachineTypeOption = typeof BoatCloudMachineTypeOption.Type;
+
 export const BoatCloudMachineState = Schema.Literals(["running", "starting", "stopped", "gone"]);
 export type BoatCloudMachineState = typeof BoatCloudMachineState.Type;
+
+/** What Boat bills for one VM since it was created, from Boat's usage endpoint. */
+export const BoatCloudMachineUsage = Schema.Struct({
+  /** Billed machine seconds: wall time on, times the machine type's billing multiplier. */
+  seconds: Schema.Number,
+  /** Boat's own dollar figure for those seconds. */
+  dollars: Schema.Number,
+  /** When this holder last read it from Boat. */
+  updatedAt: Schema.String,
+});
+export type BoatCloudMachineUsage = typeof BoatCloudMachineUsage.Type;
+
+/**
+ * A live sample of a running VM, measured on the VM itself while a client watches the status:
+ * Boat reports only per-process samples.
+ */
+export const BoatCloudMachineStats = Schema.Struct({
+  /** Busy share of all CPUs over about a second, 0 to 100. */
+  cpuPercent: Schema.Number,
+  cpus: Schema.Number,
+  memoryUsedBytes: Schema.Number,
+  memoryTotalBytes: Schema.Number,
+  /** Of the root filesystem; null when `df` did not answer. */
+  diskUsedBytes: Schema.NullOr(Schema.Number),
+  diskTotalBytes: Schema.NullOr(Schema.Number),
+  sampledAt: Schema.String,
+});
+export type BoatCloudMachineStats = typeof BoatCloudMachineStats.Type;
 
 export const BoatCloudMachine = Schema.Struct({
   sandboxId: TrimmedNonEmptyString,
@@ -74,6 +126,18 @@ export const BoatCloudMachine = Schema.Struct({
   backedUpAt: Schema.NullOr(Schema.String),
   /** The Boat environment the VM started on. Boat keeps it across stops and resumes. */
   environment: Schema.NullOr(Schema.String),
+  /** Boat's machine type, such as `default`. Null until Boat has reported it. */
+  machineType: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  vcpu: Schema.NullOr(Schema.Number).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  memoryGB: Schema.NullOr(Schema.Number).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  /** Null until the holder has read it from Boat. */
+  usage: Schema.NullOr(BoatCloudMachineUsage).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  /** Null while no client watches, and for a VM that is not running. */
+  stats: Schema.NullOr(BoatCloudMachineStats).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
 });
 export type BoatCloudMachine = typeof BoatCloudMachine.Type;
 
@@ -127,6 +191,38 @@ export const BoatCloudEnvironment = Schema.Struct({
 });
 export type BoatCloudEnvironment = typeof BoatCloudEnvironment.Type;
 
+/**
+ * One Boat cloud environment (the T3 server on a VM, and so its threads): the VM serving it
+ * now, live stats while a client watches, and what it has cost, summed over every VM that
+ * served it, since a restore after Boat deleted a VM moves the environment to a new one.
+ * Subagents run inside their parent's VM, so they have no entry of their own.
+ */
+export const BoatCloudEnvironmentUsage = Schema.Struct({
+  environmentId: EnvironmentId,
+  /** The VM serving it now. */
+  sandboxId: TrimmedNonEmptyString,
+  state: BoatCloudMachineState,
+  machineType: Schema.NullOr(Schema.String),
+  vcpu: Schema.NullOr(Schema.Number),
+  memoryGB: Schema.NullOr(Schema.Number),
+  /** Billed seconds, summed from Boat's usage figures. */
+  seconds: Schema.Number,
+  hours: Schema.Number,
+  /** Boat's own dollar figures, summed. */
+  dollars: Schema.Number,
+  /**
+   * More than one start was handed this environment's VM (or its history is unknown), so the
+   * figure is the VM's total, shared by its threads, not one thread's share.
+   */
+  shared: Schema.Boolean,
+  /** How many VMs the cost sums. */
+  machines: Schema.Number,
+  /** The oldest usage read among them; null before the first. */
+  usageUpdatedAt: Schema.NullOr(Schema.String),
+  stats: Schema.NullOr(BoatCloudMachineStats),
+});
+export type BoatCloudEnvironmentUsage = typeof BoatCloudEnvironmentUsage.Type;
+
 export const BoatCloudStatus = Schema.Struct({
   connected: Schema.Boolean,
   /** The Boat account the key belongs to. */
@@ -141,6 +237,23 @@ export const BoatCloudStatus = Schema.Struct({
   environments: Schema.Array(BoatCloudEnvironment),
   /** Why the environments could not be listed, such as a key without `environment.read`. */
   environmentsError: Schema.NullOr(Schema.String),
+  /**
+   * False (the default): each new cloud thread gets a VM of its own, reusing only the ready
+   * spare. True: a start may join a running VM that has room, so threads share VMs.
+   */
+  shareMachines: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /** The size a new cloud thread starts on when its start names none. */
+  defaultMachineType: BoatCloudMachineType.pipe(
+    Schema.withDecodingDefault(Effect.succeed("small" as const)),
+  ),
+  /** Every size, with its price and whether the plan allows it. */
+  machineTypes: Schema.Array(BoatCloudMachineTypeOption).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  /** One entry per Boat cloud environment this holder knows. */
+  environmentUsage: Schema.Array(BoatCloudEnvironmentUsage).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
 });
 export type BoatCloudStatus = typeof BoatCloudStatus.Type;
 
@@ -158,6 +271,13 @@ export const BoatCloudConfigureEnvironmentInput = Schema.Struct({
   access: Schema.optional(BoatCloudEnvironmentAccess),
 });
 export type BoatCloudConfigureEnvironmentInput = typeof BoatCloudConfigureEnvironmentInput.Type;
+
+/** Changes how the holder hands out VMs to new threads. */
+export const BoatCloudConfigureMachinesInput = Schema.Struct({
+  shareMachines: Schema.optional(Schema.Boolean),
+  defaultMachineType: Schema.optional(BoatCloudMachineType),
+});
+export type BoatCloudConfigureMachinesInput = typeof BoatCloudConfigureMachinesInput.Type;
 
 export const BoatCloudEmptyInput = Schema.Struct({});
 export type BoatCloudEmptyInput = typeof BoatCloudEmptyInput.Type;
@@ -183,6 +303,11 @@ export const BoatCloudAcquireInput = Schema.Struct({
   repositoryUrl: TrimmedNonEmptyString.check(Schema.isMaxLength(2048)),
   /** The thread's base branch; the start fails early when the remote does not have it. */
   baseBranch: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(512))),
+  /**
+   * The VM size; the holder's `defaultMachineType` when absent. The thread never lands on a
+   * running VM of another size.
+   */
+  machineType: Schema.optional(BoatCloudMachineType),
   /** Names this start in `BoatCloudStatus.starts`. */
   requestId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
   /** Boat cloud VMs the client already paired with; picking one of them skips the pairing code. */

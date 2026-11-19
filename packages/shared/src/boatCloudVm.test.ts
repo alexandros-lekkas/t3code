@@ -16,6 +16,7 @@ import {
   idleSecondsOf,
   parkCheckoutFunction,
   parseMeasure,
+  parseStats,
   parseRepository,
   pickMachine,
   prepareWorktreeScript,
@@ -77,6 +78,36 @@ describe("parseMeasure", () => {
   });
 });
 
+describe("parseStats", () => {
+  it("reads CPU busy share over the sample, memory in use and the root disk", () => {
+    const stats = parseStats(
+      [
+        "cpu  100 0 100 800 0 0 0 0 0 0",
+        "cpu  130 0 120 850 0 0 0 0 0 0",
+        "4",
+        "8000000 6000000",
+        "100000000000 25000000000",
+      ].join("\n"),
+    );
+    assert.deepStrictEqual(stats, {
+      cpuPercent: 50,
+      cpus: 4,
+      memoryUsedBytes: 2_000_000 * 1024,
+      memoryTotalBytes: 8_000_000 * 1024,
+      diskUsedBytes: 25_000_000_000,
+      diskTotalBytes: 100_000_000_000,
+    });
+  });
+
+  it("keeps CPU and memory when df did not answer, and refuses garbage", () => {
+    const stats = parseStats("cpu 1 0 1 8\ncpu 1 0 1 18\n2\n1000 500\n");
+    assert.strictEqual(stats?.cpuPercent, 0);
+    assert.isNull(stats?.diskTotalBytes);
+    assert.isNull(parseStats("garbage"));
+    assert.isNull(parseStats("cpu 1 0 1 8\ncpu 1 0 1 18\n2\n0 0"));
+  });
+});
+
 describe("pickMachine", () => {
   const root = "/home/user/projects/acme/app";
   const vm = (
@@ -129,6 +160,20 @@ describe("pickMachine", () => {
         kind: "use",
         sandboxId: "spare",
       },
+    );
+  });
+
+  it("without sharing, reuses only the spare and otherwise creates a VM", () => {
+    const free = vm("free", true, 0.1, [root]);
+    const off = vm("off", false, null, [root]);
+    assert.deepStrictEqual(pickMachine([free, off], root, "base", false), { kind: "create" });
+    assert.deepStrictEqual(
+      pickMachine([free, off, vm("spare", false, null, [], "base", true)], root, "base", false),
+      { kind: "resume", sandboxId: "spare" },
+    );
+    assert.deepStrictEqual(
+      pickMachine([free, vm("spare", true, 0, [], "base", true)], root, "base", false),
+      { kind: "use", sandboxId: "spare" },
     );
   });
 

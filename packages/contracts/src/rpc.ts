@@ -415,6 +415,7 @@ import { SecretRequestAnswerInput, SecretRequestError } from "./secretRequest.ts
 import {
   BoatCloudAcquireInput,
   BoatCloudConfigureEnvironmentInput,
+  BoatCloudConfigureMachinesInput,
   BoatCloudConnectInput,
   BoatCloudEmptyInput,
   BoatCloudError,
@@ -606,6 +607,7 @@ export const WS_METHODS = {
   boatCloudDisconnect: "boatCloud.disconnect",
   boatCloudRunSetup: "boatCloud.runSetup",
   boatCloudConfigureEnvironment: "boatCloud.configureEnvironment",
+  boatCloudConfigureMachines: "boatCloud.configureMachines",
   boatCloudAcquire: "boatCloud.acquire",
   boatCloudWake: "boatCloud.wake",
 
@@ -2259,6 +2261,12 @@ const WsBoatCloudConfigureEnvironmentRpc = Rpc.make(WS_METHODS.boatCloudConfigur
   error: BoatCloudErrors,
 });
 
+const WsBoatCloudConfigureMachinesRpc = Rpc.make(WS_METHODS.boatCloudConfigureMachines, {
+  payload: BoatCloudConfigureMachinesInput,
+  success: BoatCloudStatus,
+  error: BoatCloudErrors,
+});
+
 const WsBoatCloudAcquireRpc = Rpc.make(WS_METHODS.boatCloudAcquire, {
   payload: BoatCloudAcquireInput,
   success: BoatCloudSession,
@@ -2409,6 +2417,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsBoatCloudDisconnectRpc,
   WsBoatCloudRunSetupRpc,
   WsBoatCloudConfigureEnvironmentRpc,
+  WsBoatCloudConfigureMachinesRpc,
   WsBoatCloudAcquireRpc,
   WsBoatCloudWakeRpc,
   WsServerReportClientActivityRpc,

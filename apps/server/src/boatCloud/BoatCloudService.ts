@@ -2,9 +2,16 @@ import {
   BOAT_CLOUD_START_STEPS,
   type BoatCloudAcquireInput,
   type BoatCloudConfigureEnvironmentInput,
+  type BoatCloudConfigureMachinesInput,
   type BoatCloudConnectInput,
   type BoatCloudEnvironment,
+  type BoatCloudEnvironmentUsage,
   BoatCloudError,
+  type BoatCloudMachineStats,
+  type BoatCloudMachineTypeOption,
+  BOAT_CLOUD_MACHINE_TYPES,
+  BoatCloudMachineType,
+  BoatCloudMachineUsage,
   type BoatCloudRunSetupInput,
   BoatCloudMachineState,
   type BoatCloudSession,
@@ -18,8 +25,10 @@ import {
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import {
+  BOAT_MACHINE_SPECS,
   type BoatApi,
   BoatApiError,
+  type BoatLimits,
   type BoatSandbox,
   cloudEnvironments,
   makeBoatApi,
@@ -52,7 +61,9 @@ import {
   machineLabelOf,
   machineStateOf,
   parseRepository,
+  parseStats,
   restoreScript,
+  statsScript,
 } from "@t3tools/shared/boatCloudVm";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -87,6 +98,12 @@ const START_LINGER = Duration.minutes(2);
  * its threads, or from when it was handed out, whichever is later.
  */
 const IDLE_STOP_SECONDS = IDLE_TTL_SECONDS - 60;
+/**
+ * While a client watches the status, Boat's billed usage is read this often, and each
+ * running VM measures its load this often. Nothing is read while no client watches.
+ */
+const USAGE_REFRESH_INTERVAL = Duration.minutes(1);
+const STATS_REFRESH_INTERVAL = Duration.seconds(30);
 
 const StoredMachine = Schema.Struct({
   sandboxId: Schema.String,
@@ -99,8 +116,28 @@ const StoredMachine = Schema.Struct({
   /** Only the environment that hands out a VM watches it for idleness, so two never race to stop it. */
   acquiredAt: Schema.NullOr(Schema.String),
   environment: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  machineType: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  vcpu: Schema.NullOr(Schema.Number).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  memoryGB: Schema.NullOr(Schema.Number).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  usage: Schema.NullOr(BoatCloudMachineUsage).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  /**
+   * How many starts this VM (and the VMs it replaced) was handed to; more than one means its
+   * threads share it. Null for a VM recorded before this was counted, or one another holder
+   * handed out.
+   */
+  handOuts: Schema.NullOr(Schema.Number).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
 });
 type StoredMachine = typeof StoredMachine.Type;
+
+/** A VM Boat deleted that a restore replaced; its cost stays with its environment. */
+const RetiredMachine = Schema.Struct({
+  sandboxId: Schema.String,
+  environmentId: EnvironmentId,
+  machineType: Schema.NullOr(Schema.String),
+  usage: Schema.NullOr(BoatCloudMachineUsage),
+});
 
 const StoredState = Schema.Struct({
   account: Schema.NullOr(Schema.String),
@@ -111,6 +148,11 @@ const StoredState = Schema.Struct({
   snapshotRepositories: Schema.Array(Schema.String).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
+  shareMachines: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  defaultMachineType: BoatCloudMachineType.pipe(
+    Schema.withDecodingDefault(Effect.succeed("small" as const)),
+  ),
+  retired: Schema.Array(RetiredMachine).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
 });
 type StoredState = typeof StoredState.Type;
 const decodeStoredState = Schema.decodeUnknownOption(Schema.fromJsonString(StoredState));
@@ -120,6 +162,7 @@ const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
 const isBoatApiError = Schema.is(BoatApiError);
+const isMachineType = Schema.is(BoatCloudMachineType);
 /** Boat errors carry fixed or attribute-built messages; any other failure's text stays in `cause`. */
 const describe = (error: unknown) => {
   if (!isBoatApiError(error)) return null;
@@ -148,6 +191,73 @@ const cloudError = (message: string) =>
 const pendingSteps = (): Array<BoatCloudStepProgress> =>
   BOAT_CLOUD_START_STEPS.map((step) => ({ step, state: "pending", detail: null }));
 
+/**
+ * Every size with its hourly price: Boat's VM-hour price times the billing multiplier Boat
+ * reported for a VM of that size, else times the size ratio Boat documents.
+ */
+function machineTypeOptions(
+  limits: BoatLimits | null,
+  observedMultipliers: ReadonlyMap<string, number>,
+): Array<BoatCloudMachineTypeOption> {
+  const vmHourDollars =
+    limits?.overagePrices?.vmHourDollars ??
+    (limits?.creditSecondsPerDollar ? 3600 / limits.creditSecondsPerDollar : null);
+  return BOAT_CLOUD_MACHINE_TYPES.map((id) => {
+    const spec = BOAT_MACHINE_SPECS[id];
+    const observed = observedMultipliers.get(id);
+    // Boat's price is for the default size, whose multiplier is 1.
+    const multiplier = observed ?? spec.rate;
+    const listed = limits?.machineTypes?.find((entry) => entry.type === id);
+    return {
+      id,
+      vcpu: spec.vcpu,
+      memoryGB: spec.memoryGB,
+      hourlyDollars:
+        vmHourDollars === null || vmHourDollars === undefined ? null : vmHourDollars * multiplier,
+      priceSource: observed !== undefined || id === "default" ? "boat" : "derived",
+      available: listed?.available ?? true,
+      reason: listed?.reason ?? null,
+    };
+  });
+}
+
+/**
+ * Each environment's VM now, and its cost summed over every VM that served it. Subagents
+ * run in their parent's VM, so a thread's figure is its environment's.
+ */
+export function environmentUsageOf(
+  machines: ReadonlyArray<StoredMachine>,
+  retired: ReadonlyArray<typeof RetiredMachine.Type>,
+  stats: ReadonlyMap<string, BoatCloudMachineStats>,
+): Array<BoatCloudEnvironmentUsage> {
+  const entries: Array<BoatCloudEnvironmentUsage> = [];
+  for (const machine of machines) {
+    const { environmentId } = machine;
+    if (environmentId === null) continue;
+    const served = [...retired.filter((entry) => entry.environmentId === environmentId), machine];
+    const reads = served.flatMap((entry) => (entry.usage === null ? [] : [entry.usage]));
+    const seconds = reads.reduce((sum, usage) => sum + usage.seconds, 0);
+    const dollars = reads.reduce((sum, usage) => sum + usage.dollars, 0);
+    const oldest = reads.map((usage) => usage.updatedAt).sort()[0] ?? null;
+    entries.push({
+      environmentId,
+      sandboxId: machine.sandboxId,
+      state: machine.state,
+      machineType: machine.machineType,
+      vcpu: machine.vcpu,
+      memoryGB: machine.memoryGB,
+      seconds,
+      hours: Math.round((seconds / 3600) * 1000) / 1000,
+      dollars: Math.round(dollars * 10_000) / 10_000,
+      shared: machine.handOuts === null || machine.handOuts > 1,
+      machines: served.length,
+      usageUpdatedAt: oldest,
+      stats: machine.state === "running" ? (stats.get(machine.sandboxId) ?? null) : null,
+    });
+  }
+  return entries;
+}
+
 export class BoatCloudService extends Context.Service<
   BoatCloudService,
   {
@@ -161,6 +271,9 @@ export class BoatCloudService extends Context.Service<
     ) => Effect.Effect<BoatCloudStatus, BoatCloudError>;
     readonly configureEnvironment: (
       input: BoatCloudConfigureEnvironmentInput,
+    ) => Effect.Effect<BoatCloudStatus, BoatCloudError>;
+    readonly configureMachines: (
+      input: BoatCloudConfigureMachinesInput,
     ) => Effect.Effect<BoatCloudStatus, BoatCloudError>;
     readonly acquire: (
       input: BoatCloudAcquireInput,
@@ -199,12 +312,21 @@ const make = Effect.gen(function* () {
     machines: [],
     environment: null,
     snapshotRepositories: [],
+    shareMachines: false,
+    defaultMachineType: "small",
+    retired: [],
   };
   let setup: BoatCloudSetup = { status: "idle", step: null, error: null };
   /** The saved snapshot new VMs start from, or null before setup. */
   let snapshotName: string | null = null;
   let environments: ReadonlyArray<BoatCloudEnvironment> = [];
   let environmentsError: string | null = null;
+  let limits: BoatLimits | null = null;
+  /** Billing multipliers Boat reported per machine type, from its usage answers. */
+  const observedMultipliers = new Map<string, number>();
+  /** Live load of running VMs, measured only while a client watches. */
+  const stats = new Map<string, BoatCloudMachineStats>();
+  let subscribers = 0;
   const starts = new Map<string, Array<BoatCloudStepProgress>>();
   const registryLock = yield* Semaphore.make(1);
   /**
@@ -256,6 +378,10 @@ const make = Effect.gen(function* () {
     environment: null,
     environments: [],
     environmentsError: null,
+    shareMachines: state.shareMachines,
+    defaultMachineType: state.defaultMachineType,
+    machineTypes: machineTypeOptions(null, observedMultipliers),
+    environmentUsage: [],
   });
   const publish = Effect.gen(function* () {
     const connected = Option.isSome(yield* readKey);
@@ -266,12 +392,19 @@ const make = Effect.gen(function* () {
         setup.status === "idle" && snapshotName !== null ? { ...setup, status: "ready" } : setup,
       snapshotReady: connected && snapshotName !== null,
       machines: connected
-        ? state.machines.map(({ acquiredAt: _acquiredAt, ...machine }) => machine)
+        ? state.machines.map(({ acquiredAt: _acquiredAt, handOuts: _handOuts, ...machine }) => ({
+            ...machine,
+            stats: machine.state === "running" ? (stats.get(machine.sandboxId) ?? null) : null,
+          }))
         : [],
       starts: [...starts].map(([requestId, steps]) => ({ requestId, steps })),
       environment: connected ? state.environment : null,
       environments: connected ? environments : [],
       environmentsError: connected ? environmentsError : null,
+      shareMachines: state.shareMachines,
+      defaultMachineType: state.defaultMachineType,
+      machineTypes: machineTypeOptions(connected ? limits : null, observedMultipliers),
+      environmentUsage: connected ? environmentUsageOf(state.machines, state.retired, stats) : [],
     });
   });
   /**
@@ -320,6 +453,11 @@ const make = Effect.gen(function* () {
                 backedUpAt: null,
                 acquiredAt: null,
                 environment: null,
+                machineType: null,
+                vcpu: null,
+                memoryGB: null,
+                usage: null,
+                handOuts: 0,
               },
             ],
           },
@@ -423,6 +561,18 @@ const make = Effect.gen(function* () {
     );
   });
 
+  /** Boat's size for a VM, keeping what was known when Boat's list leaves it out. */
+  const sizeOf = (sandbox: BoatSandbox, known: StoredMachine | null) => {
+    const machineType = sandbox.type ?? known?.machineType ?? null;
+    const spec =
+      machineType !== null && isMachineType(machineType) ? BOAT_MACHINE_SPECS[machineType] : null;
+    return {
+      machineType,
+      vcpu: sandbox.vcpu ?? spec?.vcpu ?? known?.vcpu ?? null,
+      memoryGB: sandbox.memoryGB ?? spec?.memoryGB ?? known?.memoryGB ?? null,
+    };
+  };
+
   /** Folds Boat's list into the registry: a VM deleted in Boat stays only while its backup can bring it back. */
   const reconcile = Effect.fn("BoatCloud.reconcile")(function* (api: BoatApi) {
     // A VM added after the list was read is missing from it only because it is new.
@@ -447,6 +597,7 @@ const make = Effect.gen(function* () {
             ...machine,
             state: machineStateOf(sandbox.state),
             environment: sandbox.environment ?? null,
+            ...sizeOf(sandbox, machine),
           });
         } else if (!listedFrom.has(machine.sandboxId)) {
           machines.push(machine);
@@ -469,6 +620,9 @@ const make = Effect.gen(function* () {
           backedUpAt: null,
           acquiredAt: null,
           environment: sandbox.environment ?? null,
+          ...sizeOf(sandbox, null),
+          usage: null,
+          handOuts: null,
         });
       }
       return { ...current, machines };
@@ -486,7 +640,10 @@ const make = Effect.gen(function* () {
     if (snapshotName === null) return yield* vmFailure("Boat has no T3 Code snapshot.");
     const created = yield* api.createSandbox({
       name: "Boat cloud",
-      type: "default",
+      type:
+        machine.machineType !== null && isMachineType(machine.machineType)
+          ? machine.machineType
+          : "default",
       labels: MACHINE_LABELS,
       from: snapshotName,
       ttlSeconds: IDLE_TTL_SECONDS,
@@ -509,9 +666,19 @@ const make = Effect.gen(function* () {
       yield* uploadFile(api, created.id, VM_BACKUP_ARCHIVE, backupPathOf(environmentId));
       yield* exec(api, created.id, restoreScript, 600);
     }).pipe(Effect.onError(() => discard));
-    // Same environment on a new VM: the new entry takes over the old one's history.
+    // Same environment on a new VM: the new entry takes over the old one's history, and the
+    // old VM's cost stays with the environment.
     yield* commit((current) => ({
       ...current,
+      retired: [
+        ...current.retired.filter((entry) => entry.sandboxId !== machine.sandboxId),
+        {
+          sandboxId: machine.sandboxId,
+          environmentId,
+          machineType: machine.machineType,
+          usage: findMachine(machine.sandboxId)?.usage ?? machine.usage,
+        },
+      ],
       machines: current.machines
         .filter((candidate) => candidate.sandboxId !== machine.sandboxId)
         .map((candidate) =>
@@ -521,6 +688,7 @@ const make = Effect.gen(function* () {
                 environmentId,
                 repositories: machine.repositories,
                 backedUpAt: machine.backedUpAt,
+                handOuts: machine.handOuts,
               }
             : candidate,
         ),
@@ -579,6 +747,8 @@ const make = Effect.gen(function* () {
       if (handedOutAgain()) return;
       yield* api.stop(machine.sandboxId);
       yield* updateMachine(machine.sandboxId, { state: "stopped" });
+      // Its cost stops growing here, so the figure is read once more.
+      yield* refreshUsage(api, [machine.sandboxId]).pipe(Effect.forkIn(scope));
       yield* Effect.logInfo("boat cloud stopped an idle VM", { sandboxId: machine.sandboxId });
     }).pipe(
       Effect.ensuring(
@@ -589,6 +759,114 @@ const make = Effect.gen(function* () {
       ),
     );
   });
+
+  /**
+   * Reads Boat's billed usage of these VMs (default: every one Boat may still bill, plus any
+   * never read) and records it in one registry change.
+   */
+  const refreshUsage = Effect.fn("BoatCloud.refreshUsage")(function* (
+    api: BoatApi,
+    sandboxIds?: ReadonlyArray<string>,
+  ) {
+    const targets =
+      sandboxIds ??
+      state.machines
+        .filter(
+          (machine) =>
+            machine.state === "running" ||
+            machine.state === "starting" ||
+            (machine.state === "stopped" && machine.usage === null),
+        )
+        .map((machine) => machine.sandboxId);
+    if (targets.length === 0) return;
+    const read = yield* Effect.forEach(
+      targets,
+      (sandboxId) =>
+        api.usage(sandboxId).pipe(
+          Effect.map((usage) => [sandboxId, usage] as const),
+          Effect.orElseSucceed(() => [sandboxId, null] as const),
+        ),
+      { concurrency: 4 },
+    );
+    const updatedAt = yield* now;
+    const byId = new Map<string, NonNullable<(typeof read)[number][1]>>();
+    for (const [sandboxId, usage] of read) {
+      if (usage === null) continue;
+      byId.set(sandboxId, usage);
+      if (usage.sandboxType && usage.billingMultiplier !== undefined) {
+        observedMultipliers.set(usage.sandboxType, usage.billingMultiplier);
+      }
+    }
+    if (byId.size === 0) return;
+    yield* commit((current) => ({
+      ...current,
+      machines: current.machines.map((machine) => {
+        const usage = byId.get(machine.sandboxId);
+        if (usage === undefined) return machine;
+        const machineType = usage.sandboxType ?? machine.machineType;
+        const spec =
+          machineType !== null && isMachineType(machineType)
+            ? BOAT_MACHINE_SPECS[machineType]
+            : null;
+        return {
+          ...machine,
+          machineType,
+          vcpu: machine.vcpu ?? spec?.vcpu ?? null,
+          memoryGB: machine.memoryGB ?? spec?.memoryGB ?? null,
+          usage: { seconds: usage.seconds, dollars: usage.dollars, updatedAt },
+        };
+      }),
+    }));
+  });
+
+  /** Measures each running VM's load on the VM itself: Boat keeps only per-process samples. */
+  const refreshStats = Effect.fn("BoatCloud.refreshStats")(function* (api: BoatApi) {
+    const running = new Set(
+      state.machines
+        .filter((machine) => machine.state === "running" && !stopping.has(machine.sandboxId))
+        .map((machine) => machine.sandboxId),
+    );
+    for (const sandboxId of stats.keys()) if (!running.has(sandboxId)) stats.delete(sandboxId);
+    yield* Effect.forEach(
+      running,
+      (sandboxId) =>
+        exec(api, sandboxId, statsScript, 20).pipe(
+          Effect.map(parseStats),
+          Effect.orElseSucceed(() => null),
+          Effect.flatMap((measured) =>
+            Effect.map(now, (sampledAt) => {
+              if (measured === null) stats.delete(sandboxId);
+              else stats.set(sandboxId, { ...measured, sampledAt });
+            }),
+          ),
+        ),
+      { concurrency: 4, discard: true },
+    );
+    yield* publish;
+  });
+
+  const refreshLimits = (api: BoatApi) =>
+    api.limits().pipe(
+      Effect.tap((read) =>
+        Effect.sync(() => {
+          limits = read;
+        }),
+      ),
+      Effect.ignore,
+    );
+
+  /** Runs `refresh` with the key while a client watches the status; it never fails. */
+  const whileWatched = Effect.fn("BoatCloud.whileWatched")(
+    function* <E>(refresh: (api: BoatApi) => Effect.Effect<void, E>) {
+      if (subscribers === 0) return;
+      const key = yield* readKey;
+      if (Option.isNone(key)) return;
+      yield* refresh(makeBoatApi(http, key.value));
+    },
+    Effect.catchCause((cause) =>
+      Effect.logWarning("boat cloud could not refresh VM usage", { cause }),
+    ),
+  );
 
   const sweepIdle = Effect.gen(function* () {
     const key = yield* readKey;
@@ -643,10 +921,12 @@ const make = Effect.gen(function* () {
     yield* exec(api, sandboxId, extractSkillsScript, 300);
   }, Effect.mapError(transferFailure));
 
-  /** Keeps the spare in step with the snapshot and the chosen environment. */
+  /** Keeps the spare in step with the snapshot, the chosen environment and the default size. */
   const keepSpare = (api: BoatApi) =>
     Effect.suspend(() =>
-      snapshotName === null ? Effect.void : spares.keep(api, snapshotName, state.environment),
+      snapshotName === null
+        ? Effect.void
+        : spares.keep(api, snapshotName, state.environment, state.defaultMachineType),
     );
 
   const finishSetup = (api: BoatApi, saved: string | null, error: string | null) =>
@@ -802,7 +1082,9 @@ const make = Effect.gen(function* () {
       starts.delete(input.requestId);
       return publish;
     });
-    const readySpare = yield* spares.take(snapshot, state.environment);
+    const machineType = input.machineType ?? state.defaultMachineType;
+    const shareMachines = state.shareMachines;
+    const readySpare = yield* spares.take(snapshot, state.environment, machineType);
     const environment = state.environment;
     // Every VM this start may pick stays claimed until its hand-out is recorded.
     const claimed: Array<string> = [];
@@ -833,6 +1115,8 @@ const make = Effect.gen(function* () {
         readySpare,
         ...(sandboxes === undefined ? {} : { sandboxes }),
         knownWorkspaceRoots,
+        shareMachines,
+        machineType,
         paired: input.paired ?? [],
         report: reportStep(input.requestId, markEnded),
         onAdded: addMachine,
@@ -845,12 +1129,22 @@ const make = Effect.gen(function* () {
             machines: current.machines.filter((candidate) => candidate.sandboxId !== sandboxId),
           })),
       });
-      yield* updateMachine(machine.sandboxId, {
-        environmentId: machine.environmentId,
-        httpBaseUrl: machine.httpBaseUrl,
-        state: "running",
-        acquiredAt: yield* now,
-      });
+      const acquiredAt = yield* now;
+      yield* commit((current) => ({
+        ...current,
+        machines: current.machines.map((candidate) =>
+          candidate.sandboxId === machine.sandboxId
+            ? {
+                ...candidate,
+                environmentId: machine.environmentId,
+                httpBaseUrl: machine.httpBaseUrl,
+                state: "running",
+                acquiredAt,
+                handOuts: candidate.handOuts === null ? null : candidate.handOuts + 1,
+              }
+            : candidate,
+        ),
+      }));
       return machine;
     }).pipe(
       Effect.ensuring(Effect.suspend(() => release(claimed))),
@@ -982,6 +1276,30 @@ const make = Effect.gen(function* () {
     }).pipe(cloudError("Could not change the Boat environment."));
   });
 
+  const configureMachines = Effect.fn("BoatCloud.configureMachines")(function* (
+    input: BoatCloudConfigureMachinesInput,
+  ) {
+    const changesSpare =
+      input.defaultMachineType !== undefined &&
+      input.defaultMachineType !== state.defaultMachineType;
+    yield* commit((current) => ({
+      ...current,
+      ...(input.shareMachines === undefined ? {} : { shareMachines: input.shareMachines }),
+      ...(input.defaultMachineType === undefined
+        ? {}
+        : { defaultMachineType: input.defaultMachineType }),
+    }));
+    yield* publish;
+    if (changesSpare) {
+      // The spare is kept at the default size, so a new one is readied at the new size.
+      const key = yield* readKey;
+      if (Option.isSome(key)) {
+        yield* keepSpare(makeBoatApi(http, key.value)).pipe(Effect.forkIn(scope));
+      }
+    }
+    return yield* SubscriptionRef.get(statusRef);
+  });
+
   const connect = Effect.fn("BoatCloud.connect")(function* (input: BoatCloudConnectInput) {
     const api = makeBoatApi(http, input.apiKey);
     const account = yield* api.me().pipe(cloudError("Could not connect Boat."));
@@ -995,8 +1313,9 @@ const make = Effect.gen(function* () {
     yield* commit((current) =>
       current.account === account
         ? current
-        : { ...current, account, environment: null, machines: [] },
+        : { ...current, account, environment: null, machines: [], retired: [] },
     );
+    yield* refreshLimits(api);
     yield* refreshEnvironments(api);
     return yield* SubscriptionRef.get(statusRef);
   });
@@ -1017,7 +1336,9 @@ const make = Effect.gen(function* () {
       const key = yield* readKey;
       if (Option.isNone(key)) return;
       const api = makeBoatApi(http, key.value);
-      yield* Effect.all([refreshSnapshot(api), refreshEnvironments(api)], { concurrency: 2 });
+      yield* Effect.all([refreshSnapshot(api), refreshLimits(api), refreshEnvironments(api)], {
+        concurrency: 3,
+      });
       yield* publish;
     }),
   );
@@ -1036,19 +1357,51 @@ const make = Effect.gen(function* () {
     yield* renewSnapshot(api);
     yield* refreshEnvironments(api);
     yield* reconcile(api).pipe(Effect.ignore);
+    yield* Effect.all([refreshLimits(api), refreshUsage(api), refreshStats(api)], {
+      concurrency: 3,
+      discard: true,
+    }).pipe(Effect.ignore);
     yield* publish;
     // A client is here, so a start may follow.
     yield* keepSpare(api);
   }).pipe(Effect.forkIn(scope));
 
+  // Usage and load are read only while a client watches, so an unwatched holder costs nothing.
+  yield* forkParked(
+    whileWatched(refreshUsage).pipe(
+      Effect.delay(USAGE_REFRESH_INTERVAL),
+      Effect.repeat(Schedule.spaced(USAGE_REFRESH_INTERVAL)),
+    ),
+  );
+  yield* forkParked(
+    whileWatched(refreshStats).pipe(
+      Effect.delay(STATS_REFRESH_INTERVAL),
+      Effect.repeat(Schedule.spaced(STATS_REFRESH_INTERVAL)),
+    ),
+  );
+
+  const watch = Effect.acquireRelease(
+    Effect.sync(() => {
+      subscribers += 1;
+    }),
+    () =>
+      Effect.sync(() => {
+        subscribers -= 1;
+      }),
+  );
+
   return BoatCloudService.of({
     subscribe: Stream.unwrap(
-      refreshInBackground.pipe(Effect.as(SubscriptionRef.changes(statusRef))),
+      watch.pipe(
+        Effect.andThen(refreshInBackground),
+        Effect.as(SubscriptionRef.changes(statusRef)),
+      ),
     ),
     connect,
     disconnect,
     runSetup,
     configureEnvironment,
+    configureMachines,
     acquire,
     wake,
   });
