@@ -77,6 +77,18 @@ describe("RPC authorization scopes", () => {
     }
   });
 
+  it("lets readers refresh Boat cloud costs, operators stop and wake VMs, and only settings delete them", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.boatCloudRefreshUsage)).toBe(
+      AuthOrchestrationReadScope,
+    );
+    for (const method of [WS_METHODS.boatCloudStopMachine, WS_METHODS.boatCloudWakeMachine]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
+    }
+    expect(requiredScopeForRpcMethod(WS_METHODS.boatCloudDeleteMachine)).toBe(
+      AuthSettingsWriteScope,
+    );
+  });
+
   it("still lets readers load settings the way installed Swift clients ask", () => {
     expect(requiredScopeForRpcMethod("server.getSettings")).toBe(AuthOrchestrationReadScope);
   });

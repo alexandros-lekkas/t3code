@@ -180,3 +180,39 @@ it.live("rebuilds the snapshot and wakes the stopped VM", () =>
     ),
   ),
 );
+
+it.live("edits the root environment, then stops, wakes and deletes a VM", () =>
+  Effect.gen(function* () {
+    const boat = yield* BoatCloud.BoatCloudService;
+    const updated = yield* boat.updateRootEnvironment({
+      setVariables: [{ key: "API_KEY", value: "sk_fake_secret" }],
+      setSecretFiles: [{ path: ".env", contents: "A=sk_fake_file" }],
+      addRepositories: [{ repository: "demo/app" }],
+    });
+    assert.deepStrictEqual(updated.rootEnvironment.variables, ["API_KEY"]);
+    assert.deepStrictEqual(updated.rootEnvironment.secretFiles, [".env"]);
+    assert.deepStrictEqual(updated.rootEnvironment.repositories, [
+      { repository: "demo/app", baseBranch: "main" },
+    ]);
+    assert.notInclude(JSON.stringify(yield* boat.inspect), "sk_fake");
+
+    const stopped = yield* boat.stopMachine(FAKE_RUNNING_VM);
+    assert.strictEqual(stopped.state, "stopped");
+    const woken = yield* boat.wakeMachine(FAKE_RUNNING_VM);
+    assert.strictEqual(woken.state, "running");
+    yield* boat.deleteMachine({ sandboxId: FAKE_STOPPED_VM, force: false });
+    const status = yield* boat.refreshUsage;
+    assert.notInclude(
+      status.machines.filter((machine) => machine.state !== "gone").map((m) => m.sandboxId),
+      FAKE_STOPPED_VM,
+    );
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(
+      FakeBoatCloud.layerFake({ delayScale: 0 }).pipe(
+        Layer.provide(layerLocal),
+        Layer.provide(dependencies({})),
+      ),
+    ),
+  ),
+);

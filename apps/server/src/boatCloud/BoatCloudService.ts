@@ -1500,7 +1500,9 @@ const make = Effect.gen(function* () {
   const publicMachine = (sandboxId: string) =>
     Effect.flatMap(SubscriptionRef.get(statusRef), (status) => {
       const machine = status.machines.find((candidate) => candidate.sandboxId === sandboxId);
-      return machine === undefined ? vmFailure("Boat deleted this VM.", "gone") : Effect.succeed(machine);
+      return machine === undefined
+        ? vmFailure("Boat deleted this VM.", "gone")
+        : Effect.succeed(machine);
     });
 
   const busy = () =>
@@ -1601,7 +1603,10 @@ const make = Effect.gen(function* () {
   const refreshUsageNow = Effect.gen(function* () {
     const key = yield* readKey;
     const nowMillis = yield* Clock.currentTimeMillis;
-    if (Option.isSome(key) && nowMillis - usageRefreshedAt >= Duration.toMillis(USAGE_REFRESH_COOLDOWN)) {
+    if (
+      Option.isSome(key) &&
+      nowMillis - usageRefreshedAt >= Duration.toMillis(USAGE_REFRESH_COOLDOWN)
+    ) {
       usageRefreshedAt = nowMillis;
       const api = makeBoatApi(http, key.value);
       yield* reconcile(api).pipe(Effect.ignore);

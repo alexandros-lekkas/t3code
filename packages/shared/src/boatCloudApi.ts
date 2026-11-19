@@ -69,7 +69,7 @@ const EnvironmentList = Schema.Struct({ environments: Schema.Array(BoatEnvironme
 /** Boat returns variable values and secret file contents here; only names and paths leave this module. */
 const BoatEnvironmentContents = Schema.Struct({
   ...BoatEnvironment.fields,
-  safeForThirdParties: Schema.Boolean,
+  safeForThirdParties: Schema.optional(Schema.Boolean),
   latestVersionNumber: Schema.optional(Schema.NullOr(Schema.Number)),
   envContents: Schema.optional(Schema.NullOr(Schema.String)),
   secretFiles: Schema.optional(Schema.NullOr(Schema.Array(Schema.Struct({ path: Schema.String })))),
@@ -141,7 +141,7 @@ const outlineOf = (environment: typeof BoatEnvironmentContents.Type): BoatEnviro
   id: environment.id,
   name: environment.name,
   isDefault: environment.isDefault,
-  safeForThirdParties: environment.safeForThirdParties,
+  safeForThirdParties: environment.safeForThirdParties ?? false,
   passGithub: environment.passGithub,
   passSandboxCredentials: environment.passSandboxCredentials,
   passSecrets: environment.passSecrets,

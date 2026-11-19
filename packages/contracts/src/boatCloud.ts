@@ -358,6 +358,19 @@ export const BoatCloudConfigureMachinesInput = Schema.Struct({
 });
 export type BoatCloudConfigureMachinesInput = typeof BoatCloudConfigureMachinesInput.Type;
 
+/** A VM this holder manages, by Boat's sandbox id. */
+export const BoatCloudMachineInput = Schema.Struct({
+  sandboxId: TrimmedNonEmptyString.check(Schema.isMaxLength(64)),
+});
+export type BoatCloudMachineInput = typeof BoatCloudMachineInput.Type;
+
+export const BoatCloudDeleteMachineInput = Schema.Struct({
+  sandboxId: TrimmedNonEmptyString.check(Schema.isMaxLength(64)),
+  /** Deletes a running VM, which may have live threads. Its backup still restores it. */
+  force: Schema.optional(Schema.Boolean),
+});
+export type BoatCloudDeleteMachineInput = typeof BoatCloudDeleteMachineInput.Type;
+
 export const BoatCloudEmptyInput = Schema.Struct({});
 export type BoatCloudEmptyInput = typeof BoatCloudEmptyInput.Type;
 

@@ -174,6 +174,41 @@ export const makeFakeBoat = Effect.fn("FakeBoat.make")(function* (options: FakeB
       credentialProfileId: "fakeprofile-codex" as string | null,
     },
   ];
+  /** What each environment gives new VMs; values stay here, the client only reads names. */
+  const contents = new Map(
+    environments.map((environment) => [
+      environment.id,
+      {
+        safeForThirdParties: false,
+        version: 1,
+        variables: new Map<string, string>(),
+        secretFiles: new Map<string, string>(),
+        repositories: new Map<string, { fullName: string; baseBranch: string }>(),
+      },
+    ]),
+  );
+  const FAKE_REPOSITORIES = [
+    { databaseId: "fakerepo-1", fullName: "pingdotgg/t3code" },
+    { databaseId: "fakerepo-2", fullName: "demo/app" },
+  ];
+  const listedEnvironment = (environment: (typeof environments)[number]) => {
+    const held = contents.get(environment.id)!;
+    return {
+      ...environment,
+      safeForThirdParties: held.safeForThirdParties,
+      latestVersionNumber: held.version,
+      envContents: [...held.variables].map(([key, value]) => `${key}=${value}\n`).join(""),
+      secretFiles: [...held.secretFiles].map(([path, fileContents]) => ({
+        path,
+        contents: fileContents,
+      })),
+      selectedRepositories: [...held.repositories].map(([databaseId, repository]) => ({
+        databaseId,
+        ...repository,
+      })),
+      versions: [{ versionNumber: held.version, sandboxCount: 0, createdAt: iso(startedAt) }],
+    };
+  };
   const profiles = [
     {
       id: "fakeprofile-personal",
@@ -342,11 +377,57 @@ export const makeFakeBoat = Effect.fn("FakeBoat.make")(function* (options: FakeB
         });
       }
 
-      if (path === "/environments") return reply({ environments });
+      if (path === "/environments")
+        return reply({ environments: environments.map(listedEnvironment) });
+      if (path === "/repos") {
+        const q = (url.searchParams.get("q") ?? "").toLowerCase();
+        return reply({
+          installations: [
+            {
+              repositories: FAKE_REPOSITORIES.filter((repository) =>
+                repository.fullName.toLowerCase().includes(q),
+              ),
+            },
+          ],
+        });
+      }
+      const itemMatch =
+        /^\/environments\/([^/]+)\/(vars|secret-files|repos|upgrade)(?:\/(.+))?$/u.exec(path);
+      if (itemMatch) {
+        const held = contents.get(itemMatch[1]!);
+        if (!held) return notFound();
+        const [, , kind, item] = itemMatch;
+        if (kind === "upgrade") return reply({ success: true, upgraded: 0, failed: 0 });
+        if (kind === "vars" && item !== undefined) {
+          if (method === "PUT") held.variables.set(decodeURIComponent(item), String(body.value));
+          else held.variables.delete(decodeURIComponent(item));
+        } else if (kind === "secret-files") {
+          if (method === "PUT") held.secretFiles.set(String(body.path), String(body.contents));
+          else held.secretFiles.delete(url.searchParams.get("path") ?? "");
+        } else if (kind === "repos") {
+          if (method === "POST") {
+            const repository = FAKE_REPOSITORIES.find(
+              (candidate) => candidate.databaseId === body.repositoryId,
+            );
+            if (!repository) return notFound();
+            held.repositories.set(repository.databaseId, {
+              fullName: repository.fullName,
+              baseBranch: typeof body.baseBranch === "string" ? body.baseBranch : "main",
+            });
+          } else if (item !== undefined) held.repositories.delete(decodeURIComponent(item));
+        } else return notFound();
+        held.version += 1;
+        return reply({ ok: true });
+      }
       const environmentMatch = /^\/environments\/([^/]+)$/u.exec(path);
       if (environmentMatch && method === "PUT") {
         const environment = environments.find((candidate) => candidate.id === environmentMatch[1]);
         if (!environment) return notFound();
+        const held = contents.get(environment.id)!;
+        if (typeof body.safeForThirdParties === "boolean") {
+          held.safeForThirdParties = body.safeForThirdParties;
+        }
+        held.version += 1;
         for (const key of [
           "passGithub",
           "passSandboxCredentials",
