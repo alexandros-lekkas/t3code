@@ -1,9 +1,11 @@
 import { assert, describe, it } from "@effect/vitest";
+import { ProviderDriverKind, type ProviderInstanceConfig } from "@t3tools/contracts";
 
 import {
   claudeKeychainService,
   claudeSetupTokenOutput,
   discoverLocalSignIns,
+  resolveSignInHomes,
 } from "./BoatLocalSignIns.ts";
 
 const NOW = Date.UTC(2026, 10, 19, 12);
@@ -116,5 +118,50 @@ describe("claudeSetupTokenOutput", () => {
     // Output arrives in chunks: a token not yet followed by anything may be cut off.
     assert.isNull(claudeSetupTokenOutput(token.slice(0, 45)).token);
     assert.strictEqual(claudeSetupTokenOutput(`\u001b[32m${token}\u001b[39m\r\n`).token, token);
+  });
+});
+
+describe("resolveSignInHomes", () => {
+  const home = "/home/user";
+  const instance = (
+    driver: string,
+    patch: Partial<ProviderInstanceConfig> = {},
+  ): ProviderInstanceConfig => ({ driver: ProviderDriverKind.make(driver), ...patch });
+  const resolve = (instances: Record<string, ProviderInstanceConfig>, environment = {}) =>
+    resolveSignInHomes({ instances, environment, home, resolve: (path) => path });
+
+  it("reads the login from the home the provider's own instance runs with", () => {
+    const homes = resolve(
+      {
+        claudeAgent: instance("claudeAgent", { config: { homePath: "~/.claude_personal" } }),
+        codex: instance("codex", {
+          environment: [
+            { name: "CODEX_HOME", value: "~/.codex_work", sensitive: false },
+            { name: "OPENAI_API_KEY", value: "dummy-instance-key", sensitive: true },
+          ],
+        }),
+      },
+      { CLAUDE_CONFIG_DIR: "/srv/claude", CODEX_HOME: "/srv/codex" },
+    );
+    assert.strictEqual(homes.claudeConfigDirectory, "/home/user/.claude_personal");
+    assert.isTrue(homes.claudeConfigDirectoryCustom);
+    assert.strictEqual(homes.codexHome, "/home/user/.codex_work");
+    assert.strictEqual(homes.environment.OPENAI_API_KEY, "dummy-instance-key");
+  });
+
+  it("skips a disabled default for an enabled instance, then falls back to the server", () => {
+    const instances = {
+      claudeAgent: instance("claudeAgent", { enabled: false, config: { homePath: "/off" } }),
+      claudeWork: instance("claudeAgent", {
+        environment: [{ name: "CLAUDE_CONFIG_DIR", value: "~/.claude_work", sensitive: false }],
+      }),
+    };
+    assert.strictEqual(resolve(instances).claudeConfigDirectory, "/home/user/.claude_work");
+    const fromServer = resolve({}, { CLAUDE_CONFIG_DIR: "/srv/claude" });
+    assert.strictEqual(fromServer.claudeConfigDirectory, "/srv/claude");
+    const plain = resolve({});
+    assert.strictEqual(plain.claudeConfigDirectory, "/home/user/.claude");
+    assert.isFalse(plain.claudeConfigDirectoryCustom);
+    assert.strictEqual(plain.codexHome, "/home/user/.codex");
   });
 });

@@ -1,9 +1,14 @@
 import {
   BoatCloudError,
+  defaultInstanceIdForDriver,
+  ProviderDriverKind,
+  type ProviderInstanceConfig,
+  resolveProviderInstanceEnabled,
   type BoatCloudClaudeTokenFlow,
   type BoatCloudClaudeTokenInput,
   type BoatCloudLocalSignIn,
 } from "@t3tools/contracts";
+import { expandHomePath, expandHomeVariable } from "@t3tools/provider-core/server/pathExpansion";
 import type { VmAgentSignIns } from "@t3tools/shared/boatCloudVm";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as PtyAdapter from "@t3tools/shared/PtyAdapter";
@@ -23,6 +28,7 @@ import * as SubscriptionRef from "effect/SubscriptionRef";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ProcessRunner from "../processRunner.ts";
+import * as ServerSettings from "../serverSettings.ts";
 
 /**
  * The holder machine's own Claude and Codex sign-ins, which the Boat VMs it starts get when
@@ -170,6 +176,74 @@ export function discoverLocalSignIns(sources: LocalSignInSources): DiscoveredSig
   return { summary, vm: { claude, codex } };
 }
 
+const HomePathConfig = Schema.Struct({ homePath: Schema.optional(Schema.String) });
+const decodeHomePathConfig = Schema.decodeUnknownOption(HomePathConfig);
+
+/** Where each provider keeps its login here, and the variables it runs with. */
+export interface SignInHomes {
+  readonly claudeConfigDirectory: string;
+  /** Claude runs with CLAUDE_CONFIG_DIR set, which hashes the directory into its Keychain item. */
+  readonly claudeConfigDirectoryCustom: boolean;
+  readonly codexHome: string;
+  /** The sign-in variables: Claude's from its instance's environment, Codex's from its. */
+  readonly environment: Readonly<Record<string, string | undefined>>;
+}
+
+/** The instance a VM's thread runs: the default one when enabled, else the first enabled one. */
+const instanceFor = (
+  instances: Readonly<Record<string, ProviderInstanceConfig>>,
+  driver: string,
+): ProviderInstanceConfig | undefined => {
+  const candidates = Object.entries(instances).filter(
+    ([, instance]) => instance.driver === driver && resolveProviderInstanceEnabled(instance),
+  );
+  const defaultId = defaultInstanceIdForDriver(ProviderDriverKind.make(driver));
+  return (candidates.find(([id]) => id === defaultId) ?? candidates[0])?.[1];
+};
+
+/**
+ * Resolves each provider's home as its driver does: the instance's home folder, else
+ * CLAUDE_CONFIG_DIR or CODEX_HOME from the instance's environment over the server's, else the default.
+ */
+export function resolveSignInHomes(input: {
+  readonly instances: Readonly<Record<string, ProviderInstanceConfig>>;
+  readonly environment: Readonly<Record<string, string | undefined>>;
+  readonly home: string;
+  readonly resolve: (path: string) => string;
+}): SignInHomes {
+  const settingsOf = (driver: string) => {
+    const instance = instanceFor(input.instances, driver);
+    const environment: Record<string, string | undefined> = { ...input.environment };
+    for (const variable of instance?.environment ?? []) {
+      // A secret reference is resolved only for the provider itself.
+      if (typeof variable.value === "string") {
+        environment[variable.name] = expandHomeVariable(variable.name, variable.value, input.home);
+      }
+    }
+    const homePath = nonEmpty(
+      Option.getOrUndefined(decodeHomePathConfig(instance?.config))?.homePath,
+    );
+    return {
+      environment,
+      homePath: homePath === null ? null : expandHomePath(homePath, input.home),
+    };
+  };
+  const claude = settingsOf("claudeAgent");
+  const codex = settingsOf("codex");
+  const claudeDirectory = claude.homePath ?? nonEmpty(claude.environment.CLAUDE_CONFIG_DIR);
+  const codexHome = codex.homePath ?? nonEmpty(codex.environment.CODEX_HOME);
+  return {
+    claudeConfigDirectory: input.resolve(claudeDirectory ?? `${input.home}/.claude`),
+    claudeConfigDirectoryCustom: claudeDirectory !== null,
+    codexHome: input.resolve(codexHome ?? `${input.home}/.codex`),
+    environment: {
+      CLAUDE_CODE_OAUTH_TOKEN: claude.environment.CLAUDE_CODE_OAUTH_TOKEN,
+      ANTHROPIC_API_KEY: claude.environment.ANTHROPIC_API_KEY,
+      OPENAI_API_KEY: codex.environment.OPENAI_API_KEY,
+    },
+  };
+}
+
 /** Claude Code's Keychain item: a config directory set in its environment is hashed into the name. */
 export const claudeKeychainService = (configDirectorySha256Hex: string | null) =>
   configDirectorySha256Hex === null
@@ -217,22 +291,9 @@ const make = Effect.gen(function* () {
   const platform = yield* HostProcess.Platform;
   const home = yield* HostProcess.HomeDirectory;
   const digest = yield* Digest.Digest;
+  const settings = yield* ServerSettings.ServerSettingsService;
   const scope = yield* Effect.scope;
 
-  const configuredClaudeDirectory = nonEmpty(environment.CLAUDE_CONFIG_DIR);
-  const claudeDirectory =
-    configuredClaudeDirectory === null
-      ? path.join(home, ".claude")
-      : path.resolve(configuredClaudeDirectory);
-  const codexDirectory = path.resolve(
-    nonEmpty(environment.CODEX_HOME) ?? path.join(home, ".codex"),
-  );
-  const keychainService =
-    configuredClaudeDirectory === null
-      ? claudeKeychainService(null)
-      : claudeKeychainService(
-          yield* digest.digestHex(Digest.sha256, new TextEncoder().encode(claudeDirectory)),
-        );
   const readText = (filePath: string) =>
     fs.readFileString(filePath).pipe(Effect.orElseSucceed(() => null));
 
@@ -240,46 +301,67 @@ const make = Effect.gen(function* () {
     Effect.map((value) => (Option.isSome(value) ? textDecoder.decode(value.value) : null)),
     Effect.orElseSucceed(() => null),
   );
-  // Claude Code reads the Keychain item with this same command, so no access prompt shows.
-  const readClaudeKeychain =
-    platform === "darwin"
-      ? runner
-          .run({
-            command: "security",
-            args: ["find-generic-password", "-s", keychainService, "-w"],
-            timeout: Duration.seconds(5),
-          })
-          .pipe(
-            Effect.map((output) => (output.code === 0 ? nonEmpty(output.stdout) : null)),
-            Effect.orElseSucceed(() => null),
-          )
-      : Effect.succeed(null);
-  const readClaudeLogin = readClaudeKeychain.pipe(
-    Effect.filterOrElse(
-      (fromKeychain): fromKeychain is string => fromKeychain !== null,
-      () => readText(path.join(claudeDirectory, ".credentials.json")),
+  // Read each time, so a home folder changed in the provider's settings applies at once.
+  const readHomes = settings.getSettings.pipe(
+    Effect.map((current) => current.providerInstances),
+    Effect.orElseSucceed(() => ({})),
+    Effect.map((instances) =>
+      resolveSignInHomes({ instances, environment, home, resolve: (value) => path.resolve(value) }),
     ),
   );
+  // Claude Code reads the Keychain item with this same command, so no access prompt shows.
+  const readClaudeKeychain = Effect.fn("BoatLocalSignIns.readClaudeKeychain")(function* (
+    homes: SignInHomes,
+  ) {
+    if (platform !== "darwin") return null;
+    const service = claudeKeychainService(
+      homes.claudeConfigDirectoryCustom
+        ? yield* digest.digestHex(
+            Digest.sha256,
+            new TextEncoder().encode(homes.claudeConfigDirectory),
+          )
+        : null,
+    );
+    return yield* runner
+      .run({
+        command: "security",
+        args: ["find-generic-password", "-s", service, "-w"],
+        timeout: Duration.seconds(5),
+      })
+      .pipe(
+        Effect.map((output) => (output.code === 0 ? nonEmpty(output.stdout) : null)),
+        Effect.orElseSucceed(() => null),
+      );
+  });
+  const readClaudeLogin = (homes: SignInHomes) =>
+    readClaudeKeychain(homes).pipe(
+      Effect.filterOrElse(
+        (fromKeychain): fromKeychain is string => fromKeychain !== null,
+        () => readText(path.join(homes.claudeConfigDirectory, ".credentials.json")),
+      ),
+    );
 
   const discover = Effect.fn("BoatLocalSignIns.discover")(function* () {
+    const homes = yield* readHomes;
     const [storedClaudeToken, claudeLogin, codexAuth, nowMs] = yield* Effect.all(
       [
         readStoredToken,
-        readClaudeLogin,
-        readText(path.join(codexDirectory, "auth.json")),
+        readClaudeLogin(homes),
+        readText(path.join(homes.codexHome, "auth.json")),
         Effect.clockWith((clock) => clock.currentTimeMillis),
       ],
       { concurrency: "unbounded" },
     );
     return {
       discovered: discoverLocalSignIns({
-        environment,
+        environment: homes.environment,
         storedClaudeToken,
         claudeLogin,
         codexAuth,
         nowMs,
       }),
       claudeTokenStored: storedClaudeToken !== null,
+      homes,
     };
   });
 
