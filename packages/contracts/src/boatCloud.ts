@@ -257,6 +257,81 @@ export const BoatCloudStatus = Schema.Struct({
 });
 export type BoatCloudStatus = typeof BoatCloudStatus.Type;
 
+/** The saved snapshot new VMs start from. */
+export const BoatCloudSnapshot = Schema.Struct({
+  name: Schema.String,
+  /** The t3 build in it; null for a snapshot from before builds were named. */
+  t3Version: Schema.NullOr(Schema.String),
+  withSkills: Schema.Boolean,
+  builtAt: Schema.NullOr(Schema.String),
+});
+export type BoatCloudSnapshot = typeof BoatCloudSnapshot.Type;
+
+/**
+ * What a Boat environment gives every new VM. Variable values and secret file contents
+ * are write-only: only their names and paths are ever read back.
+ */
+export const BoatCloudRootEnvironment = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  name: TrimmedNonEmptyString,
+  isDefault: Schema.Boolean,
+  /** The latest version, which VMs started from now get. */
+  version: Schema.NullOr(Schema.Number),
+  /** Passes nothing of the account's to VMs, whatever the other switches say. */
+  safeForThirdParties: Schema.Boolean,
+  ...BoatCloudEnvironmentAccess.fields,
+  variables: Schema.Array(Schema.String),
+  secretFiles: Schema.Array(Schema.String),
+  repositories: Schema.Array(
+    Schema.Struct({ repository: Schema.String, baseBranch: Schema.NullOr(Schema.String) }),
+  ),
+  /** VMs stay on the version they started on until upgraded. */
+  versions: Schema.Array(
+    Schema.Struct({ version: Schema.Number, machines: Schema.Number, createdAt: Schema.String }),
+  ),
+});
+export type BoatCloudRootEnvironment = typeof BoatCloudRootEnvironment.Type;
+
+const EnvironmentVariableKey = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(256),
+  Schema.isPattern(/^[A-Za-z_][A-Za-z0-9_]*$/),
+);
+const SecretFilePath = TrimmedNonEmptyString.check(Schema.isMaxLength(1024));
+const GitHubRepositoryName = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(256),
+  Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
+);
+
+/** Edits to a root environment, applied in field order. Each edit makes a new Boat version. */
+export const BoatCloudRootEnvironmentEdits = Schema.Struct({
+  safeForThirdParties: Schema.optional(Schema.Boolean),
+  passGithub: Schema.optional(Schema.Boolean),
+  passSandboxCredentials: Schema.optional(Schema.Boolean),
+  passSecrets: Schema.optional(Schema.Boolean),
+  passAgentsCredentials: Schema.optional(Schema.Boolean),
+  removeVariables: Schema.optional(
+    Schema.Array(EnvironmentVariableKey).check(Schema.isMaxLength(50)),
+  ),
+  removeSecretFiles: Schema.optional(Schema.Array(SecretFilePath).check(Schema.isMaxLength(50))),
+  addRepositories: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        repository: GitHubRepositoryName,
+        baseBranch: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(512))),
+      }),
+    ).check(Schema.isMaxLength(20)),
+  ),
+  removeRepositories: Schema.optional(
+    Schema.Array(GitHubRepositoryName).check(Schema.isMaxLength(20)),
+  ),
+  /** Moves VMs already on this environment to the new version: running ones now. */
+  upgradeMachines: Schema.optional(Schema.Boolean),
+});
+export type BoatCloudRootEnvironmentEdits = typeof BoatCloudRootEnvironmentEdits.Type;
+
+export const BoatCloudEnvironmentVariableKey = EnvironmentVariableKey;
+export const BoatCloudSecretFilePath = SecretFilePath;
+
 export const BoatCloudSubscribeInput = Schema.Struct({});
 export type BoatCloudSubscribeInput = typeof BoatCloudSubscribeInput.Type;
 
@@ -278,6 +353,19 @@ export const BoatCloudConfigureMachinesInput = Schema.Struct({
   defaultMachineType: Schema.optional(BoatCloudMachineType),
 });
 export type BoatCloudConfigureMachinesInput = typeof BoatCloudConfigureMachinesInput.Type;
+
+/** A VM this holder manages, by Boat's sandbox id. */
+export const BoatCloudMachineInput = Schema.Struct({
+  sandboxId: TrimmedNonEmptyString.check(Schema.isMaxLength(64)),
+});
+export type BoatCloudMachineInput = typeof BoatCloudMachineInput.Type;
+
+export const BoatCloudDeleteMachineInput = Schema.Struct({
+  sandboxId: TrimmedNonEmptyString.check(Schema.isMaxLength(64)),
+  /** Deletes a running VM, which may have live threads. Its backup still restores it. */
+  force: Schema.optional(Schema.Boolean),
+});
+export type BoatCloudDeleteMachineInput = typeof BoatCloudDeleteMachineInput.Type;
 
 export const BoatCloudEmptyInput = Schema.Struct({});
 export type BoatCloudEmptyInput = typeof BoatCloudEmptyInput.Type;

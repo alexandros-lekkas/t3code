@@ -11,11 +11,12 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
-import { HttpClient, HttpClientResponse } from "effect/http";
+import { HttpClient, HttpClientResponse, UrlParams } from "effect/http";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
+import { SPARE_NAME as SPARE } from "@t3tools/shared/boatCloudVm";
 import * as BoatCloud from "./BoatCloudService.ts";
 
 const ACCOUNT = "me@example.com";
@@ -48,15 +49,18 @@ interface FakeSandbox {
 
 /**
  * Boat with the given VMs and one ready snapshot. Calls are recorded as `METHOD path`, a
- * command as `exec <sandbox>`. `onExec` answers commands and `onCall` sees every other call;
- * a created VM is `vm-new`, and uploads to the signed URL fail.
+ * command as `exec <sandbox>`, and every body in `bodies`. `onExec` answers commands and
+ * `onCall` sees every other call; `answer` replies to one first when it returns a body. A
+ * created VM is `vm-new`, and uploads to the signed URL fail.
  */
 const fakeBoat = (
   sandboxes: Record<string, FakeSandbox>,
   onExec: (sandboxId: string, script: string) => Effect.Effect<string> = () => Effect.succeed(""),
   onCall: (call: string) => Effect.Effect<void> = () => Effect.void,
+  answer: (call: string) => unknown = () => undefined,
 ) => {
   const calls: Array<string> = [];
+  const bodies: Array<unknown> = [];
   const listed = (id: string) => ({ id, subdomain: `box-${id}`, ...sandboxes[id]! });
   const http = HttpClient.make((request) =>
     Effect.gen(function* () {
@@ -78,8 +82,12 @@ const fakeBoat = (
         const stdout = yield* onExec(id, String(body.command));
         return reply({ exitCode: 0, stdout });
       }
-      calls.push(`${request.method} ${path}`);
+      const query = UrlParams.toString(request.urlParams);
+      calls.push(`${request.method} ${path}${query === "" ? "" : `?${query}`}`);
+      if (request.body._tag === "Uint8Array") bodies.push(body);
       yield* onCall(`${request.method} ${path}`);
+      const answered = answer(`${request.method} ${path}`);
+      if (answered !== undefined) return reply(answered);
       if (path === "/me") return reply({ user: { email: ACCOUNT } });
       if (path === "/saved-snapshots") {
         return reply({
@@ -129,7 +137,7 @@ const fakeBoat = (
       return reply({});
     }),
   );
-  return { http, calls };
+  return { http, calls, bodies };
 };
 
 const OLD_HAND_OUT = "1960-01-01T00:00:00.000Z";
@@ -258,6 +266,115 @@ it.layer(dependencies)("BoatCloudService", (it) => {
           [["vm-old", "gone"]],
         );
       }),
+  );
+
+  it.effect("edits the root environment one item at a time and never reads a secret back", () =>
+    Effect.gen(function* () {
+      yield* seed([]);
+      const environment = {
+        id: "env-base",
+        name: "base",
+        isDefault: true,
+        safeForThirdParties: false,
+        passGithub: true,
+        passSandboxCredentials: true,
+        passSecrets: true,
+        passAgentsCredentials: true,
+        latestVersionNumber: 4,
+        envContents: "OLD_TOKEN=sk_old_secret\nexport REGION=eu\n",
+        secretFiles: [{ path: ".env", contents: "DATABASE_URL=postgres://secret" }],
+        selectedRepositories: [{ databaseId: "repo_9", fullName: "acme/old", baseBranch: "main" }],
+        versions: [{ versionNumber: 4, sandboxCount: 2, createdAt: "2026-11-01T00:00:00Z" }],
+      };
+      const boat = fakeBoat({}, undefined, undefined, (call) => {
+        if (call === "GET /environments") return { environments: [environment] };
+        if (call === "GET /repos") {
+          return {
+            installations: [{ repositories: [{ databaseId: "repo_1", fullName: "Acme/App" }] }],
+          };
+        }
+        if (call === "POST /environments/env-base/upgrade") return { upgraded: 2, failed: 0 };
+        return undefined;
+      });
+
+      const updated = yield* withService(boat.http, (service) =>
+        service.updateRootEnvironment({
+          passSecrets: false,
+          setVariables: [{ key: "API_KEY", value: "sk_live_new_secret" }],
+          removeVariables: ["OLD_TOKEN"],
+          setSecretFiles: [{ path: "app/.env", contents: "STRIPE=sk_file_secret" }],
+          removeSecretFiles: [".env"],
+          addRepositories: [{ repository: "acme/app", baseBranch: "dev" }],
+          removeRepositories: ["acme/old"],
+          upgradeMachines: true,
+        }),
+      );
+
+      const edits = boat.calls.filter(
+        (call) => call.includes("/environments/") || call.startsWith("GET /repos"),
+      );
+      assert.deepStrictEqual(edits, [
+        "PUT /environments/env-base",
+        "PUT /environments/env-base/vars/API_KEY",
+        "DELETE /environments/env-base/vars/OLD_TOKEN",
+        "PUT /environments/env-base/secret-files",
+        "DELETE /environments/env-base/secret-files?path=.env",
+        "GET /repos?sync=true&q=app&limit=200",
+        "POST /environments/env-base/repos",
+        "DELETE /environments/env-base/repos/repo_9",
+        "POST /environments/env-base/upgrade",
+      ]);
+      assert.deepInclude(boat.bodies, { passSecrets: false });
+      assert.deepInclude(boat.bodies, { value: "sk_live_new_secret" });
+      assert.deepInclude(boat.bodies, { repositoryId: "repo_1", baseBranch: "dev" });
+      assert.deepStrictEqual(updated.upgraded, { machines: 2, failed: 0 });
+      assert.deepStrictEqual(updated.rootEnvironment.variables, ["OLD_TOKEN", "REGION"]);
+      assert.deepStrictEqual(updated.rootEnvironment.secretFiles, [".env"]);
+      const shown = JSON.stringify(updated);
+      for (const secret of ["sk_old_secret", "postgres://secret", "sk_live_new_secret"]) {
+        assert.notInclude(shown, secret);
+      }
+    }),
+  );
+
+  it.effect("deletes a running VM it manages only with force, keeping it restorable", () =>
+    Effect.gen(function* () {
+      const directory = yield* seed([storedMachine("vm-1", "env-1", "base")]);
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const backup = path.join(directory, "backups", "env-1.tar.gz");
+      yield* fs.makeDirectory(path.join(directory, "backups"), { recursive: true });
+      yield* fs.writeFileString(backup, "backup");
+      const boat = fakeBoat({
+        "vm-1": { state: "ready", environment: "base", name: "Boat cloud" },
+        "vm-other": { state: "ready", environment: "base", name: SPARE },
+      });
+
+      const { unforced, unmanaged, status } = yield* withService(boat.http, (service) =>
+        Effect.gen(function* () {
+          const unforced = yield* Effect.flip(
+            service.deleteMachine({ sandboxId: "vm-1", force: false }),
+          );
+          const unmanaged = yield* Effect.flip(
+            service.deleteMachine({ sandboxId: "vm-other", force: true }),
+          );
+          yield* service.deleteMachine({ sandboxId: "vm-1", force: true });
+          return { unforced, unmanaged, status: (yield* service.inspect).status };
+        }),
+      );
+
+      assert.include(unforced.message, "force: true");
+      assert.include(unmanaged.message, "does not manage");
+      assert.deepStrictEqual(
+        boat.calls.filter((call) => call.startsWith("DELETE")),
+        ["DELETE /sandboxes/vm-1"],
+      );
+      assert.deepStrictEqual(
+        status.machines.map((machine) => [machine.sandboxId, machine.state]),
+        [["vm-1", "gone"]],
+      );
+      assert.isTrue(yield* fs.exists(backup));
+    }),
   );
 
   it.effect("reports connected when the key belongs to the account it already knows", () =>

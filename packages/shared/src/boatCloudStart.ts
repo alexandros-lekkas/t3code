@@ -908,6 +908,32 @@ export const snapshotToBuild = Effect.fn("BoatCloud.snapshotToBuild")(function* 
   return needsSnapshot(snapshots, version, withSkills) ? version : null;
 });
 
+/**
+ * A stop takes the sandbox's last disk snapshot, and only then reads stopped (`archived`
+ * in the API). Saving a running sandbox instead has Boat take a fresh capture, which can
+ * run for many minutes and fails for good when the sandbox goes away first.
+ */
+const waitStopped = (api: BoatApi, sandboxId: string) =>
+  api.getSandbox(sandboxId).pipe(
+    Effect.flatMap((sandbox) => {
+      if (sandbox === null) return Effect.fail(vmFailure("The setup VM no longer exists."));
+      if (sandbox.state === "archived" || sandbox.state === "stopped") return Effect.void;
+      if (sandbox.state === "error") {
+        return Effect.fail(vmFailure("Boat could not stop the setup VM."));
+      }
+      return Effect.fail(vmFailure("Boat is still stopping the setup VM.", "stopping"));
+    }),
+    Effect.retry({
+      schedule: Schedule.spaced(Duration.seconds(2)),
+      times: 300,
+      while: (error) => error.code === "stopping",
+    }),
+    Effect.catchIf(
+      (error) => error.code === "stopping",
+      () => Effect.fail(vmFailure("Boat did not stop the setup VM in 10 minutes.")),
+    ),
+  );
+
 // Until Boat starts saving, a name saved before still reports its previous snapshot as ready.
 const waitSnapshot = (api: BoatApi, name: string, sourceSandboxId: string) =>
   api.listSnapshots().pipe(
@@ -916,16 +942,29 @@ const waitSnapshot = (api: BoatApi, name: string, sourceSandboxId: string) =>
       if (snapshot?.status === "ready" && snapshot.sourceSandboxId === sourceSandboxId) {
         return Effect.void;
       }
-      if (snapshot?.status === "failed") {
-        return Effect.fail(vmFailure("Boat could not save the snapshot."));
+      if (snapshot?.status === "failed" && snapshot.sourceSandboxId === sourceSandboxId) {
+        const reason = snapshot.error?.trim();
+        return Effect.fail(
+          vmFailure(
+            reason
+              ? `Boat could not save the snapshot: ${reason}.`
+              : "Boat could not save the snapshot.",
+            "vm",
+            snapshot,
+          ),
+        );
       }
       return Effect.fail(vmFailure("Boat is still saving the snapshot.", "saving"));
     }),
     Effect.retry({
       schedule: Schedule.spaced(Duration.seconds(5)),
-      times: 360,
+      times: 180,
       while: (error) => error.code === "saving",
     }),
+    Effect.catchIf(
+      (error) => error.code === "saving",
+      () => Effect.fail(vmFailure("Boat did not save the snapshot in 15 minutes.")),
+    ),
   );
 
 /** Clones what it can; a repository missing from the snapshot is cloned on first use instead. */
@@ -997,6 +1036,12 @@ export const buildSnapshot = Effect.fn("BoatCloud.buildSnapshot")(function* (inp
     if (input.copySkills) yield* input.copySkills(created.id);
     yield* input.setStep("save-snapshot");
     yield* exec(api, created.id, prepareSnapshotScript);
+    // Saved from the stopped VM, the snapshot is the stop's capture, taken after the prepare.
+    yield* api.stop(created.id);
+    yield* waitStopped(api, created.id);
+    // A failed save under the name would read as this save failing until Boat replaces it.
+    const previous = (yield* api.listSnapshots()).find((snapshot) => snapshot.name === name);
+    if (previous?.status === "failed") yield* api.deleteSnapshot(name);
     yield* api.saveSnapshot(created.id, name);
     yield* waitSnapshot(api, name, created.id);
   }).pipe(Effect.ensuring(api.delete(created.id).pipe(Effect.ignore)));
