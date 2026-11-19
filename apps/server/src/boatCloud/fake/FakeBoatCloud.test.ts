@@ -151,7 +151,7 @@ it.live("acquires a fake VM through its steps and hands out this server", () =>
     const missing = yield* boat
       .acquire({ requestId: "fake-missing", repositoryUrl: "https://github.com/acme/elsewhere" })
       .pipe(Effect.flip);
-    assert.include(missing.message, "Fake Boat cloud");
+    assert.include(missing.message, "Fake Boat");
   }).pipe(
     Effect.scoped,
     Effect.provide(
@@ -219,7 +219,7 @@ it.live("edits the root environment, then stops, wakes and deletes a VM", () =>
   }).pipe(
     Effect.scoped,
     Effect.provide(
-      FakeBoatCloud.layerFake({ delayScale: 0 }).pipe(
+      FakeBoatCloud.layerFake({ delayScale: 0, seed: true }).pipe(
         Layer.provide(layerLocal),
         Layer.provide(dependencies({})),
       ),

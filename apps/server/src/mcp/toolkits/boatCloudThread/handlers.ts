@@ -40,11 +40,11 @@ const failure = (code: OrchestratorMcpFailure["code"], message: string) =>
 
 const linksOff = failure(
   "capability_denied",
-  "Boat cloud threads are reached as linked environments, and Linked environments is off here. The user can turn it on in Settings → Labs.",
+  "Boat threads are reached as linked environments, and Linked environments is off here. The user can turn it on in Settings → Labs.",
 );
 
 const boatFailure = (error: BoatCloudError) =>
-  failure("orchestration_error", `Could not start on Boat cloud: ${error.message}`);
+  failure("orchestration_error", `Could not start on Boat: ${error.message}`);
 
 /** The git remote a start clones: a fork's own remote, where the agent can push, as the composer picks it. */
 const projectRemote = Effect.fn("mcp.boatCloud.projectRemote")(function* (projectId: ProjectId) {
@@ -116,12 +116,12 @@ const launch = Effect.fn("mcp.boatCloud.launchThread")(function* (
   if (status === undefined || !status.connected)
     return yield* failure(
       "capability_denied",
-      "Boat cloud is not connected on this machine. The user connects a Boat API key in Settings → Cloud.",
+      "Boat is not connected on this machine. The user connects a Boat API key in Settings → Environments → Boat.",
     );
   if (!status.snapshotReady && status.setup.status === "running")
     return yield* failure(
       "orchestration_error",
-      "Boat cloud setup is still building its snapshot. Try again once Settings → Cloud shows it ready.",
+      "Boat setup is still building its snapshot. Try again once Settings → Environments → Boat shows it ready.",
     );
   const option = yield* machineTypeOf(status, input.machineType);
   const machineType = option?.id ?? input.machineType ?? status.defaultMachineType;
@@ -259,6 +259,6 @@ export const layer = McpToolAccess.toLayer(BoatCloudThreadToolkit, {
     (input) => input,
     (input, { runtimeMode, interactionMode }) => launch(input, runtimeMode, interactionMode),
     // Linked work spends nothing of this machine's: a VM is billed to its Boat key.
-    { refused: "start Boat cloud VMs on this machine's Boat account" },
+    { refused: "start Boat VMs on this machine's Boat account" },
   ),
 });

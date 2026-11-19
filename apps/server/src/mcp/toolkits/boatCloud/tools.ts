@@ -45,7 +45,7 @@ const Machine = Schema.Struct(Struct.omit(BoatCloudMachine.fields, ["stats"]));
 const BoatCloudStatusTool = Tool.make("t3_boat_cloud_status", {
   ...shared,
   description:
-    "Read Boat cloud: connection, snapshot, the root environment new VMs start from (names only, never secret values), and managed VMs.",
+    "Read Boat: connection, snapshot, the root environment new VMs start from (names only, never secret values), and managed VMs.",
   success: Schema.Struct({
     connected: Schema.Boolean,
     account: Schema.NullOr(Schema.String),
@@ -68,7 +68,7 @@ const BoatCloudStatusTool = Tool.make("t3_boat_cloud_status", {
 const BoatCloudConfigureTool = Tool.make("t3_boat_cloud_configure", {
   ...shared,
   description:
-    "Set what new Boat cloud VMs start with: the Boat environment, the default size, and whether threads share VMs. Running VMs keep theirs. Omitted fields are unchanged. Live full-access or default caller thread only.",
+    "Set what new Boat VMs start with: the Boat environment, the default size, and whether threads share VMs. Running VMs keep theirs. Omitted fields are unchanged. Live full-access or default caller thread only.",
   parameters: Schema.Struct({
     boatEnvironment: Schema.optionalKey(BoatEnvironmentName),
     defaultMachineType: Schema.optionalKey(BoatCloudMachineType),
@@ -87,7 +87,7 @@ const BoatCloudConfigureTool = Tool.make("t3_boat_cloud_configure", {
 const BoatCloudRootEnvironmentUpdateTool = Tool.make("t3_boat_cloud_root_environment_update", {
   ...shared,
   description:
-    "Edit what new Boat cloud VMs get from their Boat environment: repositories (`owner/repo`), variables, secret files (paths relative to the workspace), switches. Give each value as `value`/`contents`, or a secret as `secretRef` from `request_secret`; values are never read back. Running VMs change only with `upgradeMachines`. Live full-access or default caller thread only.",
+    "Edit what new Boat VMs get from their Boat environment: repositories (`owner/repo`), variables, secret files (paths relative to the workspace), switches. Give each value as `value`/`contents`, or a secret as `secretRef` from `request_secret`; values are never read back. Running VMs change only with `upgradeMachines`. Live full-access or default caller thread only.",
   parameters: Schema.Struct({
     boatEnvironment: Schema.optionalKey(
       BoatEnvironmentName.annotate({ description: "Defaults to the one new VMs start on." }),
@@ -124,7 +124,7 @@ const BoatCloudRootEnvironmentUpdateTool = Tool.make("t3_boat_cloud_root_environ
 const BoatCloudSnapshotRebuildTool = Tool.make("t3_boat_cloud_snapshot_rebuild", {
   ...shared,
   description:
-    "Rebuild the snapshot new Boat cloud VMs start from, as Settings does. Runs in the background; `t3_boat_cloud_status` shows `setup`. Live full-access or default caller thread only.",
+    "Rebuild the snapshot new Boat VMs start from, as Settings does. Runs in the background; `t3_boat_cloud_status` shows `setup`. Live full-access or default caller thread only.",
   success: Schema.Struct({ setup: BoatCloudSetup, snapshot: Schema.NullOr(BoatCloudSnapshot) }),
 })
   .annotate(Tool.Destructive, true)
@@ -133,7 +133,7 @@ const BoatCloudSnapshotRebuildTool = Tool.make("t3_boat_cloud_snapshot_rebuild",
 const BoatCloudMachineTool = Tool.make("t3_boat_cloud_machine", {
   ...shared,
   description:
-    "Stop (after a backup), wake, or delete a Boat cloud VM this T3 Code manages. A deleted VM with a backup stays restorable by waking its thread. Deleting a running VM needs `force: true`; delete needs a live full-access or default caller thread.",
+    "Stop (after a backup), wake, or delete a Boat VM this T3 Code manages. A deleted VM with a backup stays restorable by waking its thread. Deleting a running VM needs `force: true`; delete needs a live full-access or default caller thread.",
   parameters: Schema.Struct({
     action: Schema.Literals(["stop", "wake", "delete"]),
     sandboxId: SandboxId,

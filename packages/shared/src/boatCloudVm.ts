@@ -563,7 +563,7 @@ rm -f ${VM_BACKUP_ARCHIVE}
 systemctl --user start t3code.service`;
 
 /** A display name from the sandbox id, the same on every holder. */
-export const machineLabelOf = (sandboxId: string) => `Boat cloud ${sandboxId.slice(-4)}`;
+export const machineLabelOf = (sandboxId: string) => `Boat ${sandboxId.slice(-4)}`;
 
 /** The VM a hosted T3 URL belongs to: `https://<subdomain>-3773.on.boat.dev`. */
 export function subdomainOfHttpBaseUrl(httpBaseUrl: string): string | null {

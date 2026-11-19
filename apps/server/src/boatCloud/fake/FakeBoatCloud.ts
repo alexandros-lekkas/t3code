@@ -165,7 +165,7 @@ export const layerFake = (options?: { readonly delayScale?: number; readonly see
             repository === null ? null : yield* local.workspaceRootOf(repository.key);
           if (repository !== null && workspaceRoot === null) {
             return yield* new BoatCloudError({
-              message: `Fake Boat cloud runs threads on this machine, so it needs a local project cloned from ${repository.name}.`,
+              message: `Fake Boat runs threads on this machine, so it needs a local project cloned from ${repository.name}.`,
             });
           }
           const session = yield* inner.acquire(input);
@@ -189,7 +189,7 @@ export const layerFake = (options?: { readonly delayScale?: number; readonly see
   );
 
 const noLocalServer = (what: string) =>
-  Effect.die(new Error(`Fake Boat cloud could not reach this server's ${what}.`));
+  Effect.die(new Error(`Fake Boat could not reach this server's ${what}.`));
 
 /**
  * This server as the fake VMs' T3 server: its id, its dev URL, its pairing codes, its projects.
@@ -263,7 +263,7 @@ export const layerWith = <E, R>(fakeLocal: Layer.Layer<FakeBoatLocal, E, R>) => 
         return real;
       }
       yield* Effect.logWarning(
-        `${FAKE_ENV_VAR} is set: Boat cloud runs against a fake Boat, and its VMs are this server.`,
+        `${FAKE_ENV_VAR} is set: Boat runs against a fake Boat, and its VMs are this server.`,
       );
       const seed = (yield* Config.String(FAKE_SEED_ENV_VAR).pipe(Config.withDefault(""))).trim();
       return fake(seed === "1" || seed === "true");

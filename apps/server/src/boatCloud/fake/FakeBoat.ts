@@ -58,10 +58,10 @@ const MACHINE_SPECS: Record<MachineType, { vcpu: number; memoryGB: number; multi
   small: { vcpu: 2, memoryGB: 4, multiplier: 0.5 },
   default: { vcpu: 4, memoryGB: 8, multiplier: 1 },
   large: { vcpu: 8, memoryGB: 16, multiplier: 2 },
-  xlarge: { vcpu: 16, memoryGB: 32, multiplier: 4 },
+  xlarge: { vcpu: 16, memoryGB: 32, multiplier: 0.2 / 0.036 },
 };
-/** Dollars per billed second; a default VM is $0.09 an hour. */
-const DOLLARS_PER_SECOND = 0.000025;
+/** Dollars per billed second; a default VM is $0.036 an hour, as on Boat. */
+const DOLLARS_PER_SECOND = 0.036 / 3600;
 const DISK_TOTAL_BYTES = 40 * 1024 ** 3;
 
 interface FakeSandbox {

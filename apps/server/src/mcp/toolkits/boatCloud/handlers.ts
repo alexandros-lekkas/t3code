@@ -200,7 +200,7 @@ export const layer = McpToolAccess.toLayer(BoatCloudToolkit, {
           ).pipe(Effect.mapError(boatFailure));
           return { machine: withoutStats(machine) };
         }),
-      { linkedCallers: { refused: "stop or wake this environment's Boat cloud VMs" } },
+      { linkedCallers: { refused: "stop or wake this environment's Boat VMs" } },
     ),
   ),
 });

@@ -119,7 +119,7 @@ export const waitRunning = (api: BoatApi, sandboxId: string) =>
     }),
   );
 
-const PAIRING_LABEL = "Boat cloud";
+const PAIRING_LABEL = "Boat";
 
 const pairingOf = (output: string) =>
   Option.match(decodePairing(output), {
@@ -858,7 +858,7 @@ export const latestCliRelease = Effect.fn("BoatCloud.latestCliRelease")(
   },
   Effect.timeout(Duration.seconds(30)),
   Effect.mapError((cause) =>
-    vmFailure("Could not find the latest T3 Code release for Boat cloud.", "cli_release", cause),
+    vmFailure("Could not find the latest T3 Code release for Boat.", "cli_release", cause),
   ),
 );
 

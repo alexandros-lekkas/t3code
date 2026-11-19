@@ -328,7 +328,7 @@ it.effect("refuses before starting a VM when Boat cannot serve the request", () 
     const disconnected = yield* harness({ status: { connected: false } });
     expect(yield* disconnected.call({ title: "T", message: "M" })).toMatchObject({
       code: "capability_denied",
-      message: expect.stringContaining("Settings → Cloud"),
+      message: expect.stringContaining("Settings → Environments → Boat"),
     });
     const building = yield* harness({
       status: { snapshotReady: false, setup: { status: "running", step: null, error: null } },
@@ -347,11 +347,11 @@ it.effect("refuses before starting a VM when Boat cannot serve the request", () 
 
     // The holder's own refusal, such as an unfinished setup, reaches the agent as it said it.
     const unfinished = yield* harness({
-      acquireError: "Finish Boat cloud setup in Settings, Cloud.",
+      acquireError: "Finish Boat setup in Settings → Environments → Boat.",
     });
     expect(yield* unfinished.call({ title: "T", message: "M" })).toMatchObject({
       code: "orchestration_error",
-      message: "Could not start on Boat cloud: Finish Boat cloud setup in Settings, Cloud.",
+      message: "Could not start on Boat: Finish Boat setup in Settings → Environments → Boat.",
     });
   }),
 );
