@@ -600,6 +600,12 @@ export function makeBoatApi(http: HttpClient.HttpClient, apiKey: string) {
               ?.databaseId ?? null,
         ),
       ),
+    /** Whether Boat's GitHub app is installed anywhere for the account. */
+    githubConnected: () =>
+      send(
+        HttpClientRequest.get(url("/repos")).pipe(HttpClientRequest.setUrlParam("limit", "1")),
+        RepositoryList,
+      ).pipe(Effect.map((list) => list.installations.length > 0)),
     addEnvironmentRepository: (id: string, repositoryId: string, baseBranch?: string) =>
       send(
         json(

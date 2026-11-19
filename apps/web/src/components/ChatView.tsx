@@ -1310,8 +1310,9 @@ export default function ChatView(props: ChatViewProps) {
   const boatCloudDrivers = useBoatCloudProviderDrivers();
   const cloudDraft = draftThread?.environmentSelection === "cloud" && !draftThread.promotedTo;
   // A cloud draft runs on a Boat VM, which can only sign in the providers its credentials cover.
+  // With none, the Boat banner says what to fix, so the picker keeps this machine's providers.
   const providerStatuses =
-    cloudDraft && boatCloudDrivers
+    cloudDraft && boatCloudDrivers && boatCloudDrivers.size > 0
       ? environmentProviders.filter((provider) => boatCloudDrivers.has(provider.driver))
       : environmentProviders;
   const composerModelSelectionApplies = draftModelSelectionApplies(

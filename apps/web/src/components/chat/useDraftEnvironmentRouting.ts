@@ -45,12 +45,12 @@ import { seedDraftModelSelection } from "../../lib/seedDraftModelSelection";
 import { draftFanoutSelectionsAtom } from "./chatViewSend";
 import {
   boatCloudDraftMachineTypeAtom,
-  boatCloudReady,
   clearBoatCloudStartProgress,
   prepareBoatCloudProject,
   prewarmBoatCloudProject,
   usePrimaryBoatCloudStatus,
 } from "../../boatCloud";
+import { boatCloudBlocker } from "@t3tools/shared/boatCloudVm";
 
 interface DraftEnvironmentRoutingInput {
   readonly draftId: DraftId | null;
@@ -176,10 +176,10 @@ export function useDraftEnvironmentRouting(input: DraftEnvironmentRoutingInput) 
       : availableMachineTypes[0]!.id;
   /** What starting this draft on Boat cloud needs, or why it cannot start. */
   const boatCloudStart = (draft: NonNullable<ReturnType<typeof getDraftSession>>) => {
-    if (boatCloud.holderEnvironmentId === null || !boatCloudReady(boatCloud.status)) {
+    if (boatCloud.holderEnvironmentId === null || boatCloudBlocker(boatCloud.status) !== null) {
       return {
-        title: gt("Boat is not set up"),
-        description: gt("Finish setup in Settings, Environments."),
+        title: gt("Boat is not ready"),
+        description: gt("Fix it in Settings, Environments, Boat."),
       };
     }
     const project = allProjects.find(
@@ -396,12 +396,12 @@ export function useDraftEnvironmentRouting(input: DraftEnvironmentRoutingInput) 
   };
   const onMachineTypeChangeStable = useStableCallback(onMachineTypeChange);
   const cloudSelected = draftThread?.environmentSelection === "cloud";
-  // Offered on a new draft once this machine has Boat cloud ready; kept visible while chosen.
+  // Offered once this machine has a Boat key, even before it is ready: picking it says what is missing.
   const cloudEnvironment =
     draftId &&
     !envLocked &&
     !draftThread?.promotedTo &&
-    (cloudSelected || boatCloudReady(boatCloud.status))
+    (cloudSelected || boatCloud.status?.connected === true)
       ? {
           selected: cloudSelected,
           onSelect: onCloudEnvironmentStable,

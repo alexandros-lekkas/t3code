@@ -15,6 +15,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import type * as Tool from "effect/ai/Tool";
+import { BOAT_CLOUD_BLOCKER_MESSAGES, boatCloudBlocker } from "@t3tools/shared/boatCloudVm";
 
 import * as BoatCloud from "../../../boatCloud/BoatCloudService.ts";
 import * as PeerForwarding from "../../../peer/PeerForwarding.ts";
@@ -123,6 +124,8 @@ const launch = Effect.fn("mcp.boatCloud.launchThread")(function* (
       "orchestration_error",
       "Boat setup is still building its snapshot. Try again once Settings → Environments → Boat shows it ready.",
     );
+  if (boatCloudBlocker(status) === "no-agents")
+    return yield* failure("capability_denied", BOAT_CLOUD_BLOCKER_MESSAGES["no-agents"]);
   const option = yield* machineTypeOf(status, input.machineType);
   const machineType = option?.id ?? input.machineType ?? status.defaultMachineType;
 

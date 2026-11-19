@@ -311,7 +311,9 @@ it.layer(dependencies)("BoatCloudService", (it) => {
       );
 
       const edits = boat.calls.filter(
-        (call) => call.includes("/environments/") || call.startsWith("GET /repos"),
+        (call) =>
+          call.includes("/environments/") ||
+          (call.startsWith("GET /repos") && !call.endsWith("limit=1")),
       );
       assert.deepStrictEqual(edits, [
         "PUT /environments/env-base",
@@ -457,6 +459,55 @@ it.layer(dependencies)("BoatCloudService", (it) => {
       const stored = JSON.parse(yield* fs.readFileString(path.join(directory, "state.json")));
       assert.isTrue(stored.shareMachines);
       assert.strictEqual(stored.defaultMachineType, "default");
+    }),
+  );
+
+  it.effect("refuses a start before making a VM when the environment has no agent sign-in", () =>
+    Effect.gen(function* () {
+      yield* seed([]);
+      const boat = fakeBoat({}, undefined, undefined, (call) => {
+        if (call === "GET /environments") {
+          return {
+            environments: [
+              {
+                id: "env-base",
+                name: "base",
+                isDefault: true,
+                passGithub: true,
+                passSandboxCredentials: false,
+                passSecrets: false,
+                passAgentsCredentials: true,
+                credentialProfileId: null,
+              },
+            ],
+          };
+        }
+        if (call === "GET /credential-profiles") {
+          return { profiles: [{ id: "p1", name: "default", isDefault: true, connected: [] }] };
+        }
+        return undefined;
+      });
+      const error = yield* withService(boat.http, (service) =>
+        Effect.flip(
+          service.acquire({ requestId: "start-1", repositoryUrl: "https://github.com/acme/app" }),
+        ),
+      );
+      assert.include(error.message, "no Claude or ChatGPT sign-in");
+      assert.notInclude(boat.calls, "POST /sandboxes");
+    }),
+  );
+
+  it.effect("deletes the ready spare once keeping one is turned off", () =>
+    Effect.gen(function* () {
+      yield* seed([], { keepReadyMachine: true });
+      const boat = fakeBoat({
+        "vm-spare": { state: "ready", environment: "base", name: SPARE },
+      });
+      const status = yield* withService(boat.http, (service) =>
+        service.configureMachines({ keepReadyMachine: false }),
+      );
+      assert.isFalse(status.keepReadyMachine);
+      assert.include(boat.calls, "DELETE /sandboxes/vm-spare");
     }),
   );
 

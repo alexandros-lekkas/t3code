@@ -238,10 +238,19 @@ export const BoatCloudStatus = Schema.Struct({
   /** Why the environments could not be listed, such as a key without `environment.read`. */
   environmentsError: Schema.NullOr(Schema.String),
   /**
+   * Whether Boat's GitHub app is installed for the account, which private clones and pushes
+   * need. Null until Boat has been asked.
+   */
+  githubConnected: Schema.NullOr(Schema.Boolean).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  /**
    * False (the default): each new cloud thread gets a VM of its own, reusing only the ready
-   * spare. True: a start may join a running VM that has room, so threads share VMs.
+   * spare, when one is kept. True: a start may join a running VM that has room, so threads share VMs.
    */
   shareMachines: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /** Keeps an idle VM at the default size running, so a start skips the boot. It is billed. */
+  keepReadyMachine: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /** The size a new cloud thread starts on when its start names none. */
   defaultMachineType: BoatCloudMachineType.pipe(
     Schema.withDecodingDefault(Effect.succeed("small" as const)),
@@ -351,6 +360,7 @@ export type BoatCloudConfigureEnvironmentInput = typeof BoatCloudConfigureEnviro
 export const BoatCloudConfigureMachinesInput = Schema.Struct({
   shareMachines: Schema.optional(Schema.Boolean),
   defaultMachineType: Schema.optional(BoatCloudMachineType),
+  keepReadyMachine: Schema.optional(Schema.Boolean),
 });
 export type BoatCloudConfigureMachinesInput = typeof BoatCloudConfigureMachinesInput.Type;
 

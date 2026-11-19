@@ -53,6 +53,8 @@ import {
   wakeMachine,
 } from "@t3tools/shared/boatCloudStart";
 import {
+  BOAT_CLOUD_BLOCKER_MESSAGES,
+  boatCloudBlocker,
   IDLE_TTL_SECONDS,
   MACHINE_LABEL_FILTER,
   MACHINE_LABELS,
@@ -156,6 +158,7 @@ const StoredState = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
   shareMachines: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  keepReadyMachine: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   defaultMachineType: BoatCloudMachineType.pipe(
     Schema.withDecodingDefault(Effect.succeed("small" as const)),
   ),
@@ -360,6 +363,7 @@ const make = Effect.gen(function* () {
     environment: null,
     snapshotRepositories: [],
     shareMachines: false,
+    keepReadyMachine: false,
     defaultMachineType: "small",
     retired: [],
   };
@@ -368,6 +372,7 @@ const make = Effect.gen(function* () {
   let snapshotName: string | null = null;
   let environments: ReadonlyArray<BoatCloudEnvironment> = [];
   let environmentsError: string | null = null;
+  let githubConnected: boolean | null = null;
   let limits: BoatLimits | null = null;
   /** Billing multipliers Boat reported per machine type, from its usage answers. */
   const observedMultipliers = new Map<string, number>();
@@ -425,7 +430,9 @@ const make = Effect.gen(function* () {
     environment: null,
     environments: [],
     environmentsError: null,
+    githubConnected: null,
     shareMachines: state.shareMachines,
+    keepReadyMachine: state.keepReadyMachine,
     defaultMachineType: state.defaultMachineType,
     machineTypes: machineTypeOptions(null, observedMultipliers),
     environmentUsage: [],
@@ -448,7 +455,9 @@ const make = Effect.gen(function* () {
       environment: connected ? state.environment : null,
       environments: connected ? environments : [],
       environmentsError: connected ? environmentsError : null,
+      githubConnected: connected ? githubConnected : null,
       shareMachines: state.shareMachines,
+      keepReadyMachine: state.keepReadyMachine,
       defaultMachineType: state.defaultMachineType,
       machineTypes: machineTypeOptions(connected ? limits : null, observedMultipliers),
       environmentUsage: connected ? environmentUsageOf(state.machines, state.retired, stats) : [],
@@ -536,7 +545,7 @@ const make = Effect.gen(function* () {
    * choice, so later VMs stay on it even if the Boat default changes.
    */
   const refreshEnvironments = Effect.fn("BoatCloud.refreshEnvironments")(function* (api: BoatApi) {
-    const [listed, profiles] = yield* Effect.all(
+    const [listed, profiles, github] = yield* Effect.all(
       [
         api.listEnvironments().pipe(
           Effect.tapError((error) =>
@@ -548,9 +557,11 @@ const make = Effect.gen(function* () {
         ),
         // Without it the sign-ins are unknown, and every provider stays offered.
         api.listCredentialProfiles().pipe(Effect.option),
+        api.githubConnected().pipe(Effect.option),
       ],
       { concurrency: "unbounded" },
     );
+    if (Option.isSome(github)) githubConnected = github.value;
     if (Option.isSome(listed)) {
       environments = cloudEnvironments(listed.value, Option.getOrNull(profiles));
       environmentsError = null;
@@ -969,10 +980,10 @@ const make = Effect.gen(function* () {
     yield* exec(api, sandboxId, extractSkillsScript, 300);
   }, Effect.mapError(transferFailure));
 
-  /** Keeps the spare in step with the snapshot, the chosen environment and the default size. */
+  /** Keeps the spare, when the user wants one, in step with the snapshot, environment and size. */
   const keepSpare = (api: BoatApi) =>
     Effect.suspend(() =>
-      snapshotName === null
+      snapshotName === null || !state.keepReadyMachine
         ? Effect.void
         : spares.keep(api, snapshotName, state.environment, state.defaultMachineType),
     );
@@ -1106,9 +1117,12 @@ const make = Effect.gen(function* () {
     if (snapshotName === null) yield* refreshSnapshot(api);
     const snapshot = snapshotName;
     if (snapshot === null) {
-      return yield* new BoatCloudError({
-        message: "Finish Boat setup in Settings → Environments → Boat.",
-      });
+      return yield* new BoatCloudError({ message: BOAT_CLOUD_BLOCKER_MESSAGES["no-snapshot"] });
+    }
+    // Refused before any VM is made: a VM without sign-ins can run no agent.
+    if (environments.length === 0) yield* refreshEnvironments(api);
+    if (boatCloudBlocker(yield* SubscriptionRef.get(statusRef)) === "no-agents") {
+      return yield* new BoatCloudError({ message: BOAT_CLOUD_BLOCKER_MESSAGES["no-agents"] });
     }
     starts.set(input.requestId, pendingSteps());
     // When each step ended, in ms since the request, so a slow start shows where it waited.
@@ -1340,11 +1354,13 @@ const make = Effect.gen(function* () {
     input: BoatCloudConfigureMachinesInput,
   ) {
     const changesSpare =
-      input.defaultMachineType !== undefined &&
-      input.defaultMachineType !== state.defaultMachineType;
+      (input.defaultMachineType !== undefined &&
+        input.defaultMachineType !== state.defaultMachineType) ||
+      (input.keepReadyMachine !== undefined && input.keepReadyMachine !== state.keepReadyMachine);
     yield* commit((current) => ({
       ...current,
       ...(input.shareMachines === undefined ? {} : { shareMachines: input.shareMachines }),
+      ...(input.keepReadyMachine === undefined ? {} : { keepReadyMachine: input.keepReadyMachine }),
       ...(input.defaultMachineType === undefined
         ? {}
         : { defaultMachineType: input.defaultMachineType }),
@@ -1354,7 +1370,16 @@ const make = Effect.gen(function* () {
       // The spare is kept at the default size, so a new one is readied at the new size.
       const key = yield* readKey;
       if (Option.isSome(key)) {
-        yield* keepSpare(makeBoatApi(http, key.value)).pipe(Effect.forkIn(scope));
+        const api = makeBoatApi(http, key.value);
+        if (state.keepReadyMachine) yield* keepSpare(api).pipe(Effect.forkIn(scope));
+        else
+          yield* spares
+            .release(api)
+            .pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("boat cloud could not delete its spare VM", { cause }),
+              ),
+            );
       }
     }
     return yield* SubscriptionRef.get(statusRef);

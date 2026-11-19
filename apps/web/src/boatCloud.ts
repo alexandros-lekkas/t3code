@@ -26,7 +26,12 @@ import {
   type EnvironmentId,
   isBoatCloudHttpBaseUrl,
 } from "@t3tools/contracts";
-import { boatCloudProviderDrivers, parseRepository } from "@t3tools/shared/boatCloudVm";
+import {
+  boatCloudBlocker,
+  boatCloudChosenEnvironment,
+  boatCloudEnvironmentDrivers,
+  parseRepository,
+} from "@t3tools/shared/boatCloudVm";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { useEffect } from "react";
 
@@ -120,14 +125,11 @@ export function usePrimaryBoatCloudStatus() {
 /** The providers a new Boat VM has sign-ins for, or null when Boat's credentials are unknown. */
 export function useBoatCloudProviderDrivers() {
   const { status } = usePrimaryBoatCloudStatus();
-  const chosen = status?.environments.find(
-    (environment) => environment.name === status.environment,
-  );
-  return chosen?.agentCredentials ? boatCloudProviderDrivers(chosen.agentCredentials) : null;
+  return boatCloudEnvironmentDrivers(boatCloudChosenEnvironment(status));
 }
 
 export function boatCloudReady(status: BoatCloudStatus | null) {
-  return status?.connected === true && (status.setup.status === "ready" || status.snapshotReady);
+  return boatCloudBlocker(status) === null;
 }
 
 function failureMessage(result: Parameters<typeof squashAtomCommandFailure>[0]) {

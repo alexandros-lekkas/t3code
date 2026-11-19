@@ -21,6 +21,8 @@ describe("boatCloudEnvironmentUsageOf", () => {
     });
     expect(status.environmentUsage).toEqual([]);
     expect(status.shareMachines).toBe(false);
+    expect(status.keepReadyMachine).toBe(false);
+    expect(status.githubConnected).toBeNull();
     expect(status.defaultMachineType).toBe("small");
     const entry = {
       environmentId: EnvironmentId.make("env-1"),

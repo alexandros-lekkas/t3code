@@ -3,10 +3,18 @@ import type { BoatCloudStartStep, BoatCloudStepProgress } from "@t3tools/contrac
 import { msg, useGT, useMessages } from "gt-react";
 import { CircleCheckIcon, CircleIcon, CircleXIcon } from "lucide-react";
 
-import { boatCloudStartProgressAtom, clearBoatCloudStartProgress } from "../../boatCloud";
+import { type BoatCloudBlocker, boatCloudBlocker } from "@t3tools/shared/boatCloudVm";
+import { Link } from "@tanstack/react-router";
+
+import {
+  boatCloudStartProgressAtom,
+  clearBoatCloudStartProgress,
+  usePrimaryBoatCloudStatus,
+} from "../../boatCloud";
 import type { DraftId, DraftSessionState } from "../../composerDraftStore";
 import { cn } from "../../lib/utils";
 import { BoatIcon } from "../Icons";
+import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
 import { ComposerBanner } from "./ComposerBanner";
 import type { ComposerBannerStackItem } from "./ComposerBannerStack";
@@ -21,6 +29,12 @@ const STEP_LABELS: Record<BoatCloudStartStep, string> = {
 };
 
 const WAKING_MACHINE_LABEL = msg("Waking the VM");
+
+const BLOCKER_LABELS: Record<BoatCloudBlocker, string> = {
+  "not-connected": msg("Boat is not connected."),
+  "no-snapshot": msg("Boat is still setting up."),
+  "no-agents": msg("The Boat environment has no Claude or ChatGPT sign-in."),
+};
 
 const STEP_STATE_LABELS: Record<BoatCloudStepProgress["state"], string> = {
   pending: msg("Pending"),
@@ -78,21 +92,36 @@ export function BoatCloudSteps({
 /**
  * A Boat cloud start runs quietly behind the composer from the moment Boat cloud is picked.
  * Once a message waits on it, its checklist shows above the composer; a failure stays until dismissed.
+ * A Boat that cannot start a thread says why as soon as it is picked.
  */
 export function useBoatCloudStartBanner(
   draftId: DraftId | null,
   draftThread: DraftSessionState | null,
 ): ComposerBannerStackItem | null {
   const gt = useGT();
+  const m = useMessages();
   const progress = useAtomValue(boatCloudStartProgressAtom(draftId ?? ""));
-  if (
-    draftId === null ||
-    progress === null ||
-    draftThread?.environmentSelection !== "cloud" ||
-    draftThread.promotedTo
-  ) {
+  const { status } = usePrimaryBoatCloudStatus();
+  if (draftId === null || draftThread?.environmentSelection !== "cloud" || draftThread.promotedTo) {
     return null;
   }
+  const blocker = status === null ? null : boatCloudBlocker(status);
+  if (blocker !== null && progress === null) {
+    return {
+      id: `boat-cloud-blocked:${draftId}`,
+      group: "environment",
+      variant: "warning",
+      icon: <BoatIcon aria-hidden />,
+      title: gt("Boat cannot start yet"),
+      description: m(BLOCKER_LABELS[blocker]),
+      actions: (
+        <Button size="xs" variant="ghost" render={<Link to="/settings/connections" />}>
+          {gt("Fix in Settings")}
+        </Button>
+      ),
+    };
+  }
+  if (progress === null) return null;
   const failed = progress.error !== null;
   if (!failed && progress.sent === null) return null;
   return {

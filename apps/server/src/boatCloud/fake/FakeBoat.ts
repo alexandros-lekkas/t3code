@@ -51,6 +51,10 @@ export interface FakeBoatOptions {
   readonly delayScale?: number;
   /** Starts with a running and a stopped VM; without it Boat has none until a start makes one. */
   readonly seed?: boolean;
+  /** The default credential profile holds no sign-in, so no agent can run on a VM. */
+  readonly noAgents?: boolean;
+  /** Boat's GitHub app is not installed, so only public repositories clone. */
+  readonly noGithub?: boolean;
 }
 
 type MachineType = "small" | "default" | "large" | "xlarge";
@@ -218,7 +222,7 @@ export const makeFakeBoat = Effect.fn("FakeBoat.make")(function* (options: FakeB
       id: "fakeprofile-personal",
       name: "Personal",
       isDefault: true,
-      connected: ["claude-subscription", "chatgpt-subscription"],
+      connected: options.noAgents ? [] : ["claude-subscription", "chatgpt-subscription"],
     },
     { id: "fakeprofile-codex", name: "Codex", isDefault: false, connected: ["openai-api-key"] },
   ];
@@ -386,13 +390,15 @@ export const makeFakeBoat = Effect.fn("FakeBoat.make")(function* (options: FakeB
       if (path === "/repos") {
         const q = (url.searchParams.get("q") ?? "").toLowerCase();
         return reply({
-          installations: [
-            {
-              repositories: FAKE_REPOSITORIES.filter((repository) =>
-                repository.fullName.toLowerCase().includes(q),
-              ),
-            },
-          ],
+          installations: options.noGithub
+            ? []
+            : [
+                {
+                  repositories: FAKE_REPOSITORIES.filter((repository) =>
+                    repository.fullName.toLowerCase().includes(q),
+                  ),
+                },
+              ],
         });
       }
       const itemMatch =

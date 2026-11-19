@@ -5,12 +5,14 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import { assert, describe, it } from "@effect/vitest";
+import type { BoatCloudStatus } from "@t3tools/contracts";
 
 import {
   ADD_PROJECT_SCRIPT,
   VM_BACKUP_ARCHIVE,
   backupScript,
   baseBranchCheckScript,
+  boatCloudBlocker,
   boatCloudProviderDrivers,
   cloneRepositoriesScript,
   idleSecondsOf,
@@ -241,6 +243,55 @@ describe("boatCloudProviderDrivers", () => {
     );
     assert.deepStrictEqual([...boatCloudProviderDrivers(["chatgpt-subscription"])], ["codex"]);
     assert.strictEqual(boatCloudProviderDrivers([]).size, 0);
+  });
+});
+
+describe("boatCloudBlocker", () => {
+  const environment = (agentCredentials: ReadonlyArray<string> | null) => ({
+    id: "env-base",
+    name: "base",
+    isDefault: true,
+    passGithub: true,
+    passSandboxCredentials: false,
+    passSecrets: false,
+    passAgentsCredentials: true,
+    agentCredentials,
+  });
+  const status = (overrides: Partial<BoatCloudStatus> = {}): BoatCloudStatus => ({
+    connected: true,
+    account: "me",
+    setup: { status: "ready", step: null, error: null },
+    snapshotReady: true,
+    machines: [],
+    starts: [],
+    environment: "base",
+    environments: [environment(["claude-subscription"])],
+    environmentsError: null,
+    githubConnected: false,
+    shareMachines: false,
+    keepReadyMachine: false,
+    defaultMachineType: "small",
+    machineTypes: [],
+    environmentUsage: [],
+    ...overrides,
+  });
+
+  it("names the first thing a start is missing, and never GitHub", () => {
+    assert.strictEqual(boatCloudBlocker(null), "not-connected");
+    assert.strictEqual(boatCloudBlocker(status({ connected: false })), "not-connected");
+    assert.strictEqual(
+      boatCloudBlocker(
+        status({
+          snapshotReady: false,
+          setup: { status: "running", step: "create-vm", error: null },
+        }),
+      ),
+      "no-snapshot",
+    );
+    assert.strictEqual(boatCloudBlocker(status({ environments: [environment([])] })), "no-agents");
+    assert.isNull(boatCloudBlocker(status()));
+    // Unknown sign-ins leave the VM's own server to decide.
+    assert.isNull(boatCloudBlocker(status({ environments: [environment(null)] })));
   });
 });
 
