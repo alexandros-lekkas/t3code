@@ -175,6 +175,8 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
   /* boat.dev's brand blue, the same in both themes. */
   --color-boat: #263fa9;
+  /* The same blue, lifted to read on dark surfaces where the glyph has no tile. */
+  --color-boat-bright: #7086ee;
 }
 
 @theme inline {

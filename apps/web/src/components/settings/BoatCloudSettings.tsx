@@ -3,7 +3,6 @@ import {
   BOAT_CLOUD_SETUP_STEPS,
   type BoatCloudEnvironmentAccess,
   type BoatCloudMachineType,
-  type BoatCloudMachine,
   type BoatCloudSetupStep,
   type BoatCloudStatus,
   type EnvironmentId,
@@ -22,16 +21,15 @@ import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import {
   BoatCloudMachineTypeItemLabel,
-  formatBoatCloudCost,
   useBoatCloudMachineTypeLabel,
-  useBoatCloudSizeLine,
 } from "../BoatCloudSizeSelector";
-import { BoatIcon } from "../Icons";
+import { BoatGlyph } from "../Icons";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
+import { BoatCloudMachineRows } from "./BoatCloudMachines";
 import { SecretInput } from "./SecretInput";
 import { SettingsRow, SettingsSection } from "./settingsLayout";
 import { useSearchableSetting } from "./settingsSearch";
@@ -41,16 +39,6 @@ const STEP_LABELS: Record<BoatCloudSetupStep, string> = {
   "install-server": msg("Install T3 Code and clone repositories"),
   "copy-skills": msg("Copy this machine's skills"),
   "save-snapshot": msg("Save the T3 Code snapshot"),
-};
-
-const MACHINE_STATE: Record<
-  BoatCloudMachine["state"],
-  { readonly label: string; readonly variant: "success" | "info" | "secondary" | "warning" }
-> = {
-  running: { label: msg("Running", { $context: "VM state" }), variant: "success" },
-  starting: { label: msg("Starting", { $context: "VM state" }), variant: "info" },
-  stopped: { label: msg("Sleeping", { $context: "VM state" }), variant: "secondary" },
-  gone: { label: msg("Saved copy", { $context: "VM state" }), variant: "warning" },
 };
 
 const ACCESS_LABELS: Record<keyof BoatCloudEnvironmentAccess, string> = {
@@ -353,7 +341,6 @@ export function BoatCloudSettings() {
       input: { repositories: boatCloudSnapshotRepositories() },
     });
   };
-  const sizeLine = useBoatCloudSizeLine();
   const setupStepIndex = setup?.step ? BOAT_CLOUD_SETUP_STEPS.indexOf(setup.step) : -1;
   // Hidden while this machine's status loads, and on a T3 Code without Boat cloud.
   if (status === null) return null;
@@ -361,7 +348,7 @@ export function BoatCloudSettings() {
   return (
     <SettingsSection
       {...searchableSetting("boat-cloud")}
-      icon={<BoatIcon aria-hidden className="size-4" />}
+      icon={<BoatGlyph aria-hidden className="size-5" />}
     >
       <SettingsRow
         title={
@@ -459,36 +446,7 @@ export function BoatCloudSettings() {
           control={<ApiKeyForm holders={missingKey} setupEnvironmentId={null} />}
         />
       ) : null}
-      {connected
-        ? status.machines.map((machine) => {
-            const state = MACHINE_STATE[machine.state];
-            return (
-              <SettingsRow
-                key={machine.sandboxId}
-                title={
-                  <span className="flex min-w-0 items-center gap-2">
-                    <BoatIcon aria-hidden className="size-3.5" />
-                    <span className="truncate">{machine.label}</span>
-                  </span>
-                }
-                description={
-                  [
-                    sizeLine(machine),
-                    machine.usage === null
-                      ? null
-                      : formatBoatCloudCost(machine.usage.seconds, machine.usage.dollars),
-                    machine.repositories
-                      .map((repository) => repository.split("/").slice(1).join("/"))
-                      .join(", "),
-                  ]
-                    .filter(Boolean)
-                    .join(" · ") || undefined
-                }
-                control={<Badge variant={state.variant}>{m(state.label)}</Badge>}
-              />
-            );
-          })
-        : null}
+      {connected ? <BoatCloudMachineRows status={status} actions={null} /> : null}
     </SettingsSection>
   );
 }

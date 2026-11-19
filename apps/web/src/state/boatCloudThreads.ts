@@ -72,3 +72,8 @@ export function useOpenBoatCloudThread(ref: ScopedThreadRef | null): boolean {
   }, [unlisted, environmentId, threadId]);
   return unlisted;
 }
+
+/** The Boat cloud threads this browser started or opened, as refs. */
+export function useOpenedBoatCloudThreadRefs(): ReadonlyArray<ScopedThreadRef> {
+  return useAtomValue(openedThreadsAtom);
+}
