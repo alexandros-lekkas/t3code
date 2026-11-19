@@ -769,6 +769,11 @@ export function NewTaskDraftScreen(props: {
       label={selectedEnvironmentLabel}
       machineKind={resolveEnvironmentMachineKind(selectedEnvironmentServerConfig)}
       boatCloud={flow.boatCloud?.selected === true}
+      boatCloudMachineType={
+        flow.boatCloud?.startsOnSend && flow.boatCloud.machineTypes.length > 0
+          ? flow.boatCloud.machineType
+          : null
+      }
       disabled={isComposerInteractionLocked}
       onChooseEnvironment={() => openContextPicker("NewTaskEnvironment")}
     />

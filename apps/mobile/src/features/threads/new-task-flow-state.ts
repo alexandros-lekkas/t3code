@@ -1,6 +1,6 @@
 import type { EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
 import type { EnvironmentShellStatus } from "@t3tools/client-runtime/state/shell";
-import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
+import type { BoatCloudMachineType, EnvironmentId, ProjectId } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 
 import { scopedProjectKey } from "../../lib/scopedEntities";
@@ -35,6 +35,8 @@ export interface NewTaskFlowState {
    * `send`: the draft just moved onto the VM, and that send continues there.
    */
   readonly boatCloud: "off" | "chosen" | "send";
+  /** The VM size the Boat start asks for; null takes the holder's default. */
+  readonly boatCloudMachineType: BoatCloudMachineType | null;
 }
 
 export const INITIAL_NEW_TASK_FLOW_STATE: NewTaskFlowState = {
@@ -44,6 +46,7 @@ export const INITIAL_NEW_TASK_FLOW_STATE: NewTaskFlowState = {
   submitting: false,
   expandedProvider: null,
   boatCloud: "off",
+  boatCloudMachineType: null,
 };
 
 // Every draft route on the stack keeps its flow, not just the one the provider

@@ -12,6 +12,7 @@ import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import {
   BOAT_CLOUD_START_STEPS,
   type BoatCloudAcquireInput,
+  type BoatCloudMachineType,
   type BoatCloudSession,
   type BoatCloudStartStep,
   type BoatCloudStatus,
@@ -124,17 +125,22 @@ export function useBoatCloudStarter(preferredEnvironmentId: EnvironmentId | null
   return boatCloudStarterFor(holders, phone, preferredEnvironmentId);
 }
 
-/** The providers a new VM from this starter has sign-ins for, or null when unknown. */
-export function useBoatCloudProviderDrivers(preferredEnvironmentId: EnvironmentId | null) {
+/** The status of the holder that would start a VM now: its sizes, prices and environment. */
+export function useBoatCloudStarterStatus(
+  preferredEnvironmentId: EnvironmentId | null,
+): BoatCloudStatus | null {
   const holders = useAtomValue(boatCloudHoldersAtom);
   const phone = useAtomValue(phoneBoatCloudAtom);
   const starter = boatCloudStarterFor(holders, phone, preferredEnvironmentId);
-  const status =
-    starter?.kind === "machine"
-      ? holders.find((holder) => holder.environmentId === starter.environmentId)?.status
-      : starter?.kind === "phone"
-        ? phone
-        : null;
+  if (starter?.kind === "machine") {
+    return holders.find((holder) => holder.environmentId === starter.environmentId)?.status ?? null;
+  }
+  return starter?.kind === "phone" ? phone : null;
+}
+
+/** The providers a new VM from this starter has sign-ins for, or null when unknown. */
+export function useBoatCloudProviderDrivers(preferredEnvironmentId: EnvironmentId | null) {
+  const status = useBoatCloudStarterStatus(preferredEnvironmentId);
   const chosen = status?.environments.find(
     (environment) => environment.name === status.environment,
   );
@@ -152,7 +158,7 @@ const pairedBoatCloudEnvironments = (): NonNullable<BoatCloudAcquireInput["paire
     httpBaseUrl,
   }));
 
-const reconnectFailed = new Error("Could not reconnect to the Boat cloud machine.");
+const reconnectFailed = new Error("Could not reconnect to the Boat machine.");
 
 /** Resolves once the environment is connected, or false after `timeoutMs`. */
 function waitForConnected(environmentId: EnvironmentId, timeoutMs: number): Promise<boolean> {
@@ -236,6 +242,7 @@ function startOnMachine(input: {
   readonly repositoryUrl: string;
   readonly baseBranch: string | null;
   readonly paired: BoatCloudAcquireInput["paired"];
+  readonly machineType: BoatCloudMachineType | null;
   readonly onHolderSteps: (steps: ReadonlyArray<BoatCloudStepProgress>) => void;
 }) {
   const requestId = uuidv4();
@@ -257,6 +264,7 @@ function startOnMachine(input: {
       input: {
         repositoryUrl: input.repositoryUrl,
         ...(input.baseBranch ? { baseBranch: input.baseBranch } : {}),
+        ...(input.machineType ? { machineType: input.machineType } : {}),
         requestId,
         paired: input.paired,
       },
@@ -280,6 +288,8 @@ export async function prepareBoatCloudProject(input: {
   readonly starter: BoatCloudStarter;
   readonly repositoryUrl: string;
   readonly baseBranch: string | null;
+  /** The VM size; the holder's default when null. */
+  readonly machineType: BoatCloudMachineType | null;
   readonly onProgress: (steps: ReadonlyArray<BoatCloudStepProgress>) => void;
 }): Promise<EnvironmentProject | null> {
   let steps = pendingBoatCloudSteps();
@@ -308,6 +318,7 @@ export async function prepareBoatCloudProject(input: {
         repositoryUrl: input.repositoryUrl,
         baseBranch: input.baseBranch,
         paired,
+        machineType: input.machineType ?? undefined,
         report: (step, state, detail) => Effect.sync(() => setHolderStep(step, { state, detail })),
       });
     }
@@ -316,6 +327,7 @@ export async function prepareBoatCloudProject(input: {
       repositoryUrl: input.repositoryUrl,
       baseBranch: input.baseBranch,
       paired,
+      machineType: input.machineType,
       onHolderSteps: setHolderSteps,
     });
     stops.push(started.stopWatching);
@@ -352,7 +364,7 @@ export async function prepareBoatCloudProject(input: {
       ),
       checkoutFailure,
     ]);
-    if (!project) throw new Error("The Boat cloud machine did not open the project.");
+    if (!project) throw new Error("The Boat machine did not open the project.");
     // The project is added after the checkout, so it appearing means the checkout is done.
     set("repository", { state: "done" });
     set("project", { state: "done" });
@@ -364,7 +376,7 @@ export async function prepareBoatCloudProject(input: {
     }
     if (error !== cancelled)
       Dialog.alert(
-        m(msg("Could not start on {product}", { product: "Boat cloud" })),
+        m(msg("Could not start on {product}", { product: "Boat" })),
         errorMessage(error),
       );
     return null;
@@ -408,7 +420,7 @@ function wakeBoatCloudMachine(environmentId: EnvironmentId, httpBaseUrl: string)
       if (woken._tag === "Failure") {
         if (!isAtomCommandInterrupted(woken)) {
           Dialog.alert(
-            m(msg("Could not wake the {product} machine", { product: "Boat cloud" })),
+            m(msg("Could not wake the {product} machine", { product: "Boat" })),
             errorMessage(squashAtomCommandFailure(woken)),
           );
         }
@@ -419,7 +431,7 @@ function wakeBoatCloudMachine(environmentId: EnvironmentId, httpBaseUrl: string)
         () => true,
         (error: unknown) => {
           Dialog.alert(
-            m(msg("Could not reconnect to {product}", { product: "Boat cloud" })),
+            m(msg("Could not reconnect to {product}", { product: "Boat" })),
             errorMessage(error),
           );
           return false;
@@ -431,7 +443,7 @@ function wakeBoatCloudMachine(environmentId: EnvironmentId, httpBaseUrl: string)
       () => true,
       (error: unknown) => {
         Dialog.alert(
-          m(msg("Could not wake the {product} machine", { product: "Boat cloud" })),
+          m(msg("Could not wake the {product} machine", { product: "Boat" })),
           errorMessage(error),
         );
         return false;

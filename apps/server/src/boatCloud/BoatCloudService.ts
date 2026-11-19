@@ -8,8 +8,6 @@ import {
   type BoatCloudEnvironmentUsage,
   BoatCloudError,
   type BoatCloudMachineStats,
-  type BoatCloudMachineTypeOption,
-  BOAT_CLOUD_MACHINE_TYPES,
   BoatCloudMachineType,
   BoatCloudMachineUsage,
   type BoatCloudMachine,
@@ -33,6 +31,7 @@ import {
   type BoatApi,
   BoatApiError,
   type BoatLimits,
+  machineTypeOptions,
   type BoatEnvironmentOutline,
   type BoatSandbox,
   type BoatSnapshot,
@@ -198,36 +197,6 @@ const cloudError = (message: string) =>
 
 const pendingSteps = (): Array<BoatCloudStepProgress> =>
   BOAT_CLOUD_START_STEPS.map((step) => ({ step, state: "pending", detail: null }));
-
-/**
- * Every size with its hourly price: Boat's VM-hour price times the billing multiplier Boat
- * reported for a VM of that size, else times the size ratio Boat documents.
- */
-function machineTypeOptions(
-  limits: BoatLimits | null,
-  observedMultipliers: ReadonlyMap<string, number>,
-): Array<BoatCloudMachineTypeOption> {
-  const vmHourDollars =
-    limits?.overagePrices?.vmHourDollars ??
-    (limits?.creditSecondsPerDollar ? 3600 / limits.creditSecondsPerDollar : null);
-  return BOAT_CLOUD_MACHINE_TYPES.map((id) => {
-    const spec = BOAT_MACHINE_SPECS[id];
-    const observed = observedMultipliers.get(id);
-    // Boat's price is for the default size, whose multiplier is 1.
-    const multiplier = observed ?? spec.rate;
-    const listed = limits?.machineTypes?.find((entry) => entry.type === id);
-    return {
-      id,
-      vcpu: spec.vcpu,
-      memoryGB: spec.memoryGB,
-      hourlyDollars:
-        vmHourDollars === null || vmHourDollars === undefined ? null : vmHourDollars * multiplier,
-      priceSource: observed !== undefined || id === "default" ? "boat" : "derived",
-      available: listed?.available ?? true,
-      reason: listed?.reason ?? null,
-    };
-  });
-}
 
 /**
  * Each environment's VM now, and its cost summed over every VM that served it. Subagents

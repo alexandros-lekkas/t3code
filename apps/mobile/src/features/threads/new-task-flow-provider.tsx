@@ -8,6 +8,8 @@ import * as Dialog from "../../components/ui/Dialog";
 import React, { useRef, useState } from "react";
 
 import type {
+  BoatCloudMachineType,
+  BoatCloudMachineTypeOption,
   BoatCloudStepProgress,
   EnvironmentId,
   ModelSelection,
@@ -117,7 +119,9 @@ import {
   prepareBoatCloudProject,
   useBoatCloudProviderDrivers,
   useBoatCloudStarter,
+  useBoatCloudStarterStatus,
 } from "../boatCloud/boatCloud";
+import { availableMachineTypes, startableMachineType } from "../boatCloud/machineTypeChoice";
 
 type WorkspaceMode = "local" | "worktree";
 
@@ -208,7 +212,12 @@ type NewTaskFlowContextValue = {
     readonly sendPending: boolean;
     /** The start's steps, kept after a failure so the user sees which one. */
     readonly steps: ReadonlyArray<BoatCloudStepProgress> | null;
+    /** The sizes a start can ask for, empty when the holder has not listed them. */
+    readonly machineTypes: ReadonlyArray<BoatCloudMachineTypeOption>;
+    /** The size the next start asks for. */
+    readonly machineType: BoatCloudMachineType;
   } | null;
+  readonly chooseBoatCloudMachineType: (machineType: BoatCloudMachineType) => void;
   /** Picks Boat cloud; nothing starts until the first send. */
   readonly chooseBoatCloud: () => boolean;
   /** Starts a VM and moves the draft onto its checkout of the same repository. */
@@ -704,6 +713,11 @@ export function NewTaskFlowProvider(
   };
 
   const boatCloudStarter = useBoatCloudStarter(selectedProject?.environmentId ?? null);
+  const boatCloudStatus = useBoatCloudStarterStatus(selectedProject?.environmentId ?? null);
+  const boatCloudMachineType = startableMachineType(
+    boatCloudStatus?.machineTypes ?? [],
+    flowState.boatCloudMachineType ?? boatCloudStatus?.defaultMachineType ?? "small",
+  );
   const [boatCloudSteps, setBoatCloudSteps] = useState<ReadonlyArray<BoatCloudStepProgress> | null>(
     null,
   );
@@ -713,7 +727,7 @@ export function NewTaskFlowProvider(
     const repositoryUrl = identity?.origin?.remoteUrl ?? identity?.locator.remoteUrl;
     if (repositoryUrl) return repositoryUrl;
     Dialog.alert(
-      m(msg("{product} needs a git remote", { product: "Boat cloud" })),
+      m(msg("{product} needs a git remote", { product: "Boat" })),
       m(msg("Push this project to a remote {product} can clone.", { product: "Boat" })),
     );
     return null;
@@ -722,7 +736,7 @@ export function NewTaskFlowProvider(
     if (boatCloudSelected) return true;
     if (boatCloudStarter === null) {
       Dialog.alert(
-        m(msg("{product} is not set up", { product: "Boat cloud" })),
+        m(msg("{product} is not set up", { product: "Boat" })),
         m(msg("Finish setup in Settings, Environments.")),
       );
       return false;
@@ -736,7 +750,7 @@ export function NewTaskFlowProvider(
       !readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)
     ) {
       Dialog.alert(
-        m(msg("{product} is not available", { product: "Boat cloud" })),
+        m(msg("{product} is not available", { product: "Boat" })),
         m(msg("This connection cannot start tasks here.")),
       );
       return false;
@@ -755,6 +769,7 @@ export function NewTaskFlowProvider(
       starter: boatCloudStarter,
       repositoryUrl,
       baseBranch: selectedBranchName,
+      machineType: boatCloudMachineType,
       onProgress: setBoatCloudSteps,
     });
     const flow = readFlow();
@@ -1033,8 +1048,11 @@ export function NewTaskFlowProvider(
             startsOnSend: !onBoatCloudVm && flowState.boatCloud === "chosen",
             sendPending: onBoatCloudVm && flowState.boatCloud === "send",
             steps: boatCloudSteps,
+            machineTypes: availableMachineTypes(boatCloudStatus?.machineTypes ?? []),
+            machineType: boatCloudMachineType,
           }
         : null,
+    chooseBoatCloudMachineType: (machineType) => updateFlow({ boatCloudMachineType: machineType }),
     chooseBoatCloud,
     startBoatCloud,
     finishBoatCloudSend,
