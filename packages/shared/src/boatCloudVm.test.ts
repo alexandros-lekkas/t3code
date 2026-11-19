@@ -8,6 +8,8 @@ import { assert, describe, it } from "@effect/vitest";
 
 import {
   ADD_PROJECT_SCRIPT,
+  VM_BACKUP_ARCHIVE,
+  backupScript,
   baseBranchCheckScript,
   boatCloudProviderDrivers,
   cloneRepositoriesScript,
@@ -409,5 +411,42 @@ describe("cloneRepositoriesScript", () => {
     );
     assert.isTrue(NodeFS.existsSync(NodePath.join(root, "projects", "me", "app", ".git")));
     assert.deepStrictEqual(NodeFS.readdirSync(NodePath.join(root, "projects", "me")), ["app"]);
+  });
+});
+
+describe("backupScript", () => {
+  it("archives the VM's state and workspaces but not its secrets, readable by its owner only", () => {
+    const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "boat-backup-"));
+    using _cleanup = {
+      [Symbol.dispose]: () => NodeFS.rmSync(root, { recursive: true, force: true }),
+    };
+    const home = NodePath.join(root, "home");
+    const put = (file: string) => {
+      NodeFS.mkdirSync(NodePath.dirname(NodePath.join(home, file)), { recursive: true });
+      NodeFS.writeFileSync(NodePath.join(home, file), "x");
+    };
+    put(".t3/userdata/statev2.sqlite");
+    put(".t3/userdata/secrets/server-signing-key.bin");
+    put(".t3/userdata/logs/server.log");
+    put("projects/acme/app/README.md");
+    NodeFS.mkdirSync(NodePath.join(root, "bin"));
+    NodeFS.writeFileSync(NodePath.join(root, "bin", "systemctl"), "#!/bin/sh\nexit 0\n", {
+      mode: 0o755,
+    });
+    const archive = NodePath.join(root, "backup.tar.gz");
+    const result = NodeChildProcess.spawnSync(
+      "bash",
+      ["-c", backupScript.replaceAll(VM_BACKUP_ARCHIVE, archive).replaceAll("/home/user", home)],
+      { env: { ...process.env, PATH: `${NodePath.join(root, "bin")}:${process.env.PATH}` } },
+    );
+
+    assert.strictEqual(result.status, 0, result.stderr.toString());
+    const members = NodeChildProcess.spawnSync("tar", ["-tzf", archive])
+      .stdout.toString()
+      .split("\n")
+      .filter((member) => !member.endsWith("/") && member.length > 0)
+      .toSorted();
+    assert.deepStrictEqual(members, [".t3/userdata/statev2.sqlite", "projects/acme/app/README.md"]);
+    assert.strictEqual(NodeFS.statSync(archive).mode & 0o777, 0o600);
   });
 });

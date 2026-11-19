@@ -20,6 +20,7 @@ import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import {
   type BoatApi,
   BoatApiError,
+  type BoatSandbox,
   cloudEnvironments,
   makeBoatApi,
 } from "@t3tools/shared/boatCloudApi";
@@ -57,6 +58,7 @@ import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -126,8 +128,22 @@ const describe = (error: unknown) => {
   return error.message;
 };
 
-const cloudError = (message: string) => (cause: unknown) =>
-  new BoatCloudError({ message: `${message} ${describe(cause) ?? ""}`.trim(), cause });
+/**
+ * Clients get the message only: the cause can hold VM output and Boat's error bodies, so it
+ * stays in this server's log. Effect redacts the Authorization header, so the key never shows.
+ */
+const failCloud =
+  (message: (cause: unknown) => string) =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, BoatCloudError, R> =>
+    effect.pipe(
+      Effect.catch((cause) =>
+        Effect.logWarning("boat cloud request failed", { cause }).pipe(
+          Effect.andThen(Effect.fail(new BoatCloudError({ message: message(cause) }))),
+        ),
+      ),
+    );
+const cloudError = (message: string) =>
+  failCloud((cause) => `${message} ${describe(cause) ?? ""}`.trim());
 
 const pendingSteps = (): Array<BoatCloudStepProgress> =>
   BOAT_CLOUD_START_STEPS.map((step) => ({ step, state: "pending", detail: null }));
@@ -161,11 +177,14 @@ const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const runner = yield* ProcessRunner.ProcessRunner;
   const homeDirectory = yield* HostProcess.HomeDirectory;
+  // Background work ends with the server, so a setup VM is deleted and the spare keeper resets.
+  const scope = yield* Effect.scope;
 
   const directory = path.join(config.stateDir, "boat-cloud");
   const statePath = path.join(directory, "state.json");
+  const backupDirectory = path.join(directory, "backups");
   const backupPathOf = (environmentId: string) =>
-    path.join(directory, "backups", `${environmentId}.tar.gz`);
+    path.join(backupDirectory, `${environmentId}.tar.gz`);
 
   const readKey = secrets.get(API_KEY_SECRET).pipe(
     Effect.map(Option.map((bytes) => textDecoder.decode(bytes))),
@@ -187,8 +206,44 @@ const make = Effect.gen(function* () {
   let environments: ReadonlyArray<BoatCloudEnvironment> = [];
   let environmentsError: string | null = null;
   const starts = new Map<string, Array<BoatCloudStepProgress>>();
-  const sweepLock = yield* Semaphore.make(1);
   const registryLock = yield* Semaphore.make(1);
+  /**
+   * VMs a start or wake is handing out, counted per request, and VMs the idle sweep is backing
+   * up and stopping, each with the signal its stop sends when done. The sweep never stops a
+   * claimed VM and a start never picks a stopping one. Each check and mark is one synchronous
+   * step, so no other fiber runs between them.
+   */
+  const claims = new Map<string, number>();
+  const stopping = new Map<string, Deferred.Deferred<void>>();
+  const claim = (sandboxId: string) => claims.set(sandboxId, (claims.get(sandboxId) ?? 0) + 1);
+  const release = (sandboxIds: ReadonlyArray<string>) =>
+    Effect.sync(() => {
+      for (const sandboxId of sandboxIds) {
+        const count = (claims.get(sandboxId) ?? 0) - 1;
+        if (count > 0) claims.set(sandboxId, count);
+        else claims.delete(sandboxId);
+      }
+    });
+  /** Claims the VM once no stop of it is running; a stop that began finishes first. */
+  const claimWhenFree = (sandboxId: string): Effect.Effect<void> =>
+    Effect.suspend(() => {
+      const stopped = stopping.get(sandboxId);
+      if (stopped !== undefined) {
+        return Deferred.await(stopped).pipe(Effect.andThen(claimWhenFree(sandboxId)));
+      }
+      claim(sandboxId);
+      return Effect.void;
+    });
+  /** Two wakes of one environment would both restore it, so they take turns. */
+  const wakeLocks = new Map<string, Semaphore.Semaphore>();
+  const wakeLockOf = (environmentId: string) => {
+    let lock = wakeLocks.get(environmentId);
+    if (lock === undefined) {
+      lock = Semaphore.makeUnsafe(1);
+      wakeLocks.set(environmentId, lock);
+    }
+    return lock;
+  };
   const spares = makeSpareKeeper();
 
   const statusRef = yield* SubscriptionRef.make<BoatCloudStatus>({
@@ -362,7 +417,10 @@ const make = Effect.gen(function* () {
     const signedUrl = yield* api.downloadUrl(sandboxId, remotePath);
     const response = yield* http.get(signedUrl).pipe(Effect.mapError(transferFailure));
     if (response.status < 200 || response.status >= 300) return yield* api.fail(response);
-    yield* response.stream.pipe(Stream.run(fs.sink(localPath)), Effect.mapError(transferFailure));
+    yield* response.stream.pipe(
+      Stream.run(fs.sink(localPath, { mode: 0o600 })),
+      Effect.mapError(transferFailure),
+    );
   });
 
   /** Folds Boat's list into the registry: a VM deleted in Boat stays only while its backup can bring it back. */
@@ -435,10 +493,22 @@ const make = Effect.gen(function* () {
       // The rebuilt VM keeps the environment the deleted one had.
       ...(machine.environment === null ? {} : { environment: machine.environment }),
     });
-    yield* addMachine(created.id);
-    yield* waitRunning(api, created.id);
-    yield* uploadFile(api, created.id, VM_BACKUP_ARCHIVE, backupPathOf(environmentId));
-    yield* exec(api, created.id, restoreScript, 600);
+    // A VM that never got the backup is deleted; the old entry stays gone, so a retry restores.
+    const discard = api.delete(created.id).pipe(
+      Effect.ignore,
+      Effect.andThen(
+        commit((current) => ({
+          ...current,
+          machines: current.machines.filter((candidate) => candidate.sandboxId !== created.id),
+        })),
+      ),
+    );
+    yield* Effect.gen(function* () {
+      yield* addMachine(created.id);
+      yield* waitRunning(api, created.id);
+      yield* uploadFile(api, created.id, VM_BACKUP_ARCHIVE, backupPathOf(environmentId));
+      yield* exec(api, created.id, restoreScript, 600);
+    }).pipe(Effect.onError(() => discard));
     // Same environment on a new VM: the new entry takes over the old one's history.
     yield* commit((current) => ({
       ...current,
@@ -446,7 +516,12 @@ const make = Effect.gen(function* () {
         .filter((candidate) => candidate.sandboxId !== machine.sandboxId)
         .map((candidate) =>
           candidate.sandboxId === created.id
-            ? { ...candidate, repositories: machine.repositories, backedUpAt: machine.backedUpAt }
+            ? {
+                ...candidate,
+                environmentId,
+                repositories: machine.repositories,
+                backedUpAt: machine.backedUpAt,
+              }
             : candidate,
         ),
     }));
@@ -462,7 +537,10 @@ const make = Effect.gen(function* () {
     const target = backupPathOf(environmentId);
     const partial = `${target}.partial`;
     yield* exec(api, sandboxId, backupScript, 600);
-    yield* fs.makeDirectory(path.dirname(target), { recursive: true });
+    // Backups hold the VM's sessions and workspaces, so only this user reads them.
+    yield* fs.makeDirectory(backupDirectory, { recursive: true, mode: 0o700 });
+    yield* fs.chmod(backupDirectory, 0o700);
+    yield* fs.remove(partial, { force: true });
     yield* downloadFile(api, sandboxId, VM_BACKUP_ARCHIVE, partial);
     yield* fs.rename(partial, target);
     yield* updateMachine(sandboxId, { backedUpAt: yield* now });
@@ -472,28 +550,44 @@ const make = Effect.gen(function* () {
     api: BoatApi,
     machine: StoredMachine,
   ) {
-    // A start can hand the VM out again while the sweep probes or backs it up; it stays on then.
+    const { sandboxId } = machine;
     const handedOutAgain = () => {
-      const current = findMachine(machine.sandboxId);
+      const current = findMachine(sandboxId);
       return current?.state !== "running" || current.acquiredAt !== machine.acquiredAt;
     };
-    if (handedOutAgain()) return;
-    if (machine.environmentId !== null) {
-      // The VM's own deadline is a minute away; the backup must not be cut off by it.
-      yield* api.extend(machine.sandboxId, IDLE_TTL_SECONDS).pipe(Effect.ignore);
-      yield* backup(api, machine.sandboxId, machine.environmentId).pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning("boat cloud could not back up a VM before stopping it", {
-            sandboxId: machine.sandboxId,
-            cause,
-          }),
-        ),
-      );
-    }
-    if (handedOutAgain()) return;
-    yield* api.stop(machine.sandboxId);
-    yield* updateMachine(machine.sandboxId, { state: "stopped" });
-    yield* Effect.logInfo("boat cloud stopped an idle VM", { sandboxId: machine.sandboxId });
+    // A start or wake may have taken the VM while the sweep probed it. From here on none does.
+    const stopped = Deferred.makeUnsafe<void>();
+    const began = yield* Effect.sync(() => {
+      if (claims.has(sandboxId) || stopping.has(sandboxId) || handedOutAgain()) return false;
+      stopping.set(sandboxId, stopped);
+      return true;
+    });
+    if (!began) return;
+    yield* Effect.gen(function* () {
+      if (machine.environmentId !== null) {
+        // The VM's own deadline is a minute away; the backup must not be cut off by it.
+        yield* api.extend(machine.sandboxId, IDLE_TTL_SECONDS).pipe(Effect.ignore);
+        yield* backup(api, machine.sandboxId, machine.environmentId).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("boat cloud could not back up a VM before stopping it", {
+              sandboxId: machine.sandboxId,
+              cause,
+            }),
+          ),
+        );
+      }
+      if (handedOutAgain()) return;
+      yield* api.stop(machine.sandboxId);
+      yield* updateMachine(machine.sandboxId, { state: "stopped" });
+      yield* Effect.logInfo("boat cloud stopped an idle VM", { sandboxId: machine.sandboxId });
+    }).pipe(
+      Effect.ensuring(
+        Effect.suspend(() => {
+          stopping.delete(sandboxId);
+          return Deferred.succeed(stopped, undefined);
+        }),
+      ),
+    );
   });
 
   const sweepIdle = Effect.gen(function* () {
@@ -505,6 +599,7 @@ const make = Effect.gen(function* () {
     for (const machine of state.machines) {
       // A VM this machine never handed out belongs to the holder that did.
       if (machine.state !== "running" || machine.acquiredAt === null) continue;
+      if (claims.has(machine.sandboxId)) continue;
       const handedOutSecondsAgo = (nowMillis - Date.parse(machine.acquiredAt)) / 1000;
       if (handedOutSecondsAgo < IDLE_STOP_SECONDS) continue;
       const idleSeconds = yield* exec(api, machine.sandboxId, idleScript, 30).pipe(
@@ -516,7 +611,6 @@ const make = Effect.gen(function* () {
       yield* backupAndStop(api, machine);
     }
   }).pipe(
-    sweepLock.withPermits(1),
     Effect.catchCause((cause) => Effect.logWarning("boat cloud idle sweep failed", { cause })),
   );
 
@@ -564,7 +658,7 @@ const make = Effect.gen(function* () {
           : { status: "failed", step: setup.step, error };
       return saved === null
         ? publish
-        : Effect.andThen(publish, keepSpare(api).pipe(Effect.forkDetach, Effect.asVoid));
+        : Effect.andThen(publish, keepSpare(api).pipe(Effect.forkIn(scope), Effect.asVoid));
     });
 
   /** Setup outlives the request that starts it; the page follows it through the status stream. */
@@ -608,7 +702,7 @@ const make = Effect.gen(function* () {
             ),
           ),
       }),
-      Effect.forkDetach,
+      Effect.forkIn(scope),
     );
   });
 
@@ -709,17 +803,32 @@ const make = Effect.gen(function* () {
       return publish;
     });
     const readySpare = yield* spares.take(snapshot, state.environment);
-    // Starts run side by side; only the idle sweep needs the registry to hold still.
+    const environment = state.environment;
+    // Every VM this start may pick stays claimed until its hand-out is recorded.
+    const claimed: Array<string> = [];
     const started = yield* Effect.gen(function* () {
       // A held spare is handed out from what this machine knows, so Boat's list can wait.
-      const sandboxes =
-        readySpare === null ? yield* reconcile(api).pipe(sweepLock.withPermits(1)) : undefined;
+      let sandboxes: ReadonlyArray<BoatSandbox> | undefined;
+      if (readySpare === null) {
+        const listed = yield* reconcile(api);
+        // A VM on another environment is never picked, and a stopping one is gone in a moment.
+        sandboxes = listed.filter(
+          (sandbox) =>
+            !stopping.has(sandbox.id) &&
+            (environment === null || sandbox.environment === environment),
+        );
+        for (const sandbox of sandboxes) claim(sandbox.id);
+        claimed.push(...sandboxes.map((sandbox) => sandbox.id));
+      } else {
+        claim(readySpare.sandboxId);
+        claimed.push(readySpare.sandboxId);
+      }
       yield* markEnded("reconcile");
-      return yield* startMachine({
+      const machine = yield* startMachine({
         api,
         repository,
         baseBranch: input.baseBranch ?? null,
-        environment: state.environment,
+        environment,
         snapshot,
         readySpare,
         ...(sandboxes === undefined ? {} : { sandboxes }),
@@ -727,30 +836,31 @@ const make = Effect.gen(function* () {
         paired: input.paired ?? [],
         report: reportStep(input.requestId, markEnded),
         onAdded: addMachine,
-        // Without this the sweep sees a resumed VM's old hand-out and stops it mid-start.
+        // Without this the sweep sees a resumed VM's old hand-out and stops it once unclaimed.
         onReused: (sandboxId) =>
           Effect.flatMap(now, (acquiredAt) => updateMachine(sandboxId, { acquiredAt })),
+        onDeleted: (sandboxId) =>
+          commit((current) => ({
+            ...current,
+            machines: current.machines.filter((candidate) => candidate.sandboxId !== sandboxId),
+          })),
       });
+      yield* updateMachine(machine.sandboxId, {
+        environmentId: machine.environmentId,
+        httpBaseUrl: machine.httpBaseUrl,
+        state: "running",
+        acquiredAt: yield* now,
+      });
+      return machine;
     }).pipe(
+      Effect.ensuring(Effect.suspend(() => release(claimed))),
       Effect.onError(() => Effect.andThen(logTiming("failed", null), finish)),
       // Clients title this failure "Could not start on Boat cloud", so the message is just the cause.
-      Effect.mapError(
-        (cause) =>
-          new BoatCloudError({
-            message: describe(cause) ?? "Something went wrong on Boat.",
-            cause,
-          }),
-      ),
+      failCloud((cause) => describe(cause) ?? "Something went wrong on Boat."),
     );
-    yield* updateMachine(started.sandboxId, {
-      environmentId: started.environmentId,
-      httpBaseUrl: started.httpBaseUrl,
-      state: "running",
-      acquiredAt: yield* now,
-    });
     yield* markEnded("handedOut");
     // The start may have taken the spare, so the next one is readied while this one checks out.
-    yield* keepSpare(api).pipe(Effect.forkDetach);
+    yield* keepSpare(api).pipe(Effect.forkIn(scope));
     // The client connects while the checkout runs; its repository step tells it how that ended.
     yield* started.checkout.pipe(
       Effect.andThen(
@@ -777,7 +887,7 @@ const make = Effect.gen(function* () {
             finish.pipe(Effect.delay(START_LINGER)),
           ),
       }),
-      Effect.forkDetach,
+      Effect.forkIn(scope),
     );
     return {
       sandboxId: started.sandboxId,
@@ -818,16 +928,24 @@ const make = Effect.gen(function* () {
         yield* addMachine(sandbox.id);
         sandboxId = sandbox.id;
       }
-      const woken = yield* wakeMachine(api, sandboxId, {
-        pair: true,
-        ...(report === undefined ? {} : { report }),
-      });
-      yield* updateMachine(sandboxId, {
-        environmentId: woken.environmentId,
-        httpBaseUrl: woken.httpBaseUrl,
-        state: "running",
-        acquiredAt: yield* now,
-      });
+      const woken = yield* Effect.acquireUseRelease(
+        claimWhenFree(sandboxId),
+        () =>
+          Effect.gen(function* () {
+            const woken = yield* wakeMachine(api, sandboxId, {
+              pair: true,
+              ...(report === undefined ? {} : { report }),
+            });
+            yield* updateMachine(sandboxId, {
+              environmentId: woken.environmentId,
+              httpBaseUrl: woken.httpBaseUrl,
+              state: "running",
+              acquiredAt: yield* now,
+            });
+            return woken;
+          }),
+        () => release([sandboxId]),
+      );
       return {
         sandboxId,
         environmentId: woken.environmentId,
@@ -836,7 +954,7 @@ const make = Effect.gen(function* () {
         workspaceRoot: null,
       } satisfies BoatCloudSession;
     }).pipe(
-      sweepLock.withPermits(1),
+      wakeLockOf(input.environmentId).withPermits(1),
       // The client marks the steps done from the reply, so the listing can end with it.
       Effect.ensuring(
         Effect.suspend(() => {
@@ -845,7 +963,7 @@ const make = Effect.gen(function* () {
           return publish;
         }),
       ),
-      Effect.mapError(cloudError("Could not wake the Boat cloud machine.")),
+      cloudError("Could not wake the Boat cloud machine."),
     );
   });
 
@@ -861,17 +979,17 @@ const make = Effect.gen(function* () {
       // VMs already running keep theirs; only new ones start on the choice.
       yield* commit((current) => ({ ...current, environment: chosen.name }));
       return yield* SubscriptionRef.get(statusRef);
-    }).pipe(Effect.mapError(cloudError("Could not change the Boat environment.")));
+    }).pipe(cloudError("Could not change the Boat environment."));
   });
 
   const connect = Effect.fn("BoatCloud.connect")(function* (input: BoatCloudConnectInput) {
     const api = makeBoatApi(http, input.apiKey);
-    const account = yield* api.me().pipe(Effect.mapError(cloudError("Could not connect Boat.")));
+    const account = yield* api.me().pipe(cloudError("Could not connect Boat."));
     yield* secrets
       .set(API_KEY_SECRET, textEncoder.encode(input.apiKey))
-      .pipe(Effect.mapError(cloudError("Could not save the Boat API key.")));
+      .pipe(cloudError("Could not save the Boat API key."));
     yield* refreshSnapshot(api);
-    yield* renewSnapshot(api).pipe(Effect.forkDetach);
+    yield* renewSnapshot(api).pipe(Effect.forkIn(scope));
     // Another account's environments, VMs and backups mean nothing to this key; a wake
     // must never restore one account's backup onto another's VM.
     yield* commit((current) =>
@@ -884,9 +1002,7 @@ const make = Effect.gen(function* () {
   });
 
   const disconnect = Effect.gen(function* () {
-    yield* secrets
-      .remove(API_KEY_SECRET)
-      .pipe(Effect.mapError(cloudError("Could not remove the Boat API key.")));
+    yield* secrets.remove(API_KEY_SECRET).pipe(cloudError("Could not remove the Boat API key."));
     snapshotName = null;
     setup = { status: "idle", step: null, error: null };
     // The account stays recorded, so reconnecting it keeps its VMs and backups.
@@ -894,12 +1010,17 @@ const make = Effect.gen(function* () {
     return yield* SubscriptionRef.get(statusRef);
   }).pipe(Effect.withSpan("BoatCloud.disconnect"));
 
-  const initialKey = yield* readKey;
-  if (Option.isSome(initialKey)) {
-    const api = makeBoatApi(http, initialKey.value);
-    yield* Effect.all([refreshSnapshot(api), refreshEnvironments(api)], { concurrency: 2 });
-  }
   yield* publish;
+  // Boat answers in seconds at best, so the server starts on the last known state.
+  yield* forkParked(
+    Effect.gen(function* () {
+      const key = yield* readKey;
+      if (Option.isNone(key)) return;
+      const api = makeBoatApi(http, key.value);
+      yield* Effect.all([refreshSnapshot(api), refreshEnvironments(api)], { concurrency: 2 });
+      yield* publish;
+    }),
+  );
   yield* forkParked(
     sweepIdle.pipe(
       Effect.delay(IDLE_SWEEP_INTERVAL),
@@ -914,11 +1035,11 @@ const make = Effect.gen(function* () {
     const api = makeBoatApi(http, key.value);
     yield* renewSnapshot(api);
     yield* refreshEnvironments(api);
-    yield* reconcile(api).pipe(sweepLock.withPermits(1), Effect.ignore);
+    yield* reconcile(api).pipe(Effect.ignore);
     yield* publish;
     // A client is here, so a start may follow.
     yield* keepSpare(api);
-  }).pipe(Effect.forkDetach);
+  }).pipe(Effect.forkIn(scope));
 
   return BoatCloudService.of({
     subscribe: Stream.unwrap(
