@@ -66,6 +66,115 @@ const BoatEnvironment = Schema.Struct({
 export type BoatEnvironment = typeof BoatEnvironment.Type;
 const EnvironmentList = Schema.Struct({ environments: Schema.Array(BoatEnvironment) });
 
+/** Boat returns variable values and secret file contents here; only names and paths leave this module. */
+const BoatEnvironmentContents = Schema.Struct({
+  ...BoatEnvironment.fields,
+  safeForThirdParties: Schema.optional(Schema.Boolean),
+  latestVersionNumber: Schema.optional(Schema.NullOr(Schema.Number)),
+  envContents: Schema.optional(Schema.NullOr(Schema.String)),
+  secretFiles: Schema.optional(Schema.NullOr(Schema.Array(Schema.Struct({ path: Schema.String })))),
+  selectedRepositories: Schema.optional(
+    Schema.NullOr(
+      Schema.Array(
+        Schema.Struct({
+          databaseId: Schema.String,
+          fullName: Schema.String,
+          baseBranch: Schema.optional(Schema.NullOr(Schema.String)),
+        }),
+      ),
+    ),
+  ),
+  versions: Schema.optional(
+    Schema.NullOr(
+      Schema.Array(
+        Schema.Struct({
+          versionNumber: Schema.Number,
+          sandboxCount: Schema.Number,
+          createdAt: Schema.String,
+        }),
+      ),
+    ),
+  ),
+});
+const EnvironmentContentsList = Schema.Struct({
+  environments: Schema.Array(BoatEnvironmentContents),
+});
+
+const ENV_LINE = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/u;
+
+/** The variable names of a `.env`-style text, in order, without their values. */
+const variableNamesOf = (envContents: string) => {
+  const names = new Set<string>();
+  for (const line of envContents.split(/\r?\n/u)) {
+    const name = ENV_LINE.exec(line)?.[1];
+    if (name !== undefined) names.add(name);
+  }
+  return [...names];
+};
+
+/** An environment as Boat holds it, with every secret value already dropped. */
+export interface BoatEnvironmentOutline {
+  readonly id: string;
+  readonly name: string;
+  readonly isDefault: boolean;
+  readonly safeForThirdParties: boolean;
+  readonly passGithub: boolean;
+  readonly passSandboxCredentials: boolean;
+  readonly passSecrets: boolean;
+  readonly passAgentsCredentials: boolean;
+  readonly version: number | null;
+  readonly variables: ReadonlyArray<string>;
+  readonly secretFiles: ReadonlyArray<string>;
+  readonly repositories: ReadonlyArray<{
+    readonly databaseId: string;
+    readonly fullName: string;
+    readonly baseBranch: string | null;
+  }>;
+  readonly versions: ReadonlyArray<{
+    readonly version: number;
+    readonly machines: number;
+    readonly createdAt: string;
+  }>;
+}
+
+const outlineOf = (environment: typeof BoatEnvironmentContents.Type): BoatEnvironmentOutline => ({
+  id: environment.id,
+  name: environment.name,
+  isDefault: environment.isDefault,
+  safeForThirdParties: environment.safeForThirdParties ?? false,
+  passGithub: environment.passGithub,
+  passSandboxCredentials: environment.passSandboxCredentials,
+  passSecrets: environment.passSecrets,
+  passAgentsCredentials: environment.passAgentsCredentials,
+  version: environment.latestVersionNumber ?? null,
+  variables: variableNamesOf(environment.envContents ?? ""),
+  secretFiles: (environment.secretFiles ?? []).map((file) => file.path),
+  repositories: (environment.selectedRepositories ?? []).map((repository) => ({
+    databaseId: repository.databaseId,
+    fullName: repository.fullName,
+    baseBranch: repository.baseBranch ?? null,
+  })),
+  versions: (environment.versions ?? []).map((version) => ({
+    version: version.versionNumber,
+    machines: version.sandboxCount,
+    createdAt: version.createdAt,
+  })),
+});
+
+const RepositoryList = Schema.Struct({
+  installations: Schema.Array(
+    Schema.Struct({
+      repositories: Schema.Array(
+        Schema.Struct({ databaseId: Schema.String, fullName: Schema.String }),
+      ),
+    }),
+  ),
+});
+const UpgradeResult = Schema.Struct({
+  upgraded: Schema.Number,
+  failed: Schema.Number,
+});
+
 const BoatCredentialProfile = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
@@ -409,9 +518,71 @@ export function makeBoatApi(http: HttpClient.HttpClient, apiKey: string) {
         Pick<
           BoatEnvironment,
           "passGithub" | "passSandboxCredentials" | "passSecrets" | "passAgentsCredentials"
-        >
+        > & { readonly safeForThirdParties: boolean }
       >,
     ) => send(json("PUT", `/environments/${id}`, body), Schema.Unknown),
+    /** Each environment with its variable names, secret file paths and repositories, never their values. */
+    environmentOutlines: () =>
+      send(HttpClientRequest.get(url("/environments")), EnvironmentContentsList).pipe(
+        Effect.map((list) => list.environments.map(outlineOf)),
+      ),
+    setEnvironmentVariable: (id: string, key: string, value: string) =>
+      send(
+        json("PUT", `/environments/${id}/vars/${encodeURIComponent(key)}`, { value }),
+        Schema.Unknown,
+      ),
+    removeEnvironmentVariable: (id: string, key: string) =>
+      send(
+        HttpClientRequest.delete(url(`/environments/${id}/vars/${encodeURIComponent(key)}`)),
+        Schema.Unknown,
+      ),
+    setEnvironmentFile: (id: string, path: string, contents: string) =>
+      send(json("PUT", `/environments/${id}/secret-files`, { path, contents }), Schema.Unknown),
+    removeEnvironmentFile: (id: string, path: string) =>
+      send(
+        HttpClientRequest.delete(url(`/environments/${id}/secret-files`)).pipe(
+          HttpClientRequest.setUrlParam("path", path),
+        ),
+        Schema.Unknown,
+      ),
+    /** Boat's id for a GitHub repository its app can reach, by `owner/repo`; null when it cannot. */
+    findRepository: (fullName: string) =>
+      send(
+        HttpClientRequest.get(url("/repos")).pipe(
+          HttpClientRequest.setUrlParam("sync", "true"),
+          HttpClientRequest.setUrlParam("q", fullName.slice(fullName.indexOf("/") + 1)),
+          HttpClientRequest.setUrlParam("limit", "200"),
+        ),
+        RepositoryList,
+        Duration.minutes(1),
+      ).pipe(
+        Effect.map(
+          (list) =>
+            list.installations
+              .flatMap((installation) => installation.repositories)
+              .find((repository) => repository.fullName.toLowerCase() === fullName.toLowerCase())
+              ?.databaseId ?? null,
+        ),
+      ),
+    addEnvironmentRepository: (id: string, repositoryId: string, baseBranch?: string) =>
+      send(
+        json(
+          "POST",
+          `/environments/${id}/repos`,
+          baseBranch === undefined ? { repositoryId } : { repositoryId, baseBranch },
+        ),
+        Schema.Unknown,
+      ),
+    removeEnvironmentRepository: (id: string, repositoryId: string) =>
+      send(
+        HttpClientRequest.delete(
+          url(`/environments/${id}/repos/${encodeURIComponent(repositoryId)}`),
+        ),
+        Schema.Unknown,
+      ),
+    /** Moves the environment's VMs to its latest version: running ones now, stopped ones at resume. */
+    upgradeEnvironment: (id: string) =>
+      send(json("POST", `/environments/${id}/upgrade`, {}), UpgradeResult, Duration.minutes(2)),
     /** For a response from a signed URL, in Boat's error shape. */
     fail,
   };

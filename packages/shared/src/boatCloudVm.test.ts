@@ -19,6 +19,8 @@ import {
   parseStats,
   parseRepository,
   pickMachine,
+  snapshotBuildOf,
+  snapshotNameOf,
   prepareWorktreeScript,
   subdomainOfHttpBaseUrl,
   syncCheckoutScript,
@@ -60,6 +62,20 @@ describe("parseRepository", () => {
     assert.isNull(parseRepository("/home/me/local-repo"));
     assert.isNull(parseRepository("file:///home/me/repo"));
     assert.isNull(parseRepository("https://github.com/only-owner"));
+  });
+});
+
+describe("snapshotBuildOf", () => {
+  it("reads back the build a snapshot name records, and nothing from an unnamed one", () => {
+    assert.deepStrictEqual(snapshotBuildOf(snapshotNameOf("0.1.9", true)), {
+      version: "0.1.9",
+      withSkills: true,
+    });
+    assert.deepStrictEqual(snapshotBuildOf(snapshotNameOf("10.2.0", false)), {
+      version: "10.2.0",
+      withSkills: false,
+    });
+    assert.isNull(snapshotBuildOf("t3-code"));
   });
 });
 

@@ -2357,6 +2357,13 @@ export const layerWsRpc = (
         [WS_METHODS.boatCloudConfigureMachines]: (input) => boatCloud.configureMachines(input),
         [WS_METHODS.boatCloudAcquire]: (input) => boatCloud.acquire(input),
         [WS_METHODS.boatCloudWake]: (input) => boatCloud.wake(input),
+        [WS_METHODS.boatCloudStopMachine]: (input) => boatCloud.stopMachine(input.sandboxId),
+        [WS_METHODS.boatCloudWakeMachine]: (input) => boatCloud.wakeMachine(input.sandboxId),
+        [WS_METHODS.boatCloudDeleteMachine]: (input) =>
+          boatCloud
+            .deleteMachine({ sandboxId: input.sandboxId, force: input.force === true })
+            .pipe(Effect.andThen(boatCloud.refreshUsage)),
+        [WS_METHODS.boatCloudRefreshUsage]: () => boatCloud.refreshUsage,
         [WS_METHODS.guestShareCreate]: (input) =>
           Effect.annotateCurrentSpan({ "orchestration_v2.thread_id": input.threadId }).pipe(
             Effect.andThen(guestShares.create(input)),

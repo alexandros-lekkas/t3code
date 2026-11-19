@@ -1897,6 +1897,22 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:boat-cloud:configure-machines",
       tag: WS_METHODS.boatCloudConfigureMachines,
     }),
+    boatCloudStopMachine: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:boat-cloud:stop-machine",
+      tag: WS_METHODS.boatCloudStopMachine,
+    }),
+    boatCloudWakeMachine: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:boat-cloud:wake-machine",
+      tag: WS_METHODS.boatCloudWakeMachine,
+    }),
+    boatCloudDeleteMachine: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:boat-cloud:delete-machine",
+      tag: WS_METHODS.boatCloudDeleteMachine,
+    }),
+    boatCloudRefreshUsage: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:boat-cloud:refresh-usage",
+      tag: WS_METHODS.boatCloudRefreshUsage,
+    }),
     acquireBoatCloud: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:boat-cloud:acquire",
       tag: WS_METHODS.boatCloudAcquire,
