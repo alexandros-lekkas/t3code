@@ -48,6 +48,7 @@ import {
   BranchToolbarBranchSelector,
   type BranchToolbarBranchSelectorHandle,
 } from "./BranchToolbarBranchSelector";
+import { BoatCloudSizeSelector } from "./BoatCloudSizeSelector";
 import { BranchToolbarEnvironmentSelector } from "./BranchToolbarEnvironmentSelector";
 import { openAddProjectToMachine } from "./AddProjectToMachineDialog";
 import { type AddProjectTarget, useAddProjectTargets } from "../hooks/useAddProjectTargets";
@@ -746,6 +747,13 @@ export const BranchToolbar = memo(function BranchToolbar({
     canPickEnvironment: hasMultipleEnvironments || cloudEnvironment !== undefined,
   });
   const [attachStrip, labelsOverflow] = useLabelsOverflow();
+  const cloudSizeSelector = cloudEnvironment?.selected ? (
+    <BoatCloudSizeSelector
+      machineType={cloudEnvironment.machineType}
+      machineTypes={cloudEnvironment.machineTypes}
+      onMachineTypeChange={cloudEnvironment.onMachineTypeChange}
+    />
+  ) : null;
 
   if (!activeProject) return null;
 
@@ -827,6 +835,7 @@ export const BranchToolbar = memo(function BranchToolbar({
             addTargets={addTargets}
             onAddToMachine={onAddToMachine}
           />
+          {cloudSizeSelector}
         </div>
       ) : null}
       {showGitControls || showEnvironmentIndicator ? (
@@ -849,6 +858,7 @@ export const BranchToolbar = memo(function BranchToolbar({
                 {...(showEnvironmentPicker ? { onEnvironmentChange } : {})}
                 {...(addTargets.length > 0 ? { onAddToMachine: () => onAddToMachine(null) } : {})}
               />
+              {cloudSizeSelector}
               {showGitControls ? (
                 <Separator
                   orientation="vertical"

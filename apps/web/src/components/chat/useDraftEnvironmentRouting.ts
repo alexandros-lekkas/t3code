@@ -1,3 +1,4 @@
+import { useAtomValue } from "@effect/atom-react";
 import { msg, useGT } from "gt-react";
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { m } from "~/i18n/messages";
@@ -6,6 +7,7 @@ import { useLogicalProjectEnvironments } from "../../hooks/useLogicalProjectEnvi
 import { useScratchProject } from "../../hooks/useScratchProject";
 import { useStableCallback } from "../../hooks/useStableCallback";
 import {
+  type BoatCloudMachineType,
   type EnvironmentId,
   type ProviderDriverKind,
   ProviderInstanceId,
@@ -42,6 +44,7 @@ import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { seedDraftModelSelection } from "../../lib/seedDraftModelSelection";
 import { draftFanoutSelectionsAtom } from "./chatViewSend";
 import {
+  boatCloudDraftMachineTypeAtom,
   boatCloudReady,
   clearBoatCloudStartProgress,
   prepareBoatCloudProject,
@@ -160,6 +163,8 @@ export function useDraftEnvironmentRouting(input: DraftEnvironmentRoutingInput) 
   );
   const readRouting = useStableCallback(() => ({ input, loadBalancingCandidates }));
   const boatCloud = usePrimaryBoatCloudStatus();
+  const pickedMachineType = useAtomValue(boatCloudDraftMachineTypeAtom(draftId ?? ""));
+  const machineType = pickedMachineType ?? boatCloud.status?.defaultMachineType ?? "small";
   /** What starting this draft on Boat cloud needs, or why it cannot start. */
   const boatCloudStart = (draft: NonNullable<ReturnType<typeof getDraftSession>>) => {
     if (boatCloud.holderEnvironmentId === null || !boatCloudReady(boatCloud.status)) {
@@ -191,6 +196,7 @@ export function useDraftEnvironmentRouting(input: DraftEnvironmentRoutingInput) 
       holderEnvironmentId: boatCloud.holderEnvironmentId,
       repositoryUrl,
       baseBranch: draft.branch,
+      machineType: appAtomRegistry.get(boatCloudDraftMachineTypeAtom(draftId ?? "")) ?? machineType,
     };
   };
   const moveToBoatCloud = async () => {
@@ -375,6 +381,11 @@ export function useDraftEnvironmentRouting(input: DraftEnvironmentRoutingInput) 
     setDraftThreadContext(draftId, { environmentSelection: "manual" });
   };
   const onLeaveCloudEnvironmentStable = useStableCallback(onLeaveCloudEnvironment);
+  const onMachineTypeChange = (next: BoatCloudMachineType) => {
+    if (!draftId) return;
+    appAtomRegistry.set(boatCloudDraftMachineTypeAtom(draftId), next);
+  };
+  const onMachineTypeChangeStable = useStableCallback(onMachineTypeChange);
   const cloudSelected = draftThread?.environmentSelection === "cloud";
   // Offered on a new draft once this machine has Boat cloud ready; kept visible while chosen.
   const cloudEnvironment =
@@ -386,6 +397,9 @@ export function useDraftEnvironmentRouting(input: DraftEnvironmentRoutingInput) 
           selected: cloudSelected,
           onSelect: onCloudEnvironmentStable,
           onLeave: onLeaveCloudEnvironmentStable,
+          machineType,
+          machineTypes: boatCloud.status?.machineTypes ?? [],
+          onMachineTypeChange: onMachineTypeChangeStable,
         }
       : undefined;
   const autoEnvironmentLabel = automaticEnvironment

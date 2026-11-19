@@ -1,4 +1,6 @@
 import type {
+  BoatCloudMachineType,
+  BoatCloudMachineTypeOption,
   EnvironmentId,
   EnvironmentMachineKind,
   VcsRef,
@@ -414,6 +416,10 @@ export interface CloudEnvironmentOption {
   readonly onSelect: () => void;
   /** Back to the machine the draft is on now. */
   readonly onLeave: () => void;
+  /** The VM size the thread starts on, and the sizes Boat offers. */
+  readonly machineType: BoatCloudMachineType;
+  readonly machineTypes: ReadonlyArray<BoatCloudMachineTypeOption>;
+  readonly onMachineTypeChange: (machineType: BoatCloudMachineType) => void;
 }
 
 /** Radio value for Boat cloud; it cannot collide with server-minted environment IDs. */

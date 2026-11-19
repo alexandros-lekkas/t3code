@@ -202,7 +202,7 @@ function LimitRow({
 }
 
 /** One label, hairline, and value row; the whole row opens the details tooltip. With `opensUsage` it links to the usage page. */
-function UsageRow({
+export function UsageRow({
   label,
   fill,
   tone,

@@ -2,6 +2,7 @@ import {
   BOAT_CLOUD_REQUIRED_SCOPES,
   BOAT_CLOUD_SETUP_STEPS,
   type BoatCloudEnvironmentAccess,
+  type BoatCloudMachineType,
   type BoatCloudMachine,
   type BoatCloudSetupStep,
   type BoatCloudStatus,
@@ -19,6 +20,12 @@ import {
 import { type EnvironmentPresentation, useEnvironments } from "../../state/environments";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
+import {
+  BoatCloudMachineTypeItemLabel,
+  formatBoatCloudCost,
+  useBoatCloudMachineTypeLabel,
+  useBoatCloudSizeLine,
+} from "../BoatCloudSizeSelector";
 import { BoatIcon } from "../Icons";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -244,6 +251,76 @@ function EnvironmentRows({
 }
 
 /** Boat cloud's section of Settings, Environments. */
+/** How new cloud threads get VMs. Every key holder gets the same choice. */
+function MachineRows({
+  status,
+  holders,
+}: {
+  readonly status: BoatCloudStatus;
+  readonly holders: ReadonlyArray<EnvironmentPresentation>;
+}) {
+  const gt = useGT();
+  const label = useBoatCloudMachineTypeLabel();
+  const configure = useAtomCommand(serverEnvironment.configureBoatCloudMachines);
+  const [busy, setBusy] = useState(false);
+  const apply = async (input: {
+    readonly shareMachines?: boolean;
+    readonly defaultMachineType?: BoatCloudMachineType;
+  }) => {
+    setBusy(true);
+    await Promise.all(
+      holders.map((holder) => configure({ environmentId: holder.environmentId, input })),
+    );
+    setBusy(false);
+  };
+  return (
+    <>
+      {status.machineTypes.length > 0 ? (
+        <SettingsRow
+          title={gt("Default size")}
+          description={gt("New cloud threads start on it unless they pick another.")}
+          control={
+            <Select
+              value={status.defaultMachineType}
+              onValueChange={(value) => {
+                const option = status.machineTypes.find((candidate) => candidate.id === value);
+                if (option?.available && option.id !== status.defaultMachineType) {
+                  void apply({ defaultMachineType: option.id });
+                }
+              }}
+            >
+              <SelectTrigger size="sm" aria-label={gt("Default size")} disabled={busy}>
+                <SelectValue>{label(status.defaultMachineType)}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {status.machineTypes.map((option) => (
+                  <SelectItem key={option.id} value={option.id} disabled={!option.available}>
+                    <BoatCloudMachineTypeItemLabel option={option} />
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        />
+      ) : null}
+      <SettingsRow
+        title={gt("Share machines")}
+        description={gt(
+          "Lets a new thread join a running VM that has room. Off, each thread gets a VM of its own.",
+        )}
+        control={
+          <Switch
+            aria-label={gt("Share machines")}
+            checked={status.shareMachines}
+            disabled={busy}
+            onCheckedChange={(checked) => void apply({ shareMachines: Boolean(checked) })}
+          />
+        }
+      />
+    </>
+  );
+}
+
 export function BoatCloudSettings() {
   const gt = useGT();
   const m = useMessages();
@@ -276,6 +353,7 @@ export function BoatCloudSettings() {
       input: { repositories: boatCloudSnapshotRepositories() },
     });
   };
+  const sizeLine = useBoatCloudSizeLine();
   const setupStepIndex = setup?.step ? BOAT_CLOUD_SETUP_STEPS.indexOf(setup.step) : -1;
   // Hidden while this machine's status loads, and on a T3 Code without Boat cloud.
   if (status === null) return null;
@@ -365,6 +443,7 @@ export function BoatCloudSettings() {
         />
       ) : null}
       {connected ? <EnvironmentRows status={status} holders={holders} /> : null}
+      {connected ? <MachineRows status={status} holders={holders} /> : null}
       {connected && machines.length > 1
         ? machines.map((machine) => (
             <KeyHolderRow
@@ -393,11 +472,17 @@ export function BoatCloudSettings() {
                   </span>
                 }
                 description={
-                  machine.repositories.length > 0
-                    ? machine.repositories
-                        .map((repository) => repository.split("/").slice(1).join("/"))
-                        .join(", ")
-                    : undefined
+                  [
+                    sizeLine(machine),
+                    machine.usage === null
+                      ? null
+                      : formatBoatCloudCost(machine.usage.seconds, machine.usage.dollars),
+                    machine.repositories
+                      .map((repository) => repository.split("/").slice(1).join("/"))
+                      .join(", "),
+                  ]
+                    .filter(Boolean)
+                    .join(" · ") || undefined
                 }
                 control={<Badge variant={state.variant}>{m(state.label)}</Badge>}
               />

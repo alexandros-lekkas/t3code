@@ -33,6 +33,12 @@ starting the thread, which lives on the VM from then on. T3 Code reuses a runnin
 half its CPU and memory, preferring one that already has the repository, or starts a new VM from the
 snapshot. A VM from the snapshot is usually ready in under 10 seconds.
 
+Next to the machine picker, choose the VM size. Each size lists its vCPUs, memory and hourly price;
+a size your Boat plan cannot start is shown with the reason. New threads use the **Default size**
+from the Boat cloud section unless you pick another. With **Share machines** off, each cloud thread
+gets a VM of its own; turn it on to let threads join a running VM that has room. The thread's
+details panel shows its VM's size, state, CPU, memory, disk and cost.
+
 A cloud thread always works in a new worktree, so several threads can share a VM. You choose only
 the base branch. The thread keeps your model and access settings, and its attachments go with it.
 

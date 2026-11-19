@@ -18,6 +18,7 @@ import {
   AuthOrchestrationOperateScope,
   BOAT_CLOUD_SNAPSHOT_REPOSITORIES,
   type BoatCloudAcquireInput,
+  type BoatCloudMachineType,
   type BoatCloudSession,
   type BoatCloudStartStep,
   type BoatCloudStepProgress,
@@ -139,6 +140,11 @@ function reportFailure(title: string, result: AtomCommandResult<unknown, unknown
   );
 }
 
+/** The VM size each cloud draft picked; null keeps the holder's default. */
+export const boatCloudDraftMachineTypeAtom = Atom.family((_draftId: string) =>
+  Atom.make<BoatCloudMachineType | null>(null).pipe(Atom.keepAlive),
+);
+
 /** The start in progress for each draft, shown above its composer. */
 export const boatCloudStartProgressAtom = Atom.family((_draftId: string) =>
   Atom.make<BoatCloudStartProgress | null>(null).pipe(Atom.keepAlive),
@@ -223,6 +229,7 @@ interface BoatCloudPrepareInput {
   readonly holderEnvironmentId: EnvironmentId;
   readonly repositoryUrl: string;
   readonly baseBranch: string;
+  readonly machineType: BoatCloudMachineType;
 }
 
 /** Where the draft moves: the VM's project, and the worktree the VM cut for it when it did. */
@@ -304,6 +311,7 @@ async function prepareBoatCloudProjectNow(
           input: {
             repositoryUrl: input.repositoryUrl,
             baseBranch: input.baseBranch,
+            machineType: input.machineType,
             requestId,
             paired,
           },
@@ -404,7 +412,11 @@ async function prepareBoatCloudProjectNow(
 /** The start each draft began when Boat cloud was picked, so its send can reuse it. */
 const prewarmed = new Map<
   DraftId,
-  { readonly repositoryUrl: string; readonly target: Promise<BoatCloudTarget | null> }
+  {
+    readonly repositoryUrl: string;
+    readonly machineType: BoatCloudMachineType;
+    readonly target: Promise<BoatCloudTarget | null>;
+  }
 >();
 
 /**
@@ -412,9 +424,12 @@ const prewarmed = new Map<
  * ready by the time the message is written. VMs stop by themselves when unused.
  */
 export function prewarmBoatCloudProject(input: BoatCloudPrepareInput) {
-  if (prewarmed.get(input.draftId)?.repositoryUrl === input.repositoryUrl) return;
+  const started = prewarmed.get(input.draftId);
+  if (started?.repositoryUrl === input.repositoryUrl && started.machineType === input.machineType)
+    return;
   prewarmed.set(input.draftId, {
     repositoryUrl: input.repositoryUrl,
+    machineType: input.machineType,
     target: prepareBoatCloudProjectNow(input),
   });
 }
@@ -425,7 +440,7 @@ export async function prepareBoatCloudProject(
 ): Promise<BoatCloudTarget | null> {
   const started = prewarmed.get(input.draftId);
   prewarmed.delete(input.draftId);
-  if (started?.repositoryUrl === input.repositoryUrl) {
+  if (started?.repositoryUrl === input.repositoryUrl && started.machineType === input.machineType) {
     const target = await started.target;
     if (target !== null) return target;
   }
