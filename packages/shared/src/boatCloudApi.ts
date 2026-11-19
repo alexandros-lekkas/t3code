@@ -179,6 +179,8 @@ const SavedSnapshot = Schema.Struct({
   sourceSandboxId: Schema.optional(Schema.NullOr(Schema.String)),
   /** When the name was first saved; a later save under it keeps this. */
   createdAt: Schema.optional(Schema.NullOr(Schema.String)),
+  /** Why a `failed` save failed, in Boat's words. */
+  error: Schema.optional(Schema.NullOr(Schema.String)),
 });
 export type BoatSnapshot = typeof SavedSnapshot.Type;
 const SavedSnapshotList = Schema.Struct({ snapshots: Schema.Array(SavedSnapshot) });

@@ -8,6 +8,7 @@ import * as TestClock from "effect/testing/TestClock";
 
 import { makeBoatApi } from "./boatCloudApi.ts";
 import {
+  buildSnapshot,
   latestCliRelease,
   makeSpareKeeper,
   needsSnapshot,
@@ -369,4 +370,178 @@ describe("snapshot choice", () => {
     assert.isTrue(needsSnapshot([plain], "0.1.9", true));
     assert.isFalse(needsSnapshot([plain], "0.1.9", false));
   });
+});
+
+/**
+ * Boat as a snapshot build sees it. Saving a running VM starts a fresh capture that has not
+ * finished when the VM is deleted, so Boat then fails it, as it did a real setup. Saving a
+ * stopped (`archived`) VM settles at `ready` on the next poll, or at `failed` with `saveFails`.
+ * A failed save of the same name from an earlier VM is listed until it is deleted.
+ */
+const setupBoat = (options: { saveFails?: string } = {}) => {
+  const NAME = "t3-code-0-1-10";
+  const calls: Array<string> = [];
+  let state = "ready";
+  let stateAtSave: string | null = null;
+  const snapshots = new Map<string, Record<string, unknown>>([
+    [
+      NAME,
+      {
+        name: NAME,
+        status: "failed",
+        sourceSandboxId: "bx_old",
+        error: "no completed snapshot available for this sandbox",
+      },
+    ],
+  ]);
+  const http = HttpClient.make((request) =>
+    Effect.sync(() => {
+      const path = new URL(request.url).pathname.replace("/api/v1", "");
+      const body =
+        request.body._tag === "Uint8Array"
+          ? (JSON.parse(new TextDecoder().decode(request.body.body)) as Record<string, unknown>)
+          : {};
+      const reply = (json: unknown, status = 200) =>
+        HttpClientResponse.fromWeb(request, Response.json(json, { status }));
+      const listed = () => ({ id: "setup-1", state, subdomain: "box-setup", labels: {} });
+      if (!path.endsWith("/commands")) calls.push(`${request.method} ${path}`);
+      if (path === "/sandboxes" && request.method === "GET") return reply({ sandboxes: [] });
+      if (path === "/sandboxes" && request.method === "POST") return reply({ sandbox: listed() });
+      if (path === "/sandboxes/setup-1" && request.method === "GET") {
+        if (state === "deleted") return reply({ code: "not_found" }, 404);
+        // The stop's capture finishes between polls.
+        const answer = reply({ sandbox: listed() });
+        if (state === "archiving") state = "archived";
+        return answer;
+      }
+      if (path === "/sandboxes/setup-1/stop") {
+        state = "archiving";
+        return reply({ sandbox: listed() }, 202);
+      }
+      if (path === "/sandboxes/setup-1" && request.method === "DELETE") {
+        state = "deleted";
+        for (const snapshot of snapshots.values()) {
+          if (snapshot.status === "saving" && snapshot.sourceSandboxId === "setup-1") {
+            snapshot.status = "failed";
+            snapshot.error = "no completed snapshot available for this sandbox";
+          }
+        }
+        return reply({}, 202);
+      }
+      if (path === "/sandboxes/setup-1/commands") {
+        const starts = String(body.command).includes("systemctl --user start t3code.service");
+        const stdout = starts ? JSON.stringify({ environmentId: "env-setup" }) : "";
+        return reply({ exitCode: 0, stdout });
+      }
+      if (path === "/saved-snapshots" && request.method === "GET") {
+        const list = [...snapshots.values()].map((snapshot) => ({ ...snapshot }));
+        for (const snapshot of snapshots.values()) {
+          if (snapshot.status === "saving" && stateAtSave === "archived") {
+            if (options.saveFails === undefined) snapshot.status = "ready";
+            else Object.assign(snapshot, { status: "failed", error: options.saveFails });
+          }
+        }
+        return reply({ snapshots: list });
+      }
+      if (path === "/saved-snapshots" && request.method === "POST") {
+        stateAtSave = state;
+        snapshots.set(String(body.name), {
+          name: body.name,
+          status: "saving",
+          sourceSandboxId: body.sandboxId,
+          createdAt: "2026-11-19T18:11:32.050Z",
+        });
+        return reply({ ok: true }, 202);
+      }
+      if (path === `/saved-snapshots/${NAME}` && request.method === "DELETE") {
+        snapshots.delete(NAME);
+        return reply({});
+      }
+      return reply({ code: "not_found" }, 404);
+    }),
+  );
+  return {
+    api: makeBoatApi(http, "key"),
+    calls,
+    stateAtSave: () => stateAtSave,
+    snapshot: () => snapshots.get(NAME),
+  };
+};
+
+describe("buildSnapshot", () => {
+  const build = (boat: ReturnType<typeof setupBoat>, steps: Array<string>) =>
+    buildSnapshot({
+      api: boat.api,
+      version: "0.1.10",
+      repositories: [],
+      setStep: (step) => Effect.sync(() => void steps.push(step)),
+    });
+
+  it.effect("stops the setup VM and waits for its stop before saving it, then deletes it", () =>
+    Effect.gen(function* () {
+      const boat = setupBoat();
+      const steps: Array<string> = [];
+      const fiber = yield* Effect.forkChild(build(boat, steps));
+      yield* TestClock.adjust(Duration.minutes(1));
+      assert.strictEqual(yield* Fiber.join(fiber), "t3-code-0-1-10");
+      assert.strictEqual(boat.stateAtSave(), "archived");
+      assert.strictEqual(boat.snapshot()?.status, "ready");
+      const at = (call: string) => boat.calls.indexOf(call);
+      assert.isAbove(at("POST /sandboxes/setup-1/stop"), -1);
+      assert.isBelow(at("POST /sandboxes/setup-1/stop"), at("POST /saved-snapshots"));
+      // The failed save from an earlier VM goes first, so it is not read as this one failing.
+      assert.isBelow(at("DELETE /saved-snapshots/t3-code-0-1-10"), at("POST /saved-snapshots"));
+      assert.isBelow(at("POST /saved-snapshots"), at("DELETE /sandboxes/setup-1"));
+      assert.deepStrictEqual(steps, [
+        "create-vm",
+        "install-server",
+        "copy-skills",
+        "save-snapshot",
+      ]);
+    }),
+  );
+
+  it.effect("fails with Boat's reason when the save fails, and deletes the setup VM", () =>
+    Effect.gen(function* () {
+      const boat = setupBoat({ saveFails: "storage unavailable" });
+      const fiber = yield* Effect.forkChild(Effect.flip(build(boat, [])));
+      yield* TestClock.adjust(Duration.minutes(1));
+      const error = yield* Fiber.join(fiber);
+      assert.strictEqual(error.message, "Boat could not save the snapshot: storage unavailable.");
+      assert.include(boat.calls, "DELETE /sandboxes/setup-1");
+    }),
+  );
+
+  it.effect("gives up on a save that never settles instead of waiting forever", () =>
+    Effect.gen(function* () {
+      const boat = setupBoat();
+      // A VM that never finishes stopping.
+      const stuck = {
+        ...boat.api,
+        getSandbox: (id: string) =>
+          boat.api
+            .getSandbox(id)
+            .pipe(
+              Effect.map((sandbox) =>
+                sandbox?.state === "archived" ? { ...sandbox, state: "archiving" } : sandbox,
+              ),
+            ),
+      };
+      const fiber = yield* Effect.forkChild(
+        Effect.flip(
+          buildSnapshot({
+            api: stuck,
+            version: "0.1.10",
+            repositories: [],
+            setStep: () => Effect.void,
+          }),
+        ),
+      );
+      yield* TestClock.adjust(Duration.minutes(11));
+      const error = yield* Fiber.join(fiber);
+      assert.strictEqual(error.message, "Boat did not stop the setup VM in 10 minutes.");
+      assert.notInclude(boat.calls, "POST /saved-snapshots");
+      assert.include(boat.calls, "DELETE /sandboxes/setup-1");
+    }),
+  );
 });
