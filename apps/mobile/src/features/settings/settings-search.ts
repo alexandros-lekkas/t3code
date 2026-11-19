@@ -21,6 +21,12 @@ const SETTINGS_SEARCH_TERMS = {
     msg("add environment", { $context: "settings search keyword" }),
     msg("remote", { $context: "settings search keyword" }),
     "tailscale",
+    "boat",
+    msg("cloud agents", { $context: "settings search keyword" }),
+    "vm",
+    msg("api key", { $context: "settings search keyword" }),
+    msg("snapshot", { $context: "settings search keyword" }),
+    msg("remote machine", { $context: "settings search keyword" }),
   ],
   SettingsNotifications: [
     msg("push", { $context: "settings search keyword" }),

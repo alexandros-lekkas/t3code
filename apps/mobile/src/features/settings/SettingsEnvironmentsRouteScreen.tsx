@@ -8,6 +8,7 @@ import { useRef, useState } from "react";
 import { RefreshControl } from "../../components/ui/RefreshControl";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { BoatCloudSettings } from "./BoatCloudSettings";
 import { SettingsScreen } from "./components/SettingsScreen";
 import { CloudEnvironmentRows } from "../connection/CloudEnvironmentRows";
 import { LocalEnvironmentList } from "../connection/LocalEnvironmentList";
@@ -114,6 +115,7 @@ export function SettingsEnvironmentsRouteScreen() {
     >
       <ScrollView
         alwaysBounceVertical
+        keyboardShouldPersistTaps="handled"
         contentInsetAdjustmentBehavior="automatic"
         showsVerticalScrollIndicator={false}
         className="flex-1"
@@ -155,6 +157,7 @@ export function SettingsEnvironmentsRouteScreen() {
             : {})}
         />
         <PullRequestRoutingSettings />
+        <BoatCloudSettings />
       </ScrollView>
     </SettingsScreen>
   );
