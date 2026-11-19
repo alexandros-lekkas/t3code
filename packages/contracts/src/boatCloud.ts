@@ -223,6 +223,48 @@ export const BoatCloudEnvironmentUsage = Schema.Struct({
 });
 export type BoatCloudEnvironmentUsage = typeof BoatCloudEnvironmentUsage.Type;
 
+/** The agent drivers a holder can pass its own sign-ins to. */
+const BOAT_CLOUD_LOCAL_SIGN_IN_DRIVERS = ["claudeAgent", "codex"] as const;
+
+/** A sign-in of the holder's own that its VMs' agents get. Its value never leaves the holder's server. */
+export const BoatCloudLocalSignIn = Schema.Struct({
+  driver: Schema.Literals(BOAT_CLOUD_LOCAL_SIGN_IN_DRIVERS),
+  /**
+   * `token`: the long-lived Claude token the holder made with `claude setup-token`.
+   * `environment`: a key or token in the holder server's environment.
+   * `login`: the CLI's own sign-in, passed without its refresh token.
+   */
+  source: Schema.Literals(["token", "environment", "login"]),
+  /** When the passed sign-in stops working; null when it is long-lived. */
+  expiresAt: Schema.NullOr(Schema.String),
+});
+export type BoatCloudLocalSignIn = typeof BoatCloudLocalSignIn.Type;
+
+/** A `claude setup-token` sign-in the holder is running. */
+export const BoatCloudClaudeTokenFlow = Schema.Struct({
+  state: Schema.Literals(["running", "failed"]),
+  /** The sign-in page, for a browser on another machine than the holder. */
+  url: Schema.NullOr(Schema.String),
+  error: Schema.NullOr(Schema.String),
+});
+export type BoatCloudClaudeTokenFlow = typeof BoatCloudClaudeTokenFlow.Type;
+
+export const BoatCloudLocalSignIns = Schema.Struct({
+  /** Whether new and woken VMs get the sign-ins in `available`. */
+  enabled: Schema.Boolean,
+  available: Schema.Array(BoatCloudLocalSignIn),
+  claudeTokenStored: Schema.Boolean,
+  claudeTokenFlow: Schema.NullOr(BoatCloudClaudeTokenFlow),
+});
+export type BoatCloudLocalSignIns = typeof BoatCloudLocalSignIns.Type;
+
+export const BOAT_CLOUD_NO_LOCAL_SIGN_INS: BoatCloudLocalSignIns = {
+  enabled: false,
+  available: [],
+  claudeTokenStored: false,
+  claudeTokenFlow: null,
+};
+
 export const BoatCloudStatus = Schema.Struct({
   connected: Schema.Boolean,
   /** The Boat account the key belongs to. */
@@ -262,6 +304,10 @@ export const BoatCloudStatus = Schema.Struct({
   /** One entry per Boat cloud environment this holder knows. */
   environmentUsage: Schema.Array(BoatCloudEnvironmentUsage).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  /** This holder's own provider sign-ins, which its VMs get alongside the Boat profile's. */
+  localSignIns: BoatCloudLocalSignIns.pipe(
+    Schema.withDecodingDefault(Effect.succeed(BOAT_CLOUD_NO_LOCAL_SIGN_INS)),
   ),
 });
 export type BoatCloudStatus = typeof BoatCloudStatus.Type;
@@ -361,6 +407,8 @@ export const BoatCloudConfigureMachinesInput = Schema.Struct({
   shareMachines: Schema.optional(Schema.Boolean),
   defaultMachineType: Schema.optional(BoatCloudMachineType),
   keepReadyMachine: Schema.optional(Schema.Boolean),
+  /** Passes this holder's own Claude and Codex sign-ins to its VMs. */
+  useLocalSignIns: Schema.optional(Schema.Boolean),
 });
 export type BoatCloudConfigureMachinesInput = typeof BoatCloudConfigureMachinesInput.Type;
 
@@ -376,6 +424,16 @@ export const BoatCloudDeleteMachineInput = Schema.Struct({
   force: Schema.optional(Schema.Boolean),
 });
 export type BoatCloudDeleteMachineInput = typeof BoatCloudDeleteMachineInput.Type;
+
+/** Makes, cancels or removes the long-lived Claude token, or answers its sign-in with a code. */
+export const BoatCloudClaudeTokenInput = Schema.Union([
+  Schema.Struct({ action: Schema.Literals(["create", "cancel", "remove"]) }),
+  Schema.Struct({
+    action: Schema.Literal("code"),
+    code: TrimmedNonEmptyString.check(Schema.isMaxLength(2048)),
+  }),
+]);
+export type BoatCloudClaudeTokenInput = typeof BoatCloudClaudeTokenInput.Type;
 
 export const BoatCloudEmptyInput = Schema.Struct({});
 export type BoatCloudEmptyInput = typeof BoatCloudEmptyInput.Type;

@@ -1,5 +1,5 @@
 import type { BoatCloudMachine, BoatCloudStatus } from "@t3tools/contracts";
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { BOAT_CLOUD_NO_LOCAL_SIGN_INS, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -46,6 +46,7 @@ const status = (patch: Partial<BoatCloudStatus>): BoatCloudStatus => ({
   defaultMachineType: "small",
   machineTypes: [],
   environmentUsage: [],
+  localSignIns: BOAT_CLOUD_NO_LOCAL_SIGN_INS,
   ...patch,
 });
 

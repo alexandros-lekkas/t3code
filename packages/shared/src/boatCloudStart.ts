@@ -57,6 +57,8 @@ import {
   snapshotNameOf,
   startServerScript,
   stockPairingScript,
+  syncSignInsScript,
+  type VmAgentSignIns,
   subdomainOfHttpBaseUrl,
   worktreePathOf,
 } from "./boatCloudVm.ts";
@@ -87,6 +89,17 @@ const commandFailure = (result: BoatCommandResult, failure?: string) =>
     "vm",
     result,
   );
+
+/** A failed request's cause can hold the command it sent, which may carry sign-ins. */
+const withoutRequest = (error: BoatApiError) =>
+  error.code === "vm"
+    ? error
+    : new BoatApiError({
+        status: error.status,
+        code: error.code,
+        message: error.message,
+        retryable: error.retryable,
+      });
 
 export const exec = (
   api: BoatApi,
@@ -137,14 +150,15 @@ const startServer = Effect.fn("BoatCloud.startServer")(function* (
   sandboxId: string,
   pair: boolean,
   minutes?: number,
+  signIns: VmAgentSignIns | null = null,
 ) {
   const output = yield* exec(
     api,
     sandboxId,
-    startServerScript(pair ? PAIRING_LABEL : null, minutes),
+    startServerScript(pair ? PAIRING_LABEL : null, minutes, signIns),
     90,
     "T3 Code did not start on the VM.",
-  );
+  ).pipe(Effect.mapError(withoutRequest));
   const markerAt = output.indexOf(PAIRING_MARKER);
   const head = markerAt === -1 ? output : output.slice(0, markerAt);
   const hosted = !head.includes(NOT_HOSTED_MARKER);
@@ -307,6 +321,8 @@ interface StartMachineInput {
    */
   readonly machineType?: BoatMachineType;
   readonly report: ReportStep;
+  /** The holder's own sign-ins the VM's agents get where Boat gives none. */
+  readonly signIns?: VmAgentSignIns | null;
   /** Runs once a VM joins the holder's machines: one it created, or the spare it took. */
   readonly onAdded?: (sandboxId: string) => Effect.Effect<void>;
   /** Runs before an existing VM is resumed or reused, so an idle sweep leaves it on. */
@@ -549,7 +565,7 @@ export const startMachine = Effect.fn("BoatCloud.startMachine")(function* (
         // A reused VM may be minutes from its deadline; the new thread restarts it.
         const [started] = yield* Effect.all(
           [
-            startServer(api, sandboxId, expected === null),
+            startServer(api, sandboxId, expected === null, undefined, input.signIns ?? null),
             choice.kind === "use" ? api.extend(sandboxId, IDLE_TTL_SECONDS) : Effect.void,
             runningSpare ? join(sandboxId) : Effect.void,
           ],
@@ -605,6 +621,7 @@ const ensureSpare = Effect.fn("BoatCloud.ensureSpare")(function* (input: {
   readonly taken: ReadonlySet<string>;
   /** Spares this holder made, which it alone decides on while they run. */
   readonly created: Set<string>;
+  readonly signIns: VmAgentSignIns | null;
 }) {
   const { api, held } = input;
   const spares = (yield* api.listSandboxes(MACHINE_LABEL_FILTER)).filter(
@@ -642,7 +659,10 @@ const ensureSpare = Effect.fn("BoatCloud.ensureSpare")(function* (input: {
     yield* Effect.all(
       [
         api.extend(kept.id, SPARE_TTL_SECONDS),
-        exec(api, kept.id, warmSpareScript, 30).pipe(Effect.ignore),
+        // Sign-ins that changed since the spare started reach it before a start takes it.
+        exec(api, kept.id, `${syncSignInsScript(input.signIns)}${warmSpareScript}`, 30).pipe(
+          Effect.ignore,
+        ),
       ],
       { concurrency: 2, discard: true },
     );
@@ -669,7 +689,7 @@ const ensureSpare = Effect.fn("BoatCloud.ensureSpare")(function* (input: {
     sandboxId = kept.id;
   }
   const sandbox = yield* waitRunning(api, sandboxId);
-  const started = yield* startServer(api, sandboxId, true, HOLD_MINUTES);
+  const started = yield* startServer(api, sandboxId, true, HOLD_MINUTES, input.signIns);
   const pairing =
     started.pairing ?? (yield* vmFailure("T3 Code on the VM did not issue a pairing code."));
   const [httpBaseUrl] = yield* Effect.all(
@@ -710,10 +730,11 @@ export const makeSpareKeeper = () => {
     environment: string | null,
     /** The spare is kept at the holder's default size, the one most starts ask for. */
     machineType: BoatMachineType = "small",
+    signIns: VmAgentSignIns | null = null,
   ): Effect.Effect<void> =>
     Effect.suspend(() => {
       if (keeping) {
-        queued = keep(api, snapshot, environment, machineType);
+        queued = keep(api, snapshot, environment, machineType, signIns);
         return Effect.void;
       }
       keeping = true;
@@ -726,6 +747,7 @@ export const makeSpareKeeper = () => {
         held: ready,
         taken,
         created,
+        signIns,
       }).pipe(
         Effect.tap((spare) =>
           keptFor === generation
@@ -830,7 +852,11 @@ export const findSandboxByHttpBaseUrl = Effect.fn("BoatCloud.findSandboxByHttpBa
 export const wakeMachine = Effect.fn("BoatCloud.wakeMachine")(function* (
   api: BoatApi,
   sandboxId: string,
-  options?: { readonly pair?: boolean; readonly report?: ReportStep },
+  options?: {
+    readonly pair?: boolean;
+    readonly report?: ReportStep;
+    readonly signIns?: VmAgentSignIns | null;
+  },
 ) {
   const report = options?.report ?? (() => Effect.void);
   const sandbox = yield* runStep(
@@ -853,7 +879,13 @@ export const wakeMachine = Effect.fn("BoatCloud.wakeMachine")(function* (
     "server",
     null,
     Effect.gen(function* () {
-      const started = yield* startServer(api, sandboxId, options?.pair === true);
+      const started = yield* startServer(
+        api,
+        sandboxId,
+        options?.pair === true,
+        undefined,
+        options?.signIns ?? null,
+      );
       return {
         environmentId: started.environmentId,
         pairingCode: started.pairing?.code ?? null,

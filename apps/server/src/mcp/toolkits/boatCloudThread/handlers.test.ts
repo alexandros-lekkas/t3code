@@ -11,6 +11,7 @@ import {
   ProviderInstanceId,
   RunId,
   ThreadId,
+  BOAT_CLOUD_NO_LOCAL_SIGN_INS,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -84,6 +85,7 @@ const readyStatus: BoatCloudStatus = {
   defaultMachineType: "small",
   machineTypes,
   environmentUsage: [],
+  localSignIns: BOAT_CLOUD_NO_LOCAL_SIGN_INS,
 };
 
 const vmProject = {
@@ -358,7 +360,7 @@ it.effect("refuses before starting a VM when Boat cannot serve the request", () 
     });
     expect(yield* noSignIns.call({ title: "T", message: "M" })).toMatchObject({
       code: "capability_denied",
-      message: expect.stringContaining("no Claude or ChatGPT sign-in"),
+      message: expect.stringContaining("has a Claude or ChatGPT sign-in"),
     });
     const linksOff = yield* harness({ linksEnabled: false });
     expect(yield* linksOff.call({ title: "T", message: "M" })).toMatchObject({

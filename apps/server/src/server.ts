@@ -814,7 +814,9 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
 );
 
 const layerRuntimeDependencies = layerRuntimeCoreDependencies.pipe(
-  Layer.provideMerge(BoatCloud.layer.pipe(Layer.provide(ServerSecretStore.layer))),
+  Layer.provideMerge(
+    BoatCloud.layer.pipe(Layer.provide(ServerSecretStore.layer), Layer.provide(layerPtyAdapter)),
+  ),
   Layer.provideMerge(layerUsage),
   Layer.provideMerge(layerBackground),
   Layer.provideMerge(layerResourceDiagnostics),

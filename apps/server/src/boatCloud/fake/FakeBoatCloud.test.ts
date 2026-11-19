@@ -12,6 +12,7 @@ import { HttpClient, HttpClientResponse } from "effect/http";
 import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../../config.ts";
 import * as BoatCloud from "../BoatCloudService.ts";
+import * as BoatLocalSignIns from "../BoatLocalSignIns.ts";
 import { FAKE_ACCOUNT, FAKE_RUNNING_VM, FAKE_STOPPED_VM } from "./FakeBoat.ts";
 import * as FakeBoatCloud from "./FakeBoatCloud.ts";
 
@@ -77,7 +78,11 @@ it.live("uses the real service when the env var is unset", () =>
       assert.isFalse(status.connected);
       assert.isNull(status.account);
     }),
-    Effect.provide(FakeBoatCloud.layerWith(layerLocal).pipe(Layer.provide(dependencies({})))),
+    Effect.provide(
+      FakeBoatCloud.layerWith(layerLocal, BoatLocalSignIns.layerStatic(false)).pipe(
+        Layer.provide(dependencies({})),
+      ),
+    ),
   ),
 );
 
@@ -97,7 +102,7 @@ it.live.each([
         );
       }),
       Effect.provide(
-        FakeBoatCloud.layerWith(layerLocal).pipe(
+        FakeBoatCloud.layerWith(layerLocal, BoatLocalSignIns.layerStatic(false)).pipe(
           Layer.provide(
             dependencies({
               [FakeBoatCloud.FAKE_ENV_VAR]: "1",

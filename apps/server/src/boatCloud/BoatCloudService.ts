@@ -1,6 +1,7 @@
 import {
   BOAT_CLOUD_START_STEPS,
   type BoatCloudAcquireInput,
+  type BoatCloudClaudeTokenInput,
   type BoatCloudConfigureEnvironmentInput,
   type BoatCloudConfigureMachinesInput,
   type BoatCloudConnectInput,
@@ -72,6 +73,7 @@ import {
   restoreScript,
   statsScript,
   snapshotBuildOf,
+  type VmAgentSignIns,
 } from "@t3tools/shared/boatCloudVm";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -95,8 +97,11 @@ import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { forkParked } from "../serverActivation.ts";
+import { BoatLocalSignIns } from "./BoatLocalSignIns.ts";
 
 const API_KEY_SECRET = "boat-cloud-api-key";
+/** What a VM gets with this machine's sign-ins turned off: nothing, and the Codex file it left goes. */
+const NO_VM_SIGN_INS: VmAgentSignIns = { claude: null, codex: null };
 const SKILL_DIRECTORIES = [".claude/skills", ".agents/skills", ".codex/skills"];
 const IDLE_SWEEP_INTERVAL = Duration.minutes(1);
 const START_LINGER = Duration.minutes(2);
@@ -163,6 +168,7 @@ const StoredState = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed("small" as const)),
   ),
   retired: Schema.Array(RetiredMachine).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  useLocalSignIns: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
 });
 type StoredState = typeof StoredState.Type;
 const decodeStoredState = Schema.decodeUnknownOption(Schema.fromJsonString(StoredState));
@@ -281,6 +287,10 @@ export class BoatCloudService extends Context.Service<
     }) => Effect.Effect<void, BoatCloudError>;
     /** Reads every VM's usage and load now, rate-limited, and returns the status. */
     readonly refreshUsage: Effect.Effect<BoatCloudStatus>;
+    /** Makes, cancels or removes the long-lived Claude token VMs get. */
+    readonly claudeToken: (
+      input: BoatCloudClaudeTokenInput,
+    ) => Effect.Effect<BoatCloudStatus, BoatCloudError>;
   }
 >()("t3/boatCloud/BoatCloudService") {}
 
@@ -340,6 +350,7 @@ const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const runner = yield* ProcessRunner.ProcessRunner;
   const homeDirectory = yield* HostProcess.HomeDirectory;
+  const localSignIns = yield* BoatLocalSignIns;
   // Background work ends with the server, so a setup VM is deleted and the spare keeper resets.
   const scope = yield* Effect.scope;
 
@@ -366,6 +377,7 @@ const make = Effect.gen(function* () {
     keepReadyMachine: false,
     defaultMachineType: "small",
     retired: [],
+    useLocalSignIns: true,
   };
   let setup: BoatCloudSetup = { status: "idle", step: null, error: null };
   /** The saved snapshot new VMs start from, or null before setup. */
@@ -436,9 +448,16 @@ const make = Effect.gen(function* () {
     defaultMachineType: state.defaultMachineType,
     machineTypes: machineTypeOptions(null, observedMultipliers),
     environmentUsage: [],
+    localSignIns: {
+      enabled: state.useLocalSignIns,
+      available: [],
+      claudeTokenStored: false,
+      claudeTokenFlow: null,
+    },
   });
   const publish = Effect.gen(function* () {
     const connected = Option.isSome(yield* readKey);
+    const local = yield* localSignIns.current;
     yield* SubscriptionRef.set(statusRef, {
       connected,
       account: connected ? state.account : null,
@@ -461,8 +480,13 @@ const make = Effect.gen(function* () {
       defaultMachineType: state.defaultMachineType,
       machineTypes: machineTypeOptions(connected ? limits : null, observedMultipliers),
       environmentUsage: connected ? environmentUsageOf(state.machines, state.retired, stats) : [],
+      localSignIns: { enabled: state.useLocalSignIns, ...local },
     });
   });
+  /** This machine's sign-ins for a VM, read now, or none when they are turned off. */
+  const vmSignIns = Effect.suspend(() =>
+    state.useLocalSignIns ? localSignIns.forVm : Effect.succeed(NO_VM_SIGN_INS),
+  );
   /**
    * Every registry change goes through here. The update reads the state as it is under the
    * lock, so concurrent starts, wakes and sweeps never write back a stale copy. Untraced: the
@@ -990,7 +1014,9 @@ const make = Effect.gen(function* () {
         ? releaseSpares(api)
         : snapshotName === null
           ? Effect.void
-          : spares.keep(api, snapshotName, state.environment, state.defaultMachineType),
+          : Effect.flatMap(vmSignIns, (signIns) =>
+              spares.keep(api, snapshotName!, state.environment, state.defaultMachineType, signIns),
+            ),
     );
 
   const releaseSpares = (api: BoatApi) =>
@@ -1138,6 +1164,7 @@ const make = Effect.gen(function* () {
     if (boatCloudBlocker(yield* SubscriptionRef.get(statusRef)) === "no-agents") {
       return yield* new BoatCloudError({ message: BOAT_CLOUD_BLOCKER_MESSAGES["no-agents"] });
     }
+    const signIns = yield* vmSignIns;
     starts.set(input.requestId, pendingSteps());
     // When each step ended, in ms since the request, so a slow start shows where it waited.
     const startedAt = yield* Clock.currentTimeMillis;
@@ -1196,6 +1223,7 @@ const make = Effect.gen(function* () {
         shareMachines,
         machineType,
         paired: input.paired ?? [],
+        signIns,
         report: reportStep(input.requestId, markEnded),
         onAdded: addMachine,
         // Without this the sweep sees a resumed VM's old hand-out and stops it once unclaimed.
@@ -1316,6 +1344,7 @@ const make = Effect.gen(function* () {
           Effect.gen(function* () {
             const woken = yield* wakeMachine(api, sandboxId, {
               pair,
+              signIns: yield* vmSignIns,
               ...(report === undefined ? {} : { report }),
             });
             yield* updateMachine(sandboxId, {
@@ -1370,11 +1399,14 @@ const make = Effect.gen(function* () {
     const changesSpare =
       (input.defaultMachineType !== undefined &&
         input.defaultMachineType !== state.defaultMachineType) ||
-      (input.keepReadyMachine !== undefined && input.keepReadyMachine !== state.keepReadyMachine);
+      (input.keepReadyMachine !== undefined && input.keepReadyMachine !== state.keepReadyMachine) ||
+      // The spare took the sign-ins it started with.
+      (input.useLocalSignIns !== undefined && input.useLocalSignIns !== state.useLocalSignIns);
     yield* commit((current) => ({
       ...current,
       ...(input.shareMachines === undefined ? {} : { shareMachines: input.shareMachines }),
       ...(input.keepReadyMachine === undefined ? {} : { keepReadyMachine: input.keepReadyMachine }),
+      ...(input.useLocalSignIns === undefined ? {} : { useLocalSignIns: input.useLocalSignIns }),
       ...(input.defaultMachineType === undefined
         ? {}
         : { defaultMachineType: input.defaultMachineType }),
@@ -1546,7 +1578,10 @@ const make = Effect.gen(function* () {
       claimWhenFree(sandboxId),
       () =>
         Effect.gen(function* () {
-          const woken = yield* wakeMachine(api, sandboxId, { pair: false });
+          const woken = yield* wakeMachine(api, sandboxId, {
+            pair: false,
+            signIns: yield* vmSignIns,
+          });
           yield* updateMachine(sandboxId, {
             environmentId: woken.environmentId,
             httpBaseUrl: woken.httpBaseUrl,
@@ -1680,6 +1715,8 @@ const make = Effect.gen(function* () {
 
   // Opening the page refreshes from Boat in the background; the stream starts on the last known state.
   const refreshInBackground = Effect.gen(function* () {
+    // A sign-in made here since, such as a `claude auth login`, shows when the page opens.
+    yield* localSignIns.refresh;
     const key = yield* readKey;
     if (Option.isNone(key)) return;
     const api = makeBoatApi(http, key.value);
@@ -1708,6 +1745,20 @@ const make = Effect.gen(function* () {
       Effect.repeat(Schedule.spaced(STATS_REFRESH_INTERVAL)),
     ),
   );
+
+  // A token made or removed, or the sign-in's progress, shows at once.
+  yield* localSignIns.state.pipe(
+    Stream.runForEach(() => publish),
+    Effect.forkIn(scope),
+  );
+
+  const claudeToken = Effect.fn("BoatCloud.claudeToken")(function* (
+    input: BoatCloudClaudeTokenInput,
+  ) {
+    yield* localSignIns.claudeToken(input);
+    yield* publish;
+    return yield* SubscriptionRef.get(statusRef);
+  });
 
   const watch = Effect.acquireRelease(
     Effect.sync(() => {
@@ -1740,6 +1791,7 @@ const make = Effect.gen(function* () {
     wakeMachine: wakeManaged,
     deleteMachine,
     refreshUsage: refreshUsageNow,
+    claudeToken,
   });
 });
 

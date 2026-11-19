@@ -2364,6 +2364,7 @@ export const layerWsRpc = (
             .deleteMachine({ sandboxId: input.sandboxId, force: input.force === true })
             .pipe(Effect.andThen(boatCloud.refreshUsage)),
         [WS_METHODS.boatCloudRefreshUsage]: () => boatCloud.refreshUsage,
+        [WS_METHODS.boatCloudClaudeToken]: (input) => boatCloud.claudeToken(input),
         [WS_METHODS.guestShareCreate]: (input) =>
           Effect.annotateCurrentSpan({ "orchestration_v2.thread_id": input.threadId }).pipe(
             Effect.andThen(guestShares.create(input)),

@@ -19,9 +19,15 @@ and you can follow it from any client.
    change your skills or update T3 Code.
 4. Under **Boat environment**, choose the Boat environment new VMs start on. It starts on Boat's
    default, and the row says whether threads can start on it. Below it:
-   - **Agents** shows which providers the environment's sign-ins cover. A thread cannot start
-     without at least one: choose **Add sign-in** to add a Claude or ChatGPT sign-in on Boat's
+   - **Agents** shows which providers VMs can sign in: the environment's sign-ins and this
+     computer's. A thread cannot start without at least one: sign in to Claude Code or Codex here,
+     or choose **Add sign-in** to add a Claude or ChatGPT sign-in on Boat's
      [Agents & Proxying](https://boat.dev/dashboard?tab=agents) page.
+   - **Use this computer's sign-ins** (on by default) gives VMs this computer's Claude Code and
+     Codex sign-ins for any provider the Boat environment does not sign in. Your Claude login
+     reaches VMs for a few hours at a time; choose **Create token** once to sign in to Claude in
+     the browser and make a token that lasts a year. A Codex login reaches VMs for several days.
+     VMs get them each time they start or wake.
    - **GitHub** shows whether Boat's GitHub app is connected. Private repositories and pushes need
      it. If you signed in to Boat with Google or email, choose **Connect** to open Boat's
      [Environment](https://boat.dev/dashboard?tab=environment) page.
@@ -36,8 +42,8 @@ and you can follow it from any client.
 ## Start a cloud thread
 
 In a new thread, open the machine picker and choose **Boat**, or use **New Boat thread**
-in the command palette. If Boat cannot start a thread yet, for example because its environment has
-no agent sign-in, the composer says so with a link to the setting to fix. A VM starts getting ready
+in the command palette. If Boat cannot start a thread yet, for example because neither its environment
+nor this computer has an agent sign-in, the composer says so with a link to the setting to fix. A VM starts getting ready
 as soon as you pick Boat. When you send the
 first message, it shows in the thread right away, and the app lists each step as it runs: finding a
 VM, starting T3 Code, cloning or updating the repository, connecting, opening the project, and
@@ -58,8 +64,8 @@ the base branch. The thread keeps your model and access settings, and its attach
 
 The project needs a pushed Git remote: the VM clones it, so local-only branches and commits are not
 there. When an agent finishes, it commits and pushes its branch. It opens a pull request only when
-you ask. Providers on a VM use the agent sign-ins from its Boat environment, so a cloud thread only
-offers the providers those sign-ins cover.
+you ask. Providers on a VM use the agent sign-ins from its Boat environment and, where it has none,
+this computer's, so a cloud thread only offers the providers those sign-ins cover.
 
 ## When VMs stop
 

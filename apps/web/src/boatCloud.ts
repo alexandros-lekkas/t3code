@@ -27,9 +27,8 @@ import {
   isBoatCloudHttpBaseUrl,
 } from "@t3tools/contracts";
 import {
+  boatCloudAgentDrivers,
   boatCloudBlocker,
-  boatCloudChosenEnvironment,
-  boatCloudEnvironmentDrivers,
   parseRepository,
 } from "@t3tools/shared/boatCloudVm";
 import { AsyncResult, Atom } from "effect/reactivity";
@@ -125,7 +124,7 @@ export function usePrimaryBoatCloudStatus() {
 /** The providers a new Boat VM has sign-ins for, or null when Boat's credentials are unknown. */
 export function useBoatCloudProviderDrivers() {
   const { status } = usePrimaryBoatCloudStatus();
-  return boatCloudEnvironmentDrivers(boatCloudChosenEnvironment(status));
+  return boatCloudAgentDrivers(status);
 }
 
 export function boatCloudReady(status: BoatCloudStatus | null) {

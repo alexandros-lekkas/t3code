@@ -194,7 +194,74 @@ const BOAT_CREDENTIALS = [
   "GH_TOKEN GITHUB_TOKEN",
 ].join(" ");
 
+/** Changes when the holder writes Codex's login file, so the server restarts onto it. */
+const CODEX_AUTH_DIGEST = "T3_BOAT_CODEX_AUTH_DIGEST";
+/** Every variable the server imports and the snapshot drops. */
+const SERVER_CREDENTIALS = `${BOAT_CREDENTIALS} ${CODEX_AUTH_DIGEST}`;
+
 const CREDENTIALS_STAMP = '"${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/t3-boat-credentials"';
+
+const CODEX_AUTH_FILE = `${VM_HOME}/.codex/auth.json`;
+/** A login file the holder wrote carries no refresh token, which tells it apart from a VM's own login. */
+const HOLDER_CODEX_AUTH = '"refresh_token":""';
+
+/**
+ * The holder's own sign-ins for a VM's agents. Values are secrets: they travel only inside the
+ * command that starts the server, and the VM keeps them in its systemd manager's memory.
+ */
+export interface VmAgentSignIns {
+  /** Claude Code's variables, such as `CLAUDE_CODE_OAUTH_TOKEN`. */
+  readonly claude: Readonly<Record<string, string>> | null;
+  /** Codex's variables (`OPENAI_API_KEY`), or a ChatGPT login file with its refresh token emptied. */
+  readonly codex:
+    | { readonly environment: Readonly<Record<string, string>> }
+    | { readonly authFile: string }
+    | null;
+}
+
+/** Boat's variables that sign each provider in. A provider the Boat profile signs in keeps its own. */
+const BOAT_CLAUDE_SIGN_INS = [
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "CLAUDE_CODE_USE_BEDROCK",
+];
+const BOAT_CODEX_SIGN_INS = ["OPENAI_API_KEY", "CHATGPT_ACCOUNT_ID"];
+
+const VARIABLE_NAME = /^[A-Z_][A-Z0-9_]*$/u;
+const unsetIn = (names: ReadonlyArray<string>) =>
+  `[ -z "${names.map((name) => `\${${name}-}`).join("")}" ]`;
+const exportsOf = (environment: Readonly<Record<string, string>>) =>
+  Object.entries(environment)
+    .filter(([name, value]) => VARIABLE_NAME.test(name) && value !== "")
+    .map(([name, value]) => `export ${name}=${q(value)}`)
+    .join("; ");
+
+/**
+ * Sets the holder's sign-ins where Boat set none, before the server imports its variables.
+ * Never echoes a value. Codex's file is written only over one the holder wrote before.
+ */
+export function agentSignInsScript(signIns: VmAgentSignIns | null): string {
+  if (signIns === null) return "";
+  const lines: Array<string> = [];
+  const claude = signIns.claude === null ? "" : exportsOf(signIns.claude);
+  if (claude !== "") lines.push(`if ${unsetIn(BOAT_CLAUDE_SIGN_INS)}; then ${claude}; fi`);
+  const codex = signIns.codex;
+  if (codex !== null && "environment" in codex) {
+    const exports = exportsOf(codex.environment);
+    if (exports !== "") lines.push(`if ${unsetIn(BOAT_CODEX_SIGN_INS)}; then ${exports}; fi`);
+  } else if (codex === null) {
+    // Turned off, or signed out here: the file this holder left stops signing Codex in.
+    lines.push(`grep -qsF ${q(HOLDER_CODEX_AUTH)} ${CODEX_AUTH_FILE} && rm -f ${CODEX_AUTH_FILE}`);
+  } else {
+    lines.push(`if ${unsetIn(BOAT_CODEX_SIGN_INS)} && { [ ! -e ${CODEX_AUTH_FILE} ] || grep -qsF ${q(HOLDER_CODEX_AUTH)} ${CODEX_AUTH_FILE}; }; then
+  mkdir -p ${VM_HOME}/.codex
+  ( umask 077; printf '%s' ${q(codex.authFile)} > ${CODEX_AUTH_FILE}.t3 ) && mv ${CODEX_AUTH_FILE}.t3 ${CODEX_AUTH_FILE}
+  export ${CODEX_AUTH_DIGEST}="$(sha256sum ${CODEX_AUTH_FILE} | cut -c1-64)"
+fi`);
+  }
+  return lines.length === 0 ? "" : `${lines.join("\n")}\n`;
+}
 
 /**
  * Leaves the snapshot without T3 state, so every VM made from it gets its own
@@ -204,8 +271,9 @@ export const prepareSnapshotScript = `set -e
 ${prepareVmScript}
 systemctl --user stop t3code.service
 # The setup VM's credentials were imported for its server; none may be saved with the snapshot.
-systemctl --user unset-environment ${BOAT_CREDENTIALS}
+systemctl --user unset-environment ${SERVER_CREDENTIALS}
 rm -f ${CREDENTIALS_STAMP}
+grep -qsF ${q(HOLDER_CODEX_AUTH)} ${CODEX_AUTH_FILE} && rm -f ${CODEX_AUTH_FILE}
 find ${VM_HOME}/.t3/userdata -mindepth 1 -maxdepth 1 ! -name logs -exec rm -rf {} +
 rm -rf ${VM_HOME}/.t3/userdata/logs/* ${VM_HOME}/.t3/usage-host-id ${HOSTED_STAMP}
 # Fills the compile cache, so the first server start on a new VM already uses it.
@@ -263,7 +331,7 @@ export function boatCloudChosenEnvironment(status: BoatCloudStatus | null) {
  * The providers new VMs can run: null when Boat's credentials are unknown, so every
  * provider stays offered and the VM's own server decides.
  */
-export function boatCloudEnvironmentDrivers(
+function boatCloudEnvironmentDrivers(
   environment: BoatCloudEnvironment | undefined,
 ): Set<string> | null {
   return environment?.agentCredentials
@@ -271,13 +339,26 @@ export function boatCloudEnvironmentDrivers(
     : null;
 }
 
+/** The providers the holder passes its own sign-ins for, when it passes them. */
+export function boatCloudLocalDrivers(status: BoatCloudStatus | null): Set<string> {
+  const local = status?.localSignIns;
+  return new Set(local?.enabled ? local.available.map((signIn) => signIn.driver) : []);
+}
+
+/**
+ * The providers new VMs can run, from the Boat profile and the holder's own sign-ins: null
+ * when the profile's are unknown, so every provider stays offered.
+ */
+export function boatCloudAgentDrivers(status: BoatCloudStatus | null): Set<string> | null {
+  const profile = boatCloudEnvironmentDrivers(boatCloudChosenEnvironment(status));
+  return profile === null ? null : new Set([...profile, ...boatCloudLocalDrivers(status)]);
+}
+
 /** The first thing missing before a new Boat thread can start, or null when it can. */
 export function boatCloudBlocker(status: BoatCloudStatus | null): BoatCloudBlocker | null {
   if (status?.connected !== true) return "not-connected";
   if (status.setup.status !== "ready" && !status.snapshotReady) return "no-snapshot";
-  if (boatCloudEnvironmentDrivers(boatCloudChosenEnvironment(status))?.size === 0) {
-    return "no-agents";
-  }
+  if (boatCloudAgentDrivers(status)?.size === 0) return "no-agents";
   return null;
 }
 
@@ -286,7 +367,7 @@ export const BOAT_CLOUD_BLOCKER_MESSAGES: Record<BoatCloudBlocker, string> = {
   "not-connected":
     "Boat is not connected. Connect a Boat API key in Settings → Environments → Boat.",
   "no-snapshot": "Boat is still setting up. Finish setup in Settings → Environments → Boat.",
-  "no-agents": `The Boat environment has no Claude or ChatGPT sign-in, so no agent can run on its VMs. Add one at ${BOAT_AGENTS_DASHBOARD_URL}.`,
+  "no-agents": `Neither the Boat environment nor this machine has a Claude or ChatGPT sign-in, so no agent can run on its VMs. Sign in to Claude Code or Codex here, or add a sign-in at ${BOAT_AGENTS_DASHBOARD_URL}.`,
 };
 
 /**
@@ -295,7 +376,7 @@ export const BOAT_CLOUD_BLOCKER_MESSAGES: Record<BoatCloudBlocker, string> = {
  * The stamp lives in the runtime dir, which a reboot clears along with the imported values.
  * Already a few milliseconds when nothing changed, so every start runs it.
  */
-const syncCredentialsScript = `names=${q(BOAT_CREDENTIALS)}
+const syncCredentialsScript = `names=${q(SERVER_CREDENTIALS)}
 set_names=""
 for n in $names; do eval "[ -n \\"\\\${$n-}\\" ]" && set_names="$set_names $n"; done
 stamp="$(for n in $set_names; do eval "printf '%s=%s\\n' $n \\"\\\${$n}\\""; done | sha256sum | cut -c1-64)"
@@ -305,6 +386,10 @@ if [ "$stamp" != "$(cat ${CREDENTIALS_STAMP} 2>/dev/null)" ] && [ "$( { ${ACTIVE
   printf '%s' "$stamp" > ${CREDENTIALS_STAMP}
   systemctl --user try-restart t3code.service >/dev/null 2>&1 || true
 fi`;
+
+/** Brings a running VM's sign-ins up to date, restarting its server only when no turn runs. */
+export const syncSignInsScript = (signIns: VmAgentSignIns | null) =>
+  `${agentSignInsScript(signIns)}${syncCredentialsScript}\n`;
 
 /** Leaves the server's descriptor in `$out` once it answers, polling often since every start waits on it. */
 const WAIT_SERVER_SCRIPT = `up=""
@@ -321,10 +406,10 @@ export const NOT_HOSTED_MARKER = "--- t3 not hosted ---";
  * Prepares the VM, starts the server and prints its descriptor once it answers and its port
  * is hosted. Hosting takes a few milliseconds once done since boot.
  */
-const ensureServerScript = `( set -e
+const ensureServerScript = (signIns: VmAgentSignIns | null) => `( set -e
 ${prepareVmScript}
 ) >&2 || { echo "Could not prepare this VM." >&2; exit 1; }
-${syncCredentialsScript}
+${agentSignInsScript(signIns)}${syncCredentialsScript}
 systemctl --user start t3code.service >/dev/null 2>&1 || true
 ${WAIT_SERVER_SCRIPT}
 systemctl --user start t3-boat-host.service >/dev/null 2>&1 || echo ${q(NOT_HOSTED_MARKER)}
@@ -377,10 +462,14 @@ ${STOCK_VALID_FUNCTION}
  * so a start needs one command on the VM. The code stays valid at least `minutes`. It takes
  * the stocked code when that holds, moving it away first so no two starts get the same one.
  */
-export const startServerScript = (pairingLabel: string | null, minutes = 10) =>
+export const startServerScript = (
+  pairingLabel: string | null,
+  minutes = 10,
+  signIns: VmAgentSignIns | null = null,
+) =>
   pairingLabel === null
-    ? ensureServerScript
-    : `${ensureServerScript}
+    ? ensureServerScript(signIns)
+    : `${ensureServerScript(signIns)}
 ${STOCK_VALID_FUNCTION}
 taken=${PAIRING_STOCK}.$$
 if mv ${PAIRING_STOCK} "$taken" 2>/dev/null && stock_valid "$taken" ${minutes}; then

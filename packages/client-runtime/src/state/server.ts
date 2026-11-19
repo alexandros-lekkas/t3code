@@ -1913,6 +1913,10 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:boat-cloud:refresh-usage",
       tag: WS_METHODS.boatCloudRefreshUsage,
     }),
+    boatCloudClaudeToken: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:boat-cloud:claude-token",
+      tag: WS_METHODS.boatCloudClaudeToken,
+    }),
     acquireBoatCloud: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:boat-cloud:acquire",
       tag: WS_METHODS.boatCloudAcquire,

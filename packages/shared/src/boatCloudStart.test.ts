@@ -192,6 +192,28 @@ describe("startMachine on a running VM", () => {
   );
 });
 
+describe("the holder's sign-ins", () => {
+  it.effect("reach the VM's server in its start command, and no other command", () =>
+    Effect.gen(function* () {
+      const vm = runningVm("env-1");
+      const started = yield* startMachine({
+        api: vm.api,
+        repository,
+        baseBranch: null,
+        environment: "base",
+        snapshot: SNAPSHOT,
+        knownWorkspaceRoots: () => [],
+        signIns: { claude: { CLAUDE_CODE_OAUTH_TOKEN: "dummy-claude-token" }, codex: null },
+        report: () => Effect.void,
+      });
+      yield* started.checkout;
+      const carrying = vm.commands.filter((command) => command.includes("dummy-claude-token"));
+      assert.strictEqual(carrying.length, 1);
+      assert.include(carrying[0], "systemctl --user import-environment");
+    }),
+  );
+});
+
 describe("startMachine with one job per VM", () => {
   it.effect(
     "creates a VM instead of joining a free one that serves a thread, without probing it",
