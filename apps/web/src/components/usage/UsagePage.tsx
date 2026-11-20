@@ -409,6 +409,12 @@ export function UsagePage() {
             )}
             hideCompute={hideCompute}
             onChangeCompute={(hidden) => updatePreferences({ hideCompute: hidden })}
+            onChangeAll={(hidden) =>
+              updatePreferences({
+                hiddenProviders: hidden ? PROVIDER_ORDER : [],
+                hideCompute: hidden,
+              })
+            }
           />
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
@@ -1486,6 +1492,7 @@ function UsageProviderFilter({
   hasCompute,
   hideCompute,
   onChangeCompute,
+  onChangeAll,
 }: {
   readonly hiddenProviders: ReadonlySet<UsageProviderKind>;
   readonly onChange: (hiddenProviders: readonly UsageProviderKind[]) => void;
@@ -1493,6 +1500,8 @@ function UsageProviderFilter({
   readonly hasCompute: boolean;
   readonly hideCompute: boolean;
   readonly onChangeCompute: (hidden: boolean) => void;
+  /** Shows or hides every series in one update; two separate updates would overwrite each other. */
+  readonly onChangeAll: (hidden: boolean) => void;
 }) {
   const gt = useGT();
   const offered: readonly UsageSeriesKind[] = hasCompute
@@ -1527,10 +1536,7 @@ function UsageProviderFilter({
         <MenuCheckboxItem
           checked={visible.length === offered.length}
           closeOnClick={false}
-          onCheckedChange={(checked) => {
-            onChange(checked ? [] : PROVIDER_ORDER);
-            if (hasCompute) onChangeCompute(!checked);
-          }}
+          onCheckedChange={(checked) => onChangeAll(!checked)}
         >
           <T>All providers</T>
         </MenuCheckboxItem>
