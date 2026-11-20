@@ -232,12 +232,30 @@ describe("pickMachine", () => {
 
 describe("parseIdleProbe", () => {
   it("counts from the later of the last activity and the hand-out, and never while busy", () => {
-    assert.deepStrictEqual(parseIdleProbe("0 2 700\n", 900), { idleSeconds: 700, threads: 2 });
-    assert.deepStrictEqual(parseIdleProbe("0 2 700", 120), { idleSeconds: 120, threads: 2 });
-    assert.deepStrictEqual(parseIdleProbe("0 - \n", 300), { idleSeconds: 300, threads: null });
-    assert.deepStrictEqual(parseIdleProbe("1 0 0", 900), { idleSeconds: null, threads: 0 });
+    const open = { threads: 2, settledSeconds: null };
+    assert.deepStrictEqual(parseIdleProbe("0 2 700 -\n", 900), { idleSeconds: 700, ...open });
+    assert.deepStrictEqual(parseIdleProbe("0 2 700 -", 120), { idleSeconds: 120, ...open });
+    assert.deepStrictEqual(parseIdleProbe("0 - - -\n", 300), {
+      idleSeconds: 300,
+      threads: null,
+      settledSeconds: null,
+    });
+    assert.deepStrictEqual(parseIdleProbe("1 0 0 -", 900), {
+      idleSeconds: null,
+      threads: 0,
+      settledSeconds: null,
+    });
     assert.isNull(parseIdleProbe("", 900));
-    assert.isNull(parseIdleProbe("2 0", 900));
+    assert.isNull(parseIdleProbe("2 0 - -", 900));
+    assert.isNull(parseIdleProbe("0 1", 900));
+  });
+
+  it("reads how long ago the last thread was settled", () => {
+    assert.deepStrictEqual(parseIdleProbe("0 2 700 45", 900), {
+      idleSeconds: 700,
+      threads: 2,
+      settledSeconds: 45,
+    });
   });
 });
 
@@ -251,7 +269,7 @@ describe.skipIf(!hasSqlite)("idleScript", () => {
     const sql = (statement: string) =>
       NodeChildProcess.spawnSync("sqlite3", [db, statement], { encoding: "utf8" });
     sql(
-      "CREATE TABLE orchestration_v2_projection_runs (run_id TEXT, status TEXT, requested_at TEXT); CREATE TABLE orchestration_v2_projection_threads (thread_id TEXT, deleted_at TEXT)",
+      "CREATE TABLE orchestration_v2_projection_runs (run_id TEXT, status TEXT, requested_at TEXT); CREATE TABLE orchestration_v2_projection_threads (thread_id TEXT, deleted_at TEXT, payload_json TEXT DEFAULT '{}')",
     );
     setup(home, db);
     const result = NodeChildProcess.spawnSync(
@@ -271,10 +289,10 @@ describe.skipIf(!hasSqlite)("idleScript", () => {
     const output = runIdle((_home, db) =>
       insert(
         db,
-        `INSERT INTO orchestration_v2_projection_runs VALUES ('r1', 'running', '${at(60)}'); INSERT INTO orchestration_v2_projection_threads VALUES ('t1', NULL), ('t2', '${at(10)}')`,
+        `INSERT INTO orchestration_v2_projection_runs VALUES ('r1', 'running', '${at(60)}'); INSERT INTO orchestration_v2_projection_threads (thread_id, deleted_at) VALUES ('t1', NULL), ('t2', '${at(10)}')`,
       ),
     );
-    assert.match(output, /^1 1 \d+$/u);
+    assert.match(output, /^1 1 \d+ -$/u);
   });
 
   it("stops renewing a turn no one asked for within the unattended cap", () => {
@@ -284,7 +302,35 @@ describe.skipIf(!hasSqlite)("idleScript", () => {
         `INSERT INTO orchestration_v2_projection_runs VALUES ('r1', 'running', '${at(7 * 3600)}')`,
       ),
     );
-    assert.strictEqual(output, "0 0");
+    assert.strictEqual(output, "0 0 - -");
+  });
+
+  const thread = (id: string, payload: object, deletedAt: string | null = null) =>
+    `INSERT INTO orchestration_v2_projection_threads VALUES ('${id}', ${deletedAt === null ? "NULL" : `'${deletedAt}'`}, '${JSON.stringify(payload)}')`;
+  const settled = (secondsAgo: number) => ({
+    settledOverride: "settled",
+    settledAt: at(secondsAgo),
+    lineage: { relationshipToParent: null },
+  });
+
+  it("times the last settle once every thread but subagents and deleted ones is settled", () => {
+    const output = runIdle((_home, db) => {
+      insert(db, thread("t1", settled(600)));
+      insert(db, thread("t2", settled(120)));
+      insert(db, thread("sub", { lineage: { relationshipToParent: "subagent" } }));
+      insert(db, thread("gone", { settledOverride: null }, at(10)));
+    });
+    const seconds = Number(/^0 3 - (\d+)$/u.exec(output)?.[1]);
+    assert.isAtLeast(seconds, 119);
+    assert.isAtMost(seconds, 125);
+  });
+
+  it("does not call a VM settled while one thread on it is open", () => {
+    const output = runIdle((_home, db) => {
+      insert(db, thread("t1", settled(600)));
+      insert(db, thread("t2", { settledOverride: null, settledAt: null }));
+    });
+    assert.strictEqual(output, "0 2 - -");
   });
 
   it("counts a terminal that just wrote, and knows no threads without the table", () => {
@@ -295,7 +341,7 @@ describe.skipIf(!hasSqlite)("idleScript", () => {
       NodeFS.mkdirSync(terminals, { recursive: true });
       NodeFS.writeFileSync(NodePath.join(terminals, "thread-1.log"), "$ npm run dev");
     });
-    assert.match(output, /^1 - \d+$/u);
+    assert.match(output, /^1 - \d+ -$/u);
   });
 });
 

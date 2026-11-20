@@ -133,14 +133,6 @@ export function mergeBoatCloudMachines(
   return [...bySandbox.values()];
 }
 
-/** The oldest cost read among the VMs, which is how fresh the figures are. */
-export function boatCloudUsageUpdatedAt(machines: ReadonlyArray<BoatCloudMachine>): string | null {
-  return (
-    machines.flatMap((machine) => (machine.usage ? [machine.usage.updatedAt] : [])).sort()[0] ??
-    null
-  );
-}
-
 /** `$0.018/h`, with `~` when worked out from Boat's base rate rather than quoted. */
 export function formatBoatCloudHourly(
   option: BoatCloudMachineTypeOption | undefined,

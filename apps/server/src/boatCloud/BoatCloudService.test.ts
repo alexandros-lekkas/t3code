@@ -233,7 +233,7 @@ it.layer(dependencies)("BoatCloudService", (it) => {
             );
           }
           // Both VMs are idle, so the sweep stops each one no start holds.
-          if (script.includes("deleted_at IS NULL")) return Effect.succeed("0 1\n");
+          if (script.includes("deleted_at IS NULL")) return Effect.succeed("0 1 - -\n");
           return Effect.succeed("");
         },
         (call) =>
@@ -261,6 +261,57 @@ it.layer(dependencies)("BoatCloudService", (it) => {
       assert.strictEqual(session.sandboxId, "vm-1");
       assert.notInclude(boat.calls, "POST /sandboxes/vm-1/stop");
     }),
+  );
+
+  it.effect(
+    "stops a VM once every thread on it is settled, without waiting out the idle time",
+    () =>
+      Effect.gen(function* () {
+        // Handed out ten minutes before the test clock starts, so none is idle long enough yet.
+        const recent = (sandboxId: string) => ({
+          ...storedMachine(sandboxId, null, "base"),
+          acquiredAt: "1969-12-31T23:50:00.000Z",
+        });
+        yield* seed([
+          recent("vm-settled"),
+          recent("vm-open"),
+          recent("vm-reread"),
+          recent("vm-last"),
+        ]);
+        const swept = yield* Deferred.make<void>();
+        const probes: Record<string, string> = {
+          "vm-settled": "0 2 300 90\n",
+          "vm-open": "0 2 300 -\n",
+          // Settled before its hand-out: someone woke it to read a settled thread.
+          "vm-reread": "0 1 300 5000\n",
+          "vm-last": "0 1 300 -\n",
+        };
+        const boat = fakeBoat(
+          Object.fromEntries(
+            Object.keys(probes).map((id) => [
+              id,
+              { state: "ready", environment: "base", name: "Boat cloud" },
+            ]),
+          ),
+          (sandboxId, script) => {
+            if (!script.includes("deleted_at IS NULL")) return Effect.succeed("");
+            return sandboxId === "vm-last"
+              ? Deferred.succeed(swept, undefined).pipe(Effect.as(probes[sandboxId]!))
+              : Effect.succeed(probes[sandboxId]!);
+          },
+        );
+
+        yield* withService(boat.http, () =>
+          Effect.gen(function* () {
+            yield* TestClock.adjust(Duration.minutes(1));
+            yield* Deferred.await(swept);
+          }),
+        );
+
+        assert.include(boat.calls, "POST /sandboxes/vm-settled/stop");
+        assert.notInclude(boat.calls, "POST /sandboxes/vm-open/stop");
+        assert.notInclude(boat.calls, "POST /sandboxes/vm-reread/stop");
+      }),
   );
 
   it.effect(

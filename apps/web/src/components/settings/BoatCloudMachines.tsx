@@ -1,9 +1,15 @@
-import type { BoatCloudMachine, BoatCloudStatus, EnvironmentId } from "@t3tools/contracts";
+import {
+  type BoatCloudMachine,
+  type BoatCloudStatus,
+  type EnvironmentId,
+  boatCloudUsageReadAt,
+} from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
 import { msg, T, useGT, useMessages } from "gt-react";
 import { MoreVertical, RefreshCwIcon } from "lucide-react";
 import { useState } from "react";
 
+import { cn } from "~/lib/utils";
 import { useNowMinute } from "../../hooks/useNowMinute";
 import { useVisibleThreadShells } from "../../state/entities";
 import { boatCloudMachineOfThread } from "../../boatCloudMachines.logic";
@@ -37,6 +43,14 @@ const MACHINE_STATE: Record<BoatCloudMachine["state"], string> = {
   starting: msg("Waking", { $context: "VM state" }),
   stopped: msg("Sleeping", { $context: "VM state" }),
   gone: msg("Saved copy", { $context: "VM state" }),
+};
+
+/** Green while the VM runs and bills, amber while it wakes, muted while it sleeps. */
+const MACHINE_STATE_DOT: Record<BoatCloudMachine["state"], string> = {
+  running: "bg-success",
+  starting: "bg-warning",
+  stopped: "bg-muted-foreground/40",
+  gone: "bg-muted-foreground/40",
 };
 
 const repositoryName = (repository: string) => repository.split("/").slice(1).join("/");
@@ -103,8 +117,7 @@ function MachineRow({
   // The environment's figure is read with the usage refresh; the VM's own only after a reconcile.
   const usage =
     environmentUsage.find((entry) => entry.sandboxId === machine.sandboxId) ?? machine.usage;
-  const description = [
-    m(state),
+  const details = [
     sizeLine(machine) || null,
     option === undefined ? null : formatHourlyPrice(option),
     usage === null ? null : formatBoatCloudCost(usage.seconds, usage.dollars),
@@ -140,7 +153,15 @@ function MachineRow({
           ) : null}
         </span>
       }
-      description={description}
+      description={
+        <span className="flex items-center gap-1.5">
+          <span
+            aria-hidden
+            className={cn("size-1.5 shrink-0 rounded-full", MACHINE_STATE_DOT[machine.state])}
+          />
+          {[m(state), details].filter(Boolean).join(" · ")}
+        </span>
+      }
       control={
         <Menu>
           <MenuTrigger
@@ -257,10 +278,7 @@ export function BoatCloudMachinesSection({
     readonly machine: BoatCloudMachine;
     readonly name: string;
   } | null>(null);
-  const updatedAt = status.machines
-    .flatMap((machine) => (machine.usage ? [machine.usage.updatedAt] : []))
-    .toSorted()
-    .at(0);
+  const updatedAt = boatCloudUsageReadAt(status.machines);
   return (
     <SettingsSection
       id="boat-cloud-machines"

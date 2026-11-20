@@ -97,6 +97,8 @@ interface FakeSandbox {
   threads?: number;
   /** A turn runs on it, so its keepalive renews the lease and the idle check reads it busy. */
   busy?: boolean;
+  /** Epoch ms of the last settle once every thread on it is settled; absent while one is open. */
+  settledAt?: number;
 }
 
 interface FakeSnapshot {
@@ -398,7 +400,11 @@ export const makeFakeBoat = Effect.fn("FakeBoat.make")(function* (options: FakeB
     }
     if (command === idleScript) {
       // No turn runs on a fake VM; it idles from its last hand-out.
-      return `${sandbox.busy === true ? 1 : 0} ${sandbox.threads ?? "-"} ${Math.max(0, Math.round((now - sandbox.lastActive) / 1000))}\n`;
+      const settled =
+        sandbox.settledAt === undefined
+          ? "-"
+          : Math.max(0, Math.round((now - sandbox.settledAt) / 1000));
+      return `${sandbox.busy === true ? 1 : 0} ${sandbox.threads ?? "-"} ${Math.max(0, Math.round((now - sandbox.lastActive) / 1000))} ${settled}\n`;
     }
     if (command.includes("projection_projects")) {
       // The checkout: fetch, worktree, project.

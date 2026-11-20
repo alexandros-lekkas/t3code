@@ -71,7 +71,8 @@ this computer's, so a cloud thread only offers the providers those sign-ins cove
 
 A VM turns off once none of its threads has run a turn for 10 minutes. A connected machine holding
 the key stops it a minute early and first saves a copy of the VM's threads, provider sessions, and
-checkouts. A thread on a stopped VM shows it as sleeping. Your next message turns the same VM back
+checkouts. Settling every thread on a VM stops it the same way about a minute later, without the
+wait. A thread on a stopped VM shows it as sleeping. Your next message turns the same VM back
 on and the thread continues. If Boat deleted the VM, a new one starts from the saved copy.
 **Machines**, in **Settings → Boat**, lists each VM by its
 threads, with its size and cost, and lets you stop, wake or delete it. VMs are not listed with your

@@ -1,7 +1,11 @@
 import { useAtomValue } from "@effect/atom-react";
 import type { MenuAction } from "@react-native-menu/menu";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
-import type { BoatCloudMachineTypeOption } from "@t3tools/contracts";
+import {
+  type BoatCloudMachine,
+  type BoatCloudMachineTypeOption,
+  boatCloudUsageReadAt,
+} from "@t3tools/contracts";
 import { useGT, useMessages } from "gt-react-native";
 import { useEffect, useState } from "react";
 import { View } from "react-native";
@@ -16,6 +20,7 @@ import { cn } from "../../lib/cn";
 import { serverEnvironment } from "../../state/server";
 import { environmentThreadShells } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { useAppearancePreferences } from "./appearance/AppearancePreferencesProvider";
 import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
 import { useVisibleSecondClock } from "../threads/use-visible-second-clock";
 import {
@@ -28,7 +33,6 @@ import {
   type BoatCloudManagedMachine,
   boatCloudMachineEnvironments,
   boatCloudThreadsByMachine,
-  boatCloudUsageUpdatedAt,
   formatBoatCloudCost,
   formatBoatCloudHourly,
   isBoatCloudMachineType,
@@ -55,6 +59,20 @@ function UpdatedLabel(props: { readonly updatedAt: string }) {
     return <>{gt("Updated {minutes} min ago", { minutes: Math.floor(seconds / 60) })}</>;
   }
   return <>{gt("Updated {hours} h ago", { hours: Math.floor(seconds / 3600) })}</>;
+}
+
+/** Green while the VM runs and bills, amber while it wakes, muted while it sleeps. */
+function MachineStateDot(props: { readonly state: BoatCloudMachine["state"] }) {
+  const { themeAppearance, themeVariables } = useAppearancePreferences();
+  const backgroundColor =
+    props.state === "running"
+      ? themeAppearance === "dark"
+        ? "#34d399"
+        : "#059669"
+      : props.state === "starting"
+        ? themeVariables["--color-warning-foreground"]
+        : themeVariables["--color-icon-muted"];
+  return <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor }} />;
 }
 
 function MachineRow(props: {
@@ -171,9 +189,12 @@ function MachineRow(props: {
           </Text>
         ) : null}
       </View>
-      <Text textRole="footnote" className="shrink-0 text-foreground-muted" numberOfLines={1}>
-        {m(BOAT_CLOUD_MACHINE_STATE_LABELS[machine.state])}
-      </Text>
+      <View className="shrink-0 flex-row items-center gap-1.5">
+        <MachineStateDot state={machine.state} />
+        <Text textRole="footnote" className="text-foreground-muted" numberOfLines={1}>
+          {m(BOAT_CLOUD_MACHINE_STATE_LABELS[machine.state])}
+        </Text>
+      </View>
       <Menu
         accessible
         accessibilityRole="button"
@@ -247,7 +268,7 @@ export function BoatCloudMachinesSection() {
       holders[0]?.status;
     return status?.machineTypes.find((option) => option.id === managed.machine.machineType);
   };
-  const updatedAt = boatCloudUsageUpdatedAt(machines.map((entry) => entry.machine));
+  const updatedAt = boatCloudUsageReadAt(machines.map((entry) => entry.machine));
 
   const refresh = async () => {
     setRefreshing(true);

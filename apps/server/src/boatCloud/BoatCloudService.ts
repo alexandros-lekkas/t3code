@@ -128,6 +128,11 @@ const START_LINGER = Duration.minutes(2);
  */
 const idleStopSecondsOf = (ttlSeconds: number) => ttlSeconds - 180;
 /**
+ * A VM whose threads are all settled is backed up and stopped this long after the last settle,
+ * without waiting out the idle time. The wait leaves room to take a settle back.
+ */
+const SETTLED_STOP_SECONDS = 60;
+/**
  * How often VMs T3 made and no longer needs are looked for: stopped ones past their
  * retention, leftovers of a setup or a start that never finished, and stopped spares.
  * The first pass runs with the first idle sweep, a minute after the server starts.
@@ -1180,7 +1185,7 @@ const make = Effect.gen(function* () {
         threadedAt.get(machine.sandboxId) !== machine.acquiredAt &&
         handedOutSecondsAgo * 1000 >= UNUSED_START_MS &&
         nowMillis >= (heldUntil.get(machine.sandboxId) ?? 0);
-      if (handedOutSecondsAgo < idleStopSeconds && !maybeUnused) continue;
+      const due = handedOutSecondsAgo >= idleStopSeconds;
       const probe = yield* exec(api, machine.sandboxId, idleScript, 30).pipe(
         Effect.map((output) => parseIdleProbe(output, handedOutSecondsAgo)),
         // A VM that cannot answer is not provably idle.
@@ -1192,6 +1197,7 @@ const make = Effect.gen(function* () {
       if (probe === null || probe.idleSeconds === null) continue;
       // No thread came of its start, or every thread it served was deleted: nothing on it is wanted.
       if (probe.threads === 0) {
+        if (!due && !maybeUnused) continue;
         yield* reap(
           api,
           machine.sandboxId,
@@ -1202,7 +1208,12 @@ const make = Effect.gen(function* () {
         );
         continue;
       }
-      if (handedOutSecondsAgo < idleStopSeconds || probe.idleSeconds < idleStopSeconds) continue;
+      // Settled before this hand-out means someone woke it to read; that waits out the idle time.
+      const settled =
+        probe.settledSeconds !== null &&
+        probe.settledSeconds >= SETTLED_STOP_SECONDS &&
+        probe.settledSeconds < handedOutSecondsAgo;
+      if (!settled && (!due || probe.idleSeconds < idleStopSeconds)) continue;
       yield* backupAndStop(api, machine);
     }
     const nowMs = yield* Clock.currentTimeMillis;

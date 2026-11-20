@@ -142,6 +142,22 @@ export const BoatCloudMachine = Schema.Struct({
 export type BoatCloudMachine = typeof BoatCloudMachine.Type;
 
 /**
+ * How fresh the listed costs are: the oldest read among the VMs still being billed. A stopped
+ * VM's figure is final and never read again, so it does not age the list; null when none runs.
+ */
+export function boatCloudUsageReadAt(machines: ReadonlyArray<BoatCloudMachine>): string | null {
+  return (
+    machines
+      .flatMap((machine) =>
+        machine.usage !== null && (machine.state === "running" || machine.state === "starting")
+          ? [machine.usage.updatedAt]
+          : [],
+      )
+      .sort()[0] ?? null
+  );
+}
+
+/**
  * Starting a thread on Boat cloud, in order. `server` and `repository` run at
  * the same time; the holder reports the first three and the client the rest.
  * Acquire returns once the server is up, so `repository` can still be running.

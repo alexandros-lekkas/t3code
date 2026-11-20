@@ -49,7 +49,9 @@ export const machineNameOf = (what: string) => {
     .trim();
   const name = `T3 · ${cleaned === "" ? "thread" : cleaned}`;
   const chars = [...name];
-  return chars.length <= MAX_NAME_LENGTH ? name : `${chars.slice(0, MAX_NAME_LENGTH - 1).join("")}…`;
+  return chars.length <= MAX_NAME_LENGTH
+    ? name
+    : `${chars.slice(0, MAX_NAME_LENGTH - 1).join("")}…`;
 };
 /**
  * One running VM, the smallest size, kept ready from the snapshot with its server up so a
@@ -158,15 +160,24 @@ busy=""
 active=0
 [ -n "$attended" ] && [ -n "$busy" ] && active=1 && date +%s > ${LAST_ACTIVE_PATH}`;
 
+const THREADS = "orchestration_v2_projection_threads";
 /**
- * Prints `<active> <live threads> <seconds since last active>`, each unknown one as `-`.
- * Live threads are those not deleted; no table (an older T3) reads as unknown. The VM's
- * own clock measures the idle time, so holder clock skew does not matter.
+ * Seconds since the last settle when every thread someone opened (subagents follow their
+ * parent) is settled; nothing while one is open, none exist, or an older T3 cannot say.
+ */
+const SETTLED_QUERY = `SELECT CASE WHEN sum(json_extract(payload_json, '\\$.settledOverride') IS NOT 'settled') = 0 THEN CAST(strftime('%s', 'now') AS INTEGER) - max(CAST(strftime('%s', json_extract(payload_json, '\\$.settledAt')) AS INTEGER)) END FROM ${THREADS} WHERE deleted_at IS NULL AND json_extract(payload_json, '\\$.lineage.relationshipToParent') IS NOT 'subagent'`;
+
+/**
+ * Prints `<active> <live threads> <seconds since last active> <seconds since all settled>`,
+ * each unknown one as `-`. Live threads are those not deleted; no table (an older T3) reads
+ * as unknown. The VM's own clock measures the times, so holder clock skew does not matter.
  */
 export const idleScript = `${READ_ACTIVE}
-threads="$(sqlite3 -readonly "$db" "SELECT count(*) FROM orchestration_v2_projection_threads WHERE deleted_at IS NULL" 2>/dev/null)"
+threads="$(sqlite3 -readonly "$db" "SELECT count(*) FROM ${THREADS} WHERE deleted_at IS NULL" 2>/dev/null)"
+settled="$(sqlite3 -readonly "$db" "${SETTLED_QUERY}" 2>/dev/null)"
 last="$(cat ${LAST_ACTIVE_PATH} 2>/dev/null)"
-printf '%s %s %s\\n' "$active" "\${threads:--}" "\${last:+$(( $(date +%s) - last ))}"`;
+[ -n "$last" ] && last=$(( $(date +%s) - last ))
+printf '%s %s %s %s\\n' "$active" "\${threads:--}" "\${last:--}" "\${settled:--}"`;
 
 const KEEPALIVE_PATH = `${VM_HOME}/.t3-boat-keepalive.sh`;
 const UNIT_DIRECTORY = `${VM_HOME}/.config/systemd/user`;
@@ -454,8 +465,7 @@ export function boatCloudBlocker(status: BoatCloudStatus | null): BoatCloudBlock
 
 /** The blocker as the server and agents read it. Clients show their own translated text. */
 export const BOAT_CLOUD_BLOCKER_MESSAGES: Record<BoatCloudBlocker, string> = {
-  "not-connected":
-    "Boat is not connected. Connect a Boat API key in Settings → Boat.",
+  "not-connected": "Boat is not connected. Connect a Boat API key in Settings → Boat.",
   "no-snapshot": "Boat is still setting up. Finish setup in Settings → Boat.",
   "no-agents": `Neither the Boat environment nor this machine has a Claude or ChatGPT sign-in, so no agent can run on its VMs. Sign in to Claude Code or Codex here, or add a sign-in at ${BOAT_AGENTS_DASHBOARD_URL}.`,
 };
@@ -1037,17 +1047,23 @@ export interface IdleProbe {
   readonly idleSeconds: number | null;
   /** Threads on the VM that were not deleted; null when the VM could not say. */
   readonly threads: number | null;
+  /**
+   * How long ago the last of its threads was settled, when every one is. Null while a thread
+   * is open or the VM could not say.
+   */
+  readonly settledSeconds: number | null;
 }
 
 /** Reads `idleScript` output; null when the VM did not answer, so it stays on. */
 export function parseIdleProbe(output: string, startedSecondsAgo: number): IdleProbe | null {
-  const match = /^([01])[ \t]+(\d+|-)(?:[ \t]+(\d+))?\s*$/u.exec(output.trim());
+  const match = /^([01])[ \t]+(\d+|-)[ \t]+(\d+|-)[ \t]+(\d+|-)$/u.exec(output.trim());
   if (match === null) return null;
   const threads = match[2] === "-" ? null : Number(match[2]);
-  if (match[1] !== "0") return { idleSeconds: null, threads };
+  const settledSeconds = match[4] === "-" ? null : Number(match[4]);
+  if (match[1] !== "0") return { idleSeconds: null, threads, settledSeconds };
   const idleSeconds =
-    match[3] === undefined ? startedSecondsAgo : Math.min(Number(match[3]), startedSecondsAgo);
-  return { idleSeconds, threads };
+    match[3] === "-" ? startedSecondsAgo : Math.min(Number(match[3]), startedSecondsAgo);
+  return { idleSeconds, threads, settledSeconds };
 }
 
 export function machineStateOf(sandboxState: string): "running" | "starting" | "stopped" {
