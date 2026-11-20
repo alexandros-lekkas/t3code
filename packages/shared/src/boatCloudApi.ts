@@ -5,6 +5,7 @@ import * as Schema from "effect/Schema";
 import { HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/http";
 import {
   BOAT_CLOUD_MACHINE_TYPES,
+  type BoatCloudCredit,
   type BoatCloudEnvironment,
   type BoatCloudMachineType,
   type BoatCloudMachineTypeOption,
@@ -258,8 +259,65 @@ export const BoatLimits = Schema.Struct({
   ),
   /** What a dollar buys of plan credit, in default-size VM seconds. */
   creditSecondsPerDollar: Schema.optional(Schema.NullOr(Schema.Number)),
+  /** Plan and bought credit left, in default-size VM seconds. */
+  creditBalanceSeconds: Schema.optional(Schema.NullOr(Schema.Number)),
+  activeSandboxPlanKey: Schema.optional(Schema.NullOr(Schema.String)),
+  sandboxPlanDollars: Schema.optional(Schema.NullOr(Schema.Number)),
+  creditUsedSeconds: Schema.optional(Schema.NullOr(Schema.Number)),
+  packBalanceSeconds: Schema.optional(Schema.NullOr(Schema.Number)),
+  subscriptionQuotaSeconds: Schema.optional(Schema.NullOr(Schema.Number)),
+  subscriptionRemainingSeconds: Schema.optional(Schema.NullOr(Schema.Number)),
+  subscriptionCurrentPeriodEnd: Schema.optional(Schema.NullOr(Schema.String)),
+  last24hUsageSeconds: Schema.optional(Schema.NullOr(Schema.Number)),
+  canStart: Schema.optional(Schema.NullOr(Schema.Boolean)),
+  blockedReason: Schema.optional(Schema.NullOr(Schema.String)),
+  keepGoing: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        available: Schema.optional(Schema.NullOr(Schema.Boolean)),
+        enabled: Schema.optional(Schema.NullOr(Schema.Boolean)),
+        usedDollars: Schema.optional(Schema.NullOr(Schema.Number)),
+        capDollars: Schema.optional(Schema.NullOr(Schema.Number)),
+      }),
+    ),
+  ),
 });
 export type BoatLimits = typeof BoatLimits.Type;
+
+/** Boat names plans by monthly price, such as `box_20`; any other key has no known price. */
+const planDollarsOfKey = (key: string | null | undefined) => {
+  const match = key ? /^box_(\d+)$/u.exec(key) : null;
+  return match ? Number(match[1]) : null;
+};
+
+/** The account's VM time left, or null when Boat's limits do not carry a balance. */
+export function creditOf(limits: BoatLimits | null): BoatCloudCredit | null {
+  if (limits?.creditBalanceSeconds === undefined || limits.creditBalanceSeconds === null) {
+    return null;
+  }
+  const keepGoing = limits.keepGoing;
+  return {
+    balanceSeconds: limits.creditBalanceSeconds,
+    planSeconds: limits.subscriptionQuotaSeconds ?? null,
+    planRemainingSeconds: limits.subscriptionRemainingSeconds ?? null,
+    planDollars: limits.sandboxPlanDollars ?? planDollarsOfKey(limits.activeSandboxPlanKey),
+    periodEnd: limits.subscriptionCurrentPeriodEnd ?? null,
+    purchasedRemainingSeconds: limits.packBalanceSeconds ?? 0,
+    usedSeconds: limits.creditUsedSeconds ?? 0,
+    last24hSeconds: limits.last24hUsageSeconds ?? 0,
+    secondsPerDollar: limits.creditSecondsPerDollar ?? 100_000,
+    canStart: limits.canStart ?? true,
+    blockedReason: limits.blockedReason ?? null,
+    overage:
+      keepGoing === undefined || keepGoing === null || keepGoing.available === false
+        ? null
+        : {
+            enabled: keepGoing.enabled ?? false,
+            usedDollars: keepGoing.usedDollars ?? 0,
+            capDollars: keepGoing.capDollars ?? 0,
+          },
+  };
+}
 
 /**
  * Every size with its hourly price: Boat's VM-hour price times the billing multiplier Boat

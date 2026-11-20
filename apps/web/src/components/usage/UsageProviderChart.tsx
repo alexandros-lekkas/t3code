@@ -1,9 +1,7 @@
-import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
-import type { UsageProviderKind } from "@t3tools/contracts";
 import { T, useGT, useLocale, useMessages } from "gt-react";
 import { useLayoutEffect, useRef, useState } from "react";
 
-import type { DailyTotals, HourlyTotals } from "@t3tools/shared/usageMerge";
+import type { ComputeFigures, DailyTotals, HourlyTotals } from "@t3tools/shared/usageMerge";
 import {
   formatDayShort,
   formatHourShort,
@@ -12,24 +10,35 @@ import {
 } from "@t3tools/shared/usageFormat";
 import { formatRelativeHourShort } from "@t3tools/shared/usageFormatCopy";
 import { cn } from "~/lib/utils";
-import { PROVIDER_ORDER, PROVIDER_PRESENTATION } from "./usageProviders";
+import {
+  COMPUTE_SERIES,
+  PROVIDER_ORDER,
+  seriesPresentation,
+  type UsageSeriesKind,
+} from "./usageProviders";
+import { UsageSeriesMark } from "./UsageSeriesMark";
 import { observeResize } from "~/lib/observeResize";
 
 const VIEW_WIDTH = 960;
 const VIEW_HEIGHT = 260;
 const TICK_COUNT = 4;
 const PLOT_TOP = 8;
-const NONE_LOADING: ReadonlySet<UsageProviderKind> = new Set();
+const NONE_LOADING: ReadonlySet<UsageSeriesKind> = new Set();
 
 export type UsageChartMetric = "tokens" | "cost";
 
 interface UsageProviderChartProps {
-  readonly providers: readonly UsageProviderKind[];
-  readonly loadingProviders?: ReadonlySet<UsageProviderKind>;
+  readonly providers: readonly UsageSeriesKind[];
+  readonly loadingProviders?: ReadonlySet<UsageSeriesKind>;
   readonly days: readonly string[];
   readonly daily: readonly DailyTotals[];
   readonly hours: readonly string[];
   readonly hourly: readonly HourlyTotals[];
+  /** Boat VM cost by day and by hour start; cost only, it has no tokens. */
+  readonly compute?: {
+    readonly daily: ReadonlyMap<string, ComputeFigures>;
+    readonly hourly: ReadonlyMap<string, ComputeFigures>;
+  };
   readonly metric: UsageChartMetric;
   readonly referenceTime: string | undefined;
   readonly resolution: "day" | "hour";
@@ -39,7 +48,7 @@ interface UsageProviderChartProps {
 
 export interface DayColumn {
   readonly bands: readonly {
-    readonly provider: UsageProviderKind;
+    readonly provider: UsageSeriesKind;
     readonly value: number;
   }[];
   readonly total: number;
@@ -52,7 +61,7 @@ interface Point {
 
 function valueFor(
   totals: DailyTotals | HourlyTotals | undefined,
-  provider: UsageProviderKind,
+  provider: (typeof PROVIDER_ORDER)[number],
   metric: UsageChartMetric,
 ): number {
   const entry = totals?.byProvider.get(provider);
@@ -60,17 +69,21 @@ function valueFor(
   return metric === "tokens" ? entry.totalTokens : entry.costUsd;
 }
 
+/** With `computeByPeriod`, Boat's VM cost is a band after the providers'. */
 export function buildPeriodColumns(
   periods: readonly string[],
   byPeriod: ReadonlyMap<string, DailyTotals | HourlyTotals>,
   metric: UsageChartMetric,
+  computeByPeriod?: ReadonlyMap<string, ComputeFigures>,
 ): readonly DayColumn[] {
   return periods.map((period) => {
     const entry = byPeriod.get(period);
-    const bands = PROVIDER_ORDER.map((provider) => ({
-      provider,
-      value: valueFor(entry, provider, metric),
-    }));
+    const bands: { provider: UsageSeriesKind; value: number }[] = PROVIDER_ORDER.map(
+      (provider) => ({ provider, value: valueFor(entry, provider, metric) }),
+    );
+    if (computeByPeriod !== undefined && metric === "cost") {
+      bands.push({ provider: COMPUTE_SERIES, value: computeByPeriod.get(period)?.dollars ?? 0 });
+    }
     return { bands, total: bands.reduce((sum, band) => sum + band.value, 0) };
   });
 }
@@ -172,10 +185,7 @@ function niceScale(peak: number, count: number): { max: number; ticks: readonly 
 
 const PLACEHOLDER_TICKS = Array.from({ length: TICK_COUNT + 1 }, (_, index) => index);
 
-function chartScale(
-  columns: readonly DayColumn[],
-  loadingProviders: ReadonlySet<UsageProviderKind>,
-) {
+function chartScale(columns: readonly DayColumn[], loadingProviders: ReadonlySet<UsageSeriesKind>) {
   // Layered series each start at zero; summing peaks would waste plot height.
   const peak = columns.reduce(
     (max, column) => column.bands.reduce((inner, band) => Math.max(inner, band.value), max),
@@ -194,26 +204,28 @@ function buildChart(
   periods: readonly string[],
   byPeriod: ReadonlyMap<string, DailyTotals | HourlyTotals>,
   metric: UsageChartMetric,
-  providers: readonly UsageProviderKind[],
-  loadingProviders: ReadonlySet<UsageProviderKind>,
+  providers: readonly UsageSeriesKind[],
+  loadingProviders: ReadonlySet<UsageSeriesKind>,
+  computeByPeriod: ReadonlyMap<string, ComputeFigures> | undefined,
 ) {
-  const columns = buildPeriodColumns(periods, byPeriod, metric);
+  const columns = buildPeriodColumns(periods, byPeriod, metric, computeByPeriod);
   const scale = chartScale(columns, loadingProviders);
   const stepX = periods.length < 2 ? 0 : VIEW_WIDTH / (periods.length - 1);
+  const bandValue = (column: DayColumn, provider: UsageSeriesKind) =>
+    column.bands.find((band) => band.provider === provider)?.value ?? 0;
   const paths = providers.map((provider) => {
-    const slot = PROVIDER_ORDER.indexOf(provider);
     const line = curvePath(
       smoothCurve(
         columns.map((column, periodIndex) => ({
           x: periodIndex * stepX,
-          y: valueToY(column.bands[slot]?.value ?? 0, scale.max),
+          y: valueToY(bandValue(column, provider), scale.max),
         })),
       ),
     );
     return {
       provider,
       loading: loadingProviders.has(provider),
-      total: columns.reduce((sum, column) => sum + (column.bands[slot]?.value ?? 0), 0),
+      total: columns.reduce((sum, column) => sum + bandValue(column, provider), 0),
       line,
       area: areaPath(line),
     };
@@ -233,8 +245,8 @@ function UsageChartTooltip({
   readonly tooltipRef: React.Ref<HTMLDivElement>;
   readonly label: string;
   readonly column: DayColumn | undefined;
-  readonly providers: readonly UsageProviderKind[];
-  readonly loadingProviders: ReadonlySet<UsageProviderKind>;
+  readonly providers: readonly UsageSeriesKind[];
+  readonly loadingProviders: ReadonlySet<UsageSeriesKind>;
   readonly format: (value: number) => string;
 }) {
   const partial = providers.some((provider) => loadingProviders.has(provider));
@@ -249,15 +261,11 @@ function UsageChartTooltip({
     >
       <div className="mb-1 text-muted-foreground">{label}</div>
       {providers.map((provider) => {
-        const { label: providerLabel, driverKind } = PROVIDER_PRESENTATION[provider];
+        const providerLabel = seriesPresentation(provider).label;
         return (
           <div key={provider} className="flex items-center justify-between gap-3">
             <span className="flex items-center gap-1.5 text-muted-foreground">
-              <ProviderInstanceIcon
-                driverKind={driverKind}
-                displayName={providerLabel}
-                iconClassName="size-3"
-              />
+              <UsageSeriesMark series={provider} className="size-3" />
               {providerLabel}
             </span>
             <span
@@ -296,8 +304,8 @@ function UsageChartPlot({
   readonly periods: readonly string[];
   readonly columns: readonly DayColumn[];
   readonly stepX: number;
-  readonly providers: readonly UsageProviderKind[];
-  readonly loadingProviders: ReadonlySet<UsageProviderKind>;
+  readonly providers: readonly UsageSeriesKind[];
+  readonly loadingProviders: ReadonlySet<UsageSeriesKind>;
   readonly format: (value: number) => string;
   readonly formatTooltipPeriod: (period: string) => string;
   readonly children: React.ReactNode;
@@ -412,6 +420,7 @@ export function UsageProviderChart({
   daily,
   hours,
   hourly,
+  compute,
   metric,
   referenceTime,
   resolution,
@@ -432,6 +441,7 @@ export function UsageProviderChart({
     metric,
     providers,
     loadingProviders,
+    compute === undefined ? undefined : resolution === "hour" ? compute.hourly : compute.daily,
   );
 
   const toY = (value: number) => valueToY(value, scale.max);
@@ -495,7 +505,7 @@ export function UsageProviderChart({
               key={provider}
               d={area}
               className={seriesClassName(loading)}
-              fill={PROVIDER_PRESENTATION[provider].color}
+              fill={seriesPresentation(provider).color}
               fillOpacity={0.12}
             />
           ))}
@@ -505,7 +515,7 @@ export function UsageProviderChart({
               d={line}
               className={seriesClassName(loading)}
               fill="none"
-              stroke={PROVIDER_PRESENTATION[provider].color}
+              stroke={seriesPresentation(provider).color}
               strokeWidth={2}
               vectorEffect="non-scaling-stroke"
             />
@@ -548,7 +558,7 @@ export function UsageProviderChart({
               <th scope="col">{resolution === "hour" ? gt("Hour") : gt("Day")}</th>
               {providers.map((provider) => (
                 <th key={provider} scope="col">
-                  {PROVIDER_PRESENTATION[provider].label}
+                  {seriesPresentation(provider).label}
                 </th>
               ))}
               {providers.length > 1 ? (

@@ -29,6 +29,7 @@ import { HttpClient, HttpClientResponse } from "effect/http";
 
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import { formatMalformedUsageWarning } from "@t3tools/shared/usageFormat";
+import * as BoatCloud from "../boatCloud/BoatCloudService.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { BUILT_IN_USAGE_DRIVERS, type BuiltInUsageReadersEnv } from "../provider/builtInDrivers.ts";
@@ -1218,6 +1219,19 @@ export const make = Effect.gen(function* () {
       input.modelFilter ?? null,
     ]);
 
+  /** Boat VM time from the holder of a Boat key, which sits above usage in the server's layers. */
+  const withCompute = Effect.fn("UsageService.withCompute")(function* (
+    summary: UsageSummary,
+    input: UsageSummaryInput,
+  ) {
+    const boat = yield* Effect.serviceOption(BoatCloud.BoatCloudService);
+    if (Option.isNone(boat)) return summary;
+    const compute = yield* boat.value.computeUsage(input, {
+      sync: input.provisional !== true || input.awaitRefresh === true,
+    });
+    return compute.length === 0 ? summary : { ...summary, compute };
+  });
+
   const readSummary = Effect.fn("UsageService.readSummary")(function* (
     requested: UsageSummaryInput,
   ) {
@@ -1249,7 +1263,8 @@ export const make = Effect.gen(function* () {
         return created;
       }),
     );
-    return yield* Deferred.await(deferred);
+    const summary = yield* Deferred.await(deferred);
+    return yield* withCompute(summary, input);
   });
 
   return { readSummary, refreshRates, awaitPersisted } as const;

@@ -2,6 +2,7 @@ import {
   USAGE_MERGE_COMPATIBLE_SINCE,
   type EnvironmentId,
   type UsageBucket,
+  type UsageComputeBucket,
   type UsageProviderKind,
   type UsageSource,
   type UsageSourceFingerprint,
@@ -86,7 +87,135 @@ export interface UsageContractMismatch {
   readonly contractVersion: number;
 }
 
+export interface ComputeFigures {
+  /** Billed seconds: time on, times the machine type's billing multiplier. */
+  readonly seconds: number;
+  readonly dollars: number;
+}
+
+/** Boat cloud VM time, as Boat billed it. */
+export interface ComputeUsage extends ComputeFigures {
+  readonly machines: readonly (ComputeFigures & {
+    readonly sandboxId: string;
+    readonly machineType: string | null;
+  })[];
+  readonly machineTypes: readonly (ComputeFigures & {
+    readonly machineType: string | null;
+    readonly machines: number;
+  })[];
+  readonly daily: ReadonlyMap<string, ComputeFigures>;
+  readonly hourly: ReadonlyMap<string, ComputeFigures>;
+}
+
+export const EMPTY_COMPUTE: ComputeUsage = {
+  seconds: 0,
+  dollars: 0,
+  machines: [],
+  machineTypes: [],
+  daily: new Map(),
+  hourly: new Map(),
+};
+
+/**
+ * Boat VM time across environments. Holders on one Boat account report the same VMs, so each
+ * VM's period counts once, from the newest report. A VM belongs to the environment it served
+ * when that environment is listed, else to the holder that reported it, and counts only when
+ * that environment is selected (`null`: all are).
+ */
+export function mergeComputeUsage(
+  environments: readonly {
+    readonly environmentId: EnvironmentId;
+    readonly summary: UsageSummary | null;
+  }[],
+  selectedEnvironmentIds: ReadonlySet<EnvironmentId> | null,
+): ComputeUsage {
+  const listed = new Set<string>(environments.map((environment) => environment.environmentId));
+  const newestFirst = environments
+    .filter((environment) => (environment.summary?.compute?.length ?? 0) > 0)
+    .sort(
+      (a, b) =>
+        (Date.parse(b.summary?.readAt ?? "") || 0) - (Date.parse(a.summary?.readAt ?? "") || 0),
+    );
+  const seen = new Set<string>();
+  const kept: UsageComputeBucket[] = [];
+  for (const { environmentId, summary } of newestFirst) {
+    for (const bucket of summary?.compute ?? []) {
+      const key = JSON.stringify([bucket.sandboxId, bucket.day, bucket.hourStart ?? null]);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const owner =
+        bucket.environmentId !== null && listed.has(bucket.environmentId)
+          ? bucket.environmentId
+          : environmentId;
+      if (selectedEnvironmentIds === null || selectedEnvironmentIds.has(owner)) kept.push(bucket);
+    }
+  }
+  if (kept.length === 0) return EMPTY_COMPUTE;
+
+  const add = (
+    map: Map<string, { seconds: number; dollars: number }>,
+    key: string,
+    bucket: UsageComputeBucket,
+  ) => {
+    const entry = map.get(key) ?? { seconds: 0, dollars: 0 };
+    entry.seconds += bucket.seconds;
+    entry.dollars += bucket.dollars;
+    map.set(key, entry);
+  };
+  const machines = new Map<
+    string,
+    { sandboxId: string; machineType: string | null; seconds: number; dollars: number }
+  >();
+  const daily = new Map<string, { seconds: number; dollars: number }>();
+  const hourly = new Map<string, { seconds: number; dollars: number }>();
+  let seconds = 0;
+  let dollars = 0;
+  for (const bucket of kept) {
+    seconds += bucket.seconds;
+    dollars += bucket.dollars;
+    const machine = machines.get(bucket.sandboxId) ?? {
+      sandboxId: bucket.sandboxId,
+      machineType: bucket.machineType,
+      seconds: 0,
+      dollars: 0,
+    };
+    machine.seconds += bucket.seconds;
+    machine.dollars += bucket.dollars;
+    machines.set(bucket.sandboxId, machine);
+    add(daily, bucket.day, bucket);
+    if (bucket.hourStart !== undefined) add(hourly, bucket.hourStart, bucket);
+  }
+  const machineTypes = new Map<
+    string,
+    { machineType: string | null; seconds: number; dollars: number; machines: number }
+  >();
+  for (const machine of machines.values()) {
+    const key = machine.machineType ?? "";
+    const entry = machineTypes.get(key) ?? {
+      machineType: machine.machineType,
+      seconds: 0,
+      dollars: 0,
+      machines: 0,
+    };
+    entry.seconds += machine.seconds;
+    entry.dollars += machine.dollars;
+    entry.machines += 1;
+    machineTypes.set(key, entry);
+  }
+  const byDollars = (a: ComputeFigures, b: ComputeFigures) =>
+    b.dollars - a.dollars || b.seconds - a.seconds;
+  return {
+    seconds,
+    dollars,
+    machines: [...machines.values()].sort(byDollars),
+    machineTypes: [...machineTypes.values()].sort(byDollars),
+    daily,
+    hourly,
+  };
+}
+
 export interface MergedUsage {
+  /** Model cost only, an API estimate; `compute` carries Boat's billed VM cost apart. */
   readonly costUsd: number;
   readonly uncachedInputTokens: number;
   readonly cachedInputTokens: number;
@@ -106,6 +235,7 @@ export interface MergedUsage {
   readonly duplicateSources: readonly string[];
   readonly contributingEnvironments: readonly EnvironmentId[];
   readonly contractMismatches: readonly UsageContractMismatch[];
+  readonly compute: ComputeUsage;
 }
 
 // volumeId distinguishes machines sharing a hostname and home path.
@@ -326,6 +456,7 @@ const EMPTY_MERGED: MergedUsage = {
   duplicateSources: [],
   contributingEnvironments: [],
   contractMismatches: [],
+  compute: EMPTY_COMPUTE,
 };
 
 export function mergeUsage(
@@ -618,5 +749,7 @@ export function mergeUsage(
     duplicateSources: duplicates,
     contributingEnvironments,
     contractMismatches,
+    // Callers that list environments beyond the merged ones attribute VMs with mergeComputeUsage.
+    compute: mergeComputeUsage(current, null),
   };
 }

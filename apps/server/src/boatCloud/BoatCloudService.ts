@@ -26,6 +26,8 @@ import {
   type BoatCloudStatus,
   type BoatCloudWakeInput,
   EnvironmentId,
+  type UsageComputeBucket,
+  type UsageSummaryInput,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
@@ -35,6 +37,7 @@ import {
   BoatApiError,
   type BoatLimits,
   machineTypeOptions,
+  creditOf,
   type BoatEnvironmentOutline,
   type BoatSandbox,
   type BoatSnapshot,
@@ -88,6 +91,7 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -103,6 +107,7 @@ import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { forkParked } from "../serverActivation.ts";
+import { makeBoatUsageHistory } from "./BoatCloudUsageHistory.ts";
 import { BoatLocalSignIns } from "./BoatLocalSignIns.ts";
 
 const API_KEY_SECRET = "boat-cloud-api-key";
@@ -135,6 +140,8 @@ const DAY_SECONDS = 24 * 60 * 60;
 const USAGE_REFRESH_INTERVAL = Duration.minutes(1);
 const STATS_REFRESH_INTERVAL = Duration.seconds(30);
 const USAGE_REFRESH_COOLDOWN = Duration.seconds(10);
+const USAGE_HISTORY_INTERVAL = Duration.minutes(15);
+const USAGE_HISTORY_WAIT = Duration.seconds(15);
 
 const StoredMachine = Schema.Struct({
   sandboxId: Schema.String,
@@ -310,6 +317,14 @@ export class BoatCloudService extends Context.Service<
     }) => Effect.Effect<void, BoatCloudError>;
     /** Reads every VM's usage and load now, rate-limited, and returns the status. */
     readonly refreshUsage: Effect.Effect<BoatCloudStatus>;
+    /**
+     * Boat's billed VM time in the usage window, from this machine's record. `sync` first reads
+     * what is new from Boat; without a key the record is all there is.
+     */
+    readonly computeUsage: (
+      input: UsageSummaryInput,
+      options: { readonly sync: boolean },
+    ) => Effect.Effect<ReadonlyArray<UsageComputeBucket>>;
     /** Makes, cancels or removes the long-lived Claude token VMs get. */
     readonly claudeToken: (
       input: BoatCloudClaudeTokenInput,
@@ -379,6 +394,7 @@ const make = Effect.gen(function* () {
 
   const directory = path.join(config.stateDir, "boat-cloud");
   const statePath = path.join(directory, "state.json");
+  const usageHistory = yield* makeBoatUsageHistory(path.join(directory, "usage-history.json"));
   const backupDirectory = path.join(directory, "backups");
   const backupPathOf = (environmentId: string) =>
     path.join(backupDirectory, `${environmentId}.tar.gz`);
@@ -477,6 +493,7 @@ const make = Effect.gen(function* () {
     deleteStoppedAfterDays: state.deleteStoppedAfterDays,
     machineTypes: machineTypeOptions(null, observedMultipliers),
     environmentUsage: [],
+    credit: null,
     localSignIns: {
       enabled: state.useLocalSignIns,
       available: [],
@@ -511,6 +528,7 @@ const make = Effect.gen(function* () {
       deleteStoppedAfterDays: state.deleteStoppedAfterDays,
       machineTypes: machineTypeOptions(connected ? limits : null, observedMultipliers),
       environmentUsage: connected ? environmentUsageOf(state.machines, state.retired, stats) : [],
+      credit: connected ? creditOf(limits) : null,
       localSignIns: { enabled: state.useLocalSignIns, ...local },
     });
   });
@@ -1922,7 +1940,12 @@ const make = Effect.gen(function* () {
 
   // Usage and load are read only while a client watches, so an unwatched holder costs nothing.
   yield* forkParked(
-    whileWatched(refreshUsage).pipe(
+    // Limits carry the account's credit, which the usage page's Limits tab shows.
+    whileWatched((api) =>
+      Effect.all([refreshUsage(api), refreshLimits(api)], { concurrency: 2, discard: true }).pipe(
+        Effect.andThen(publish),
+      ),
+    ).pipe(
       Effect.delay(USAGE_REFRESH_INTERVAL),
       Effect.repeat(Schedule.spaced(USAGE_REFRESH_INTERVAL)),
     ),
@@ -1947,6 +1970,31 @@ const make = Effect.gen(function* () {
     yield* publish;
     return yield* SubscriptionRef.get(statusRef);
   });
+
+  const syncUsageHistory = Effect.gen(function* () {
+    const key = yield* readKey;
+    if (Option.isNone(key)) return;
+    yield* usageHistory.sync(
+      makeBoatApi(http, key.value),
+      (sandboxId) =>
+        state.machines.find((machine) => machine.sandboxId === sandboxId)?.environmentId ??
+        state.retired.find((machine) => machine.sandboxId === sandboxId)?.environmentId ??
+        null,
+    );
+  });
+  const computeUsage = Effect.fn("BoatCloud.computeUsage")(function* (
+    input: UsageSummaryInput,
+    options: { readonly sync: boolean },
+  ) {
+    if (options.sync) {
+      // A first sync backfills every VM and can take a while; it carries on after the answer.
+      const syncing = yield* syncUsageHistory.pipe(Effect.forkIn(scope));
+      yield* Fiber.join(syncing).pipe(Effect.timeoutOption(USAGE_HISTORY_WAIT));
+    }
+    return yield* usageHistory.buckets(input);
+  });
+  // Boat forgets a deleted VM's usage, so the record is kept current while no one looks.
+  yield* forkParked(syncUsageHistory.pipe(Effect.repeat(Schedule.spaced(USAGE_HISTORY_INTERVAL))));
 
   const watch = Effect.acquireRelease(
     Effect.sync(() => {
@@ -1979,6 +2027,7 @@ const make = Effect.gen(function* () {
     wakeMachine: wakeManaged,
     deleteMachine,
     refreshUsage: refreshUsageNow,
+    computeUsage,
     claudeToken,
   });
 });

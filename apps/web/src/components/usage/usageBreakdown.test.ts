@@ -1,7 +1,7 @@
 import type { ModelTotals } from "@t3tools/shared/usageMerge";
 import { describe, expect, it } from "vite-plus/test";
 
-import { cacheHitRate, costPerMillionTokens } from "./usageBreakdown";
+import { breakdownPeriods, cacheHitRate, costPerMillionTokens } from "./usageBreakdown";
 
 const model = (
   name: string,
@@ -46,5 +46,21 @@ describe("model rates", () => {
     expect(cacheHitRate(mixed)).toBe(0.25);
     expect(costPerMillionTokens(mixed)).toBe(2);
     expect(costPerMillionTokens({ ...mixed, unpricedRecords: 4 })).toBeNull();
+  });
+});
+
+describe("breakdownPeriods", () => {
+  it("lists days with only Boat VM time and adds its cost to the day's total", () => {
+    const rows = breakdownPeriods(
+      [{ day: "2026-08-01", costUsd: 4, totalTokens: 40, byProvider: new Map() }],
+      new Map([
+        ["2026-08-01", { seconds: 3600, dollars: 0.5 }],
+        ["2026-08-03", { seconds: 1800, dollars: 0.25 }],
+      ]),
+    );
+    expect(rows.map((row) => [row.key, row.costUsd, row.totals?.totalTokens])).toEqual([
+      ["2026-08-03", 0.25, undefined],
+      ["2026-08-01", 4.5, 40],
+    ]);
   });
 });

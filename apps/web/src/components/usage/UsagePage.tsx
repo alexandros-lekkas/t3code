@@ -23,10 +23,10 @@ import {
 } from "@t3tools/client-runtime/state/usage-progress";
 
 import {
+  EMPTY_COMPUTE,
   isCompatibleUsageContractVersion,
   isModelCostUnknown,
-  type DailyTotals,
-  type HourlyTotals,
+  type ComputeUsage,
   type MergedUsage,
 } from "@t3tools/shared/usageMerge";
 
@@ -55,7 +55,6 @@ import {
 } from "@t3tools/shared/usageFormat";
 import { formatUsageContractMismatch, usageSourceMessages } from "@t3tools/shared/usageFormatCopy";
 import { Button, InlineButton } from "../ui/button";
-import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import {
   Menu,
   MenuCheckboxItem,
@@ -83,6 +82,8 @@ import { UsageProviderChart } from "./UsageProviderChart";
 import { SpeedPremium, UsageModelDialog } from "./UsageModelDialog";
 import { UsageShareBar } from "./UsageShareBar";
 import {
+  breakdownPeriods,
+  computeCostSegment,
   costTypeSegments,
   modelShare,
   sortModelsByTokens,
@@ -97,11 +98,15 @@ import {
 } from "./usageShortcuts";
 import { usageEnvironmentRows } from "./usageEnvironmentRows";
 import {
+  COMPUTE_PRESENTATION,
+  COMPUTE_SERIES,
   PROVIDER_ORDER,
   PROVIDER_PRESENTATION,
   providersWithUsage,
   rankProvidersByMetric,
+  type UsageSeriesKind,
 } from "./usageProviders";
+import { UsageSeriesMark } from "./UsageSeriesMark";
 import {
   readUsagePagePreferences,
   saveUsagePagePreferences,
@@ -209,6 +214,7 @@ export function UsagePage() {
   const [selectedEnvironmentIds, setSelectedEnvironmentIds] =
     useState<ReadonlySet<EnvironmentId> | null>(null);
   const hiddenProviders = new Set(preferences.hiddenProviders);
+  const hideCompute = preferences.hideCompute === true;
   const { days: windowDays, window } = windowSelection;
   const isPast24Hours = windowDays === 1;
   const {
@@ -218,7 +224,7 @@ export function UsagePage() {
     shown,
     isPartial,
     refresh,
-  } = useUsage(window, selectedEnvironmentIds, hiddenProviders);
+  } = useUsage(window, selectedEnvironmentIds, hiddenProviders, hideCompute);
   const merged = shown?.merged ?? answeredUsage;
   const shownWindow = shown?.window ?? window;
   const shownHourly = shownWindow.resolution === "hour";
@@ -398,6 +404,11 @@ export function UsagePage() {
           <UsageProviderFilter
             hiddenProviders={hiddenProviders}
             onChange={(next) => updatePreferences({ hiddenProviders: next })}
+            hasCompute={environments.some(
+              (environment) => (environment.summary?.compute?.length ?? 0) > 0,
+            )}
+            hideCompute={hideCompute}
+            onChangeCompute={(hidden) => updatePreferences({ hideCompute: hidden })}
           />
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
@@ -536,7 +547,15 @@ export function UsagePage() {
               <UsageLimitsSection
                 selectedEnvironmentIds={selectedEnvironmentIds}
                 hiddenProviders={hiddenProviders}
+                hideCompute={hideCompute}
                 now={limitsNow}
+                onOpenComputeCost={() =>
+                  updatePreferences({
+                    metric: "cost",
+                    hiddenProviders: PROVIDER_ORDER,
+                    hideCompute: false,
+                  })
+                }
               />
             ) : shown === null ? (
               <UsageSkeleton />
@@ -638,7 +657,7 @@ function UsageOverview({
   // Copy the primitive; JSX reads of loading.partial would merge all derivations into one compiler cache
   // scope.
   const loadingPartial = loading.partial === true;
-  const loadingProviders = new Set(
+  const loadingProviders = new Set<UsageSeriesKind>(
     PROVIDER_ORDER.filter((provider) => loading.everyProvider || loading.providers.has(provider)),
   );
   const providersWithData = new Set(providersWithUsage(merged.providers));
@@ -647,8 +666,16 @@ function UsageOverview({
   const activeProviders = [...PROVIDER_ORDER].filter(
     (provider) => providersWithData.has(provider) || loading.providers.has(provider),
   );
+  // Boat VM time is a cost with no tokens, so the token view leaves it out.
+  const compute: ComputeUsage = metric === "cost" ? merged.compute : EMPTY_COMPUTE;
+  const showCompute = compute.dollars > 0 || compute.seconds > 0;
+  const totalCostUsd = merged.costUsd + compute.dollars;
+  const costShareOf = (costUsd: number) => (totalCostUsd === 0 ? 0 : costUsd / totalCostUsd);
+  const chartSeries: readonly UsageSeriesKind[] = showCompute
+    ? [...activeProviders, COMPUTE_SERIES]
+    : activeProviders;
   const chartLoadingProviders = new Set(
-    activeProviders.filter((provider) => loadingProviders.has(provider)),
+    chartSeries.filter((provider) => loadingProviders.has(provider)),
   );
   const sourceMessages = usageSourceMessages(
     selectedEnvironments.flatMap(
@@ -659,18 +686,52 @@ function UsageOverview({
     ),
     m,
   );
-  const breakdownPeriods: readonly (DailyTotals | HourlyTotals)[] = (
-    shownHourly ? merged.hourly : merged.daily
-  ).toReversed();
+  const periodRows = breakdownPeriods(
+    shownHourly ? merged.hourly : merged.daily,
+    shownHourly ? compute.hourly : compute.daily,
+  );
   const breakdownModels =
     breakdown === "model" && metric === "tokens"
       ? sortModelsByTokens(merged.models)
       : merged.models;
-  const breakdownPeak = breakdownModels.reduce(
-    (peak, model) => Math.max(peak, metric === "tokens" ? model.totalTokens : model.costUsd),
+  type BreakdownRow =
+    | { readonly kind: "model"; readonly model: MergedUsage["models"][number] }
+    | { readonly kind: "compute"; readonly type: ComputeUsage["machineTypes"][number] };
+  const breakdownRows: readonly BreakdownRow[] = [
+    ...breakdownModels.map((model) => ({ kind: "model", model }) as const),
+    ...compute.machineTypes.map((type) => ({ kind: "compute", type }) as const),
+  ].toSorted((a, b) =>
+    metric === "tokens"
+      ? 0
+      : (b.kind === "model" ? b.model.costUsd : b.type.dollars) -
+        (a.kind === "model" ? a.model.costUsd : a.type.dollars),
+  );
+  const breakdownPeak = breakdownRows.reduce(
+    (peak, row) =>
+      Math.max(
+        peak,
+        row.kind === "compute"
+          ? row.type.dollars
+          : metric === "tokens"
+            ? row.model.totalTokens
+            : row.model.costUsd,
+      ),
     0,
   );
   const rankedProviders = rankProvidersByMetric(activeProviders, merged.providers, metric);
+  const seriesCost = (series: UsageSeriesKind) =>
+    series === COMPUTE_SERIES
+      ? compute.dollars
+      : (merged.providers.find((entry) => entry.provider === series)?.costUsd ?? 0);
+  const rankedSeries: UsageSeriesKind[] = [...rankedProviders];
+  if (showCompute) rankedSeries.push(COMPUTE_SERIES);
+  const listedSeries = showCompute
+    ? rankedSeries.toSorted((a, b) => seriesCost(b) - seriesCost(a))
+    : rankedSeries;
+  const machineHours = (seconds: number) =>
+    gt("{hours} machine-hours", {
+      hours: (seconds / 3600).toLocaleString(locale, { maximumFractionDigits: 1 }),
+    });
 
   return (
     <div aria-busy={loadingPartial} className="flex flex-col gap-6">
@@ -689,7 +750,7 @@ function UsageOverview({
               )}
             >
               {metric === "cost"
-                ? formatUsd(merged.costUsd, locale)
+                ? formatUsd(totalCostUsd, locale)
                 : formatTokens(merged.totalTokens)}
             </p>
             <p className="inline-flex items-center gap-1 text-xs text-muted-foreground">
@@ -700,7 +761,15 @@ function UsageOverview({
                     formatted: formatCount(merged.sessions, locale),
                   })}
                 </span>
-                {metric === "cost" && ` · ${gt("API estimate")}`}
+                {metric === "cost" &&
+                  ` · ${
+                    showCompute
+                      ? gt("{models} API estimate + {compute} Boat", {
+                          models: formatUsd(merged.costUsd, locale),
+                          compute: formatUsd(compute.dollars, locale),
+                        })
+                      : gt("API estimate")
+                  }`}
               </span>
               {metric === "cost" && merged.costQuality.unpricedShare > 0 && (
                 <Popover>
@@ -731,9 +800,43 @@ function UsageOverview({
             </div>
           ) : null}
 
-          {rankedProviders.map((provider) => {
+          {listedSeries.map((provider) => {
+            if (provider === COMPUTE_SERIES) {
+              return (
+                <div key={provider} className="flex flex-col gap-1">
+                  <dl className="flex items-baseline justify-between gap-4">
+                    <dt className="flex min-w-0 items-center gap-2 text-sm text-foreground">
+                      <span
+                        aria-hidden
+                        className="size-2 shrink-0 rounded-full"
+                        style={{ backgroundColor: COMPUTE_PRESENTATION.color }}
+                      />
+                      <UsageSeriesMark series={provider} className="size-4" />
+                      <span className="flex min-w-0 items-baseline gap-1.5">
+                        <span className="truncate">{COMPUTE_PRESENTATION.label}</span>
+                        <span className="shrink-0 whitespace-nowrap text-2xs text-muted-foreground tabular-nums">
+                          {gt("{count, plural, one {{count} VM} other {{count} VMs}}", {
+                            count: compute.machines.length,
+                          })}
+                        </span>
+                      </span>
+                    </dt>
+                    <dd className="shrink-0 text-sm font-medium text-foreground tabular-nums">
+                      {formatUsd(compute.dollars, locale)}
+                    </dd>
+                  </dl>
+                  <p className="text-xs text-muted-foreground">
+                    {gt("{share} of cost · {hours}", {
+                      share: formatPercent(costShareOf(compute.dollars)),
+                      hours: machineHours(compute.seconds),
+                    })}
+                  </p>
+                </div>
+              );
+            }
             const totals = merged.providers.find((entry) => entry.provider === provider);
-            const share = metric === "cost" ? (totals?.costShare ?? 0) : (totals?.tokenShare ?? 0);
+            const share =
+              metric === "cost" ? costShareOf(totals?.costUsd ?? 0) : (totals?.tokenShare ?? 0);
             const providerSessions = totals?.sessions ?? 0;
             const sessionLabel = gt(
               "{count, plural, one {{formatted} session} other {{formatted} sessions}}",
@@ -752,7 +855,7 @@ function UsageOverview({
                         backgroundColor: PROVIDER_PRESENTATION[provider].color,
                       }}
                     />
-                    <ProviderMark provider={provider} className="size-4" />
+                    <UsageSeriesMark series={provider} className="size-4" />
                     <span className="flex min-w-0 items-baseline gap-1.5">
                       <span className="truncate">{PROVIDER_PRESENTATION[provider].label}</span>
                       <span
@@ -812,12 +915,13 @@ function UsageOverview({
                 : gt("Daily cost")}
           </h2>
           <UsageProviderChart
-            providers={activeProviders}
+            providers={chartSeries}
             loadingProviders={chartLoadingProviders}
             days={days}
             daily={merged.daily}
             hours={hours}
             hourly={merged.hourly}
+            {...(showCompute ? { compute } : {})}
             metric={metric}
             referenceTime={shownWindow.untilTime}
             resolution={shownHourly ? "hour" : "day"}
@@ -874,7 +978,10 @@ function UsageOverview({
             <>
               <UsageShareBar
                 label={gt("Cost by type")}
-                segments={costTypeSegments(merged.categoryCost)}
+                segments={[
+                  ...costTypeSegments(merged.categoryCost),
+                  computeCostSegment(compute.dollars),
+                ]}
                 format={(value: number) => formatUsd(value, locale)}
               />
               {merged.speedCost.fast + merged.speedCost.ultrafast > 0 ? (
@@ -937,18 +1044,69 @@ function UsageOverview({
               </tr>
             </thead>
             <tbody>
-              {breakdownModels.length === 0 ? (
+              {breakdownRows.length === 0 ? (
                 <tr>
                   <td colSpan={5} className="py-6 text-center text-muted-foreground">
                     <T>No activity in this window.</T>
                   </td>
                 </tr>
               ) : (
-                breakdownModels.map((model, index) => {
+                breakdownRows.map((row, index) => {
+                  if (row.kind === "compute") {
+                    const { type } = row;
+                    const hasBar = type.dollars > 0 && breakdownPeak > 0;
+                    return (
+                      <tr
+                        key={`compute:${type.machineType ?? ""}`}
+                        className="border-b border-border/50 text-right whitespace-nowrap text-muted-foreground tabular-nums"
+                      >
+                        <td className="py-2.5 pr-3 pl-2 text-left text-xs">{index + 1}</td>
+                        <td className="py-2.5 text-left whitespace-normal">
+                          <span
+                            className={cn(
+                              "flex items-center gap-2 text-left text-foreground",
+                              !hasBar && "py-1",
+                            )}
+                          >
+                            <UsageSeriesMark series={COMPUTE_SERIES} className="size-3.5" />
+                            {gt("Boat {machineType}", {
+                              machineType: type.machineType ?? gt("VM"),
+                            })}
+                            <span className="text-xs text-muted-foreground tabular-nums">
+                              {machineHours(type.seconds)}
+                            </span>
+                          </span>
+                          {hasBar ? (
+                            <div aria-hidden className="mt-1.5 h-0.5 max-w-48">
+                              <div
+                                className="h-full rounded-full"
+                                style={{
+                                  width: `max(0.5rem, ${(type.dollars / breakdownPeak) * 100}%)`,
+                                  backgroundColor: COMPUTE_PRESENTATION.color,
+                                }}
+                              />
+                            </div>
+                          ) : null}
+                        </td>
+                        <td className="py-2.5 pl-6 text-foreground">
+                          {formatUsd(type.dollars, locale)}
+                        </td>
+                        <td className="hidden py-2.5 pl-6 sm:table-cell">
+                          {formatPercent(costShareOf(type.dollars))}
+                        </td>
+                        <td className="py-2.5 pr-2 pl-6">–</td>
+                      </tr>
+                    );
+                  }
+                  const { model } = row;
                   const key = `${model.provider}:${model.model}`;
                   const value = metric === "tokens" ? model.totalTokens : model.costUsd;
                   const hasBar = value > 0 && breakdownPeak > 0;
-                  const share = modelShare(model, metric === "tokens" ? "tokens" : "cost");
+                  const tokenOrCostShare = modelShare(model, metric);
+                  const share =
+                    metric === "cost" && tokenOrCostShare !== null
+                      ? costShareOf(model.costUsd)
+                      : tokenOrCostShare;
                   const rowFigures = figureClass(loadingProviders.has(model.provider));
                   return (
                     <tr
@@ -965,7 +1123,7 @@ function UsageOverview({
                             !hasBar && "py-1",
                           )}
                         >
-                          <ProviderMark provider={model.provider} className="size-3.5" />
+                          <UsageSeriesMark series={model.provider} className="size-3.5" />
                           {model.model}
                         </button>
                         {hasBar ? (
@@ -1015,9 +1173,11 @@ function UsageOverview({
               <thead>
                 <tr className="border-b border-border text-left text-xs text-muted-foreground">
                   <th className="py-2 pl-2 font-normal">{shownHourly ? gt("Hour") : gt("Day")}</th>
-                  {activeProviders.map((provider) => (
+                  {chartSeries.map((provider) => (
                     <th key={provider} className="py-2 pl-4 text-right font-normal">
-                      {PROVIDER_PRESENTATION[provider].label}
+                      {provider === COMPUTE_SERIES
+                        ? COMPUTE_PRESENTATION.label
+                        : PROVIDER_PRESENTATION[provider].label}
                     </th>
                   ))}
                   <th className="py-2 pl-4 text-right font-normal">
@@ -1029,27 +1189,27 @@ function UsageOverview({
                 </tr>
               </thead>
               <tbody>
-                {breakdownPeriods.length === 0 ? (
+                {periodRows.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={activeProviders.length + 3}
+                      colSpan={chartSeries.length + 3}
                       className="py-6 text-center text-muted-foreground"
                     >
                       <T>No activity in this window.</T>
                     </td>
                   </tr>
                 ) : (
-                  breakdownPeriods.map((period) => (
+                  periodRows.map((period) => (
                     <tr
-                      key={"hourStart" in period ? period.hourStart : period.day}
+                      key={period.key}
                       className="border-b border-border/50 transition-colors hover:bg-muted/50"
                     >
                       <td className="py-2 pl-2 text-foreground">
-                        {"hourStart" in period
-                          ? formatHourShort(period.hourStart, shownWindow.timeZone, hour12, locale)
-                          : formatDayShort(period.day, locale)}
+                        {shownHourly
+                          ? formatHourShort(period.key, shownWindow.timeZone, hour12, locale)
+                          : formatDayShort(period.key, locale)}
                       </td>
-                      {activeProviders.map((provider) => (
+                      {chartSeries.map((provider) => (
                         <td
                           key={provider}
                           className={cn(
@@ -1057,7 +1217,12 @@ function UsageOverview({
                             figureClass(loadingProviders.has(provider)),
                           )}
                         >
-                          {formatUsd(period.byProvider.get(provider)?.costUsd ?? 0, locale)}
+                          {formatUsd(
+                            provider === COMPUTE_SERIES
+                              ? (period.compute?.dollars ?? 0)
+                              : (period.totals?.byProvider.get(provider)?.costUsd ?? 0),
+                            locale,
+                          )}
                         </td>
                       ))}
                       <td
@@ -1074,7 +1239,9 @@ function UsageOverview({
                           figureClass(loadingPartial),
                         )}
                       >
-                        {formatTokens(period.totalTokens)}
+                        {period.totals === undefined
+                          ? "–"
+                          : formatTokens(period.totals.totalTokens)}
                       </td>
                     </tr>
                   ))
@@ -1085,23 +1252,6 @@ function UsageOverview({
         )}
       </section>
     </div>
-  );
-}
-
-function ProviderMark({
-  provider,
-  className,
-}: {
-  readonly provider: UsageProviderKind;
-  readonly className: string;
-}) {
-  const presentation = PROVIDER_PRESENTATION[provider];
-  return (
-    <ProviderInstanceIcon
-      driverKind={presentation.driverKind}
-      displayName={presentation.label}
-      iconClassName={className}
-    />
   );
 }
 
@@ -1257,22 +1407,22 @@ function UsageEnvironmentFilter({
                 ? gt("Scanning…")
                 : gt("Ready", { $context: "environment usage status" })
               : environment.error !== null
-              ? gt("Unavailable")
-              : environment.summary !== null &&
-                  !isCompatibleUsageContractVersion(
-                    environment.summary.contractVersion,
-                    USAGE_CONTRACT_VERSION,
-                  )
-                ? gt("Update required")
-                : !environment.isConnected
-                  ? gt("Connecting…")
-                  : progress.phase === "loading"
-                    ? gt("Scanning…")
-                    : progress.phase === "stale"
-                      ? gt("Refreshing…")
-                      : progress.phase === "partway"
-                        ? updatingProvidersLabel(progress.providers, providerLabel, m)
-                        : gt("Ready", { $context: "environment usage status" });
+                ? gt("Unavailable")
+                : environment.summary !== null &&
+                    !isCompatibleUsageContractVersion(
+                      environment.summary.contractVersion,
+                      USAGE_CONTRACT_VERSION,
+                    )
+                  ? gt("Update required")
+                  : !environment.isConnected
+                    ? gt("Connecting…")
+                    : progress.phase === "loading"
+                      ? gt("Scanning…")
+                      : progress.phase === "stale"
+                        ? gt("Refreshing…")
+                        : progress.phase === "partway"
+                          ? updatingProvidersLabel(progress.providers, providerLabel, m)
+                          : gt("Ready", { $context: "environment usage status" });
           return (
             <MenuCheckboxItem
               key={row.key}
@@ -1333,19 +1483,33 @@ function UsageEnvironmentFilter({
 function UsageProviderFilter({
   hiddenProviders,
   onChange,
+  hasCompute,
+  hideCompute,
+  onChangeCompute,
 }: {
   readonly hiddenProviders: ReadonlySet<UsageProviderKind>;
   readonly onChange: (hiddenProviders: readonly UsageProviderKind[]) => void;
+  /** Some environment reported Boat VM time, so Boat is offered beside the providers. */
+  readonly hasCompute: boolean;
+  readonly hideCompute: boolean;
+  readonly onChangeCompute: (hidden: boolean) => void;
 }) {
   const gt = useGT();
-  const visible = PROVIDER_ORDER.filter((provider) => !hiddenProviders.has(provider));
+  const offered: readonly UsageSeriesKind[] = hasCompute
+    ? [...PROVIDER_ORDER, COMPUTE_SERIES]
+    : PROVIDER_ORDER;
+  const isHidden = (series: UsageSeriesKind) =>
+    series === COMPUTE_SERIES ? hideCompute : hiddenProviders.has(series);
+  const visible = offered.filter((series) => !isHidden(series));
   const label =
-    visible.length === PROVIDER_ORDER.length
+    visible.length === offered.length
       ? gt("All providers")
       : visible.length === 0
         ? gt("No providers")
         : visible.length === 1
-          ? PROVIDER_PRESENTATION[visible[0]!].label
+          ? visible[0] === COMPUTE_SERIES
+            ? COMPUTE_PRESENTATION.label
+            : PROVIDER_PRESENTATION[visible[0]!].label
           : gt("{count, plural, one {{count} providers} other {{count} providers}}", {
               count: visible.length,
             });
@@ -1361,9 +1525,12 @@ function UsageProviderFilter({
       </MenuTrigger>
       <MenuPopup align="start">
         <MenuCheckboxItem
-          checked={hiddenProviders.size === 0}
+          checked={visible.length === offered.length}
           closeOnClick={false}
-          onCheckedChange={(checked) => onChange(checked ? [] : PROVIDER_ORDER)}
+          onCheckedChange={(checked) => {
+            onChange(checked ? [] : PROVIDER_ORDER);
+            if (hasCompute) onChangeCompute(!checked);
+          }}
         >
           <T>All providers</T>
         </MenuCheckboxItem>
@@ -1382,11 +1549,26 @@ function UsageProviderFilter({
             }
           >
             <span className="flex min-w-0 items-center gap-2">
-              <ProviderMark provider={provider} className="size-3.5" />
+              <UsageSeriesMark series={provider} className="size-3.5" />
               <span className="truncate">{PROVIDER_PRESENTATION[provider].label}</span>
             </span>
           </MenuCheckboxItem>
         ))}
+        {hasCompute ? (
+          <>
+            <MenuSeparator />
+            <MenuCheckboxItem
+              checked={!hideCompute}
+              closeOnClick={false}
+              onCheckedChange={(checked) => onChangeCompute(!checked)}
+            >
+              <span className="flex min-w-0 items-center gap-2">
+                <UsageSeriesMark series={COMPUTE_SERIES} className="size-3.5" />
+                <span className="truncate">{COMPUTE_PRESENTATION.label}</span>
+              </span>
+            </MenuCheckboxItem>
+          </>
+        ) : null}
       </MenuPopup>
     </Menu>
   );

@@ -51,6 +51,22 @@ export const PROVIDER_PRESENTATION = {
 
 export const PROVIDER_ORDER = Object.keys(PROVIDER_PRESENTATION) as UsageProviderKind[];
 
+/** Boat cloud VM time, charted beside the providers' model cost. */
+export const COMPUTE_SERIES = "compute";
+export type UsageSeriesKind = UsageProviderKind | typeof COMPUTE_SERIES;
+export const COMPUTE_PRESENTATION = {
+  // oxlint-disable-next-line t3code/no-untranslated-copy -- Boat is a product name, as the providers' are
+  label: "Boat",
+  color: "color-mix(in oklab, var(--color-boat) 72%, var(--foreground))",
+} as const;
+
+export function seriesPresentation(series: UsageSeriesKind): {
+  readonly label: string;
+  readonly color: string;
+} {
+  return series === COMPUTE_SERIES ? COMPUTE_PRESENTATION : PROVIDER_PRESENTATION[series];
+}
+
 export function providersWithUsage(
   totals: readonly {
     readonly provider: UsageProviderKind;

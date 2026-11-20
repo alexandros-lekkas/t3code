@@ -14,7 +14,13 @@ import { AsyncResult, Atom } from "effect/reactivity";
 import { msg } from "gt-react";
 import { useState } from "react";
 
-import { mergeUsage, type EnvironmentUsage, type MergedUsage } from "@t3tools/shared/usageMerge";
+import {
+  EMPTY_COMPUTE,
+  mergeComputeUsage,
+  mergeUsage,
+  type EnvironmentUsage,
+  type MergedUsage,
+} from "@t3tools/shared/usageMerge";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { boatCloudUsageLedgerAtom } from "./boatCloudUsageLedger";
 import { boatCloudUsageSummaryOf } from "./boatCloudUsageLedger.logic";
@@ -180,6 +186,7 @@ function deriveSelection(
   environments: readonly EnvironmentUsageStatus[],
   selectedEnvironmentIds: ReadonlySet<EnvironmentId> | null,
   hiddenProviders: ReadonlySet<UsageProviderKind>,
+  hideCompute: boolean,
 ) {
   const selectedEnvironments =
     selectedEnvironmentIds === null
@@ -189,8 +196,15 @@ function deriveSelection(
     environments,
     selectedEnvironmentIds,
     hiddenProviders,
+    hideCompute,
     selectedEnvironments,
-    merged: mergeAnsweredUsage(withoutProviders(selectedEnvironments, hiddenProviders)),
+    merged: {
+      ...mergeAnsweredUsage(withoutProviders(selectedEnvironments, hiddenProviders)),
+      // A Boat VM counts for the environment it served, which may not be the one reporting it.
+      compute: hideCompute
+        ? EMPTY_COMPUTE
+        : mergeComputeUsage(environments, selectedEnvironmentIds),
+    },
   };
 }
 
@@ -198,6 +212,7 @@ export function useUsage(
   input: UsageSummaryInput,
   selectedEnvironmentIds: ReadonlySet<EnvironmentId> | null = null,
   hiddenProviders: ReadonlySet<UsageProviderKind> = NO_HIDDEN_PROVIDERS,
+  hideCompute = false,
 ): UsageView {
   const windowKey = JSON.stringify({
     sinceDay: input.sinceDay,
@@ -211,15 +226,16 @@ export function useUsage(
   const environments = useAtomValue(atom);
   // Identity-based render sync needs a derivation retained by inputs across renders.
   const [derived, setDerived] = useState(() =>
-    deriveSelection(environments, selectedEnvironmentIds, hiddenProviders),
+    deriveSelection(environments, selectedEnvironmentIds, hiddenProviders, hideCompute),
   );
   let current = derived;
   if (
     derived.environments !== environments ||
     derived.selectedEnvironmentIds !== selectedEnvironmentIds ||
-    derived.hiddenProviders !== hiddenProviders
+    derived.hiddenProviders !== hiddenProviders ||
+    derived.hideCompute !== hideCompute
   ) {
-    current = deriveSelection(environments, selectedEnvironmentIds, hiddenProviders);
+    current = deriveSelection(environments, selectedEnvironmentIds, hiddenProviders, hideCompute);
     setDerived(current);
   }
   const { selectedEnvironments, merged } = current;

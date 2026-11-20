@@ -42,6 +42,8 @@ export const FAKE_SEED_ENV_VAR = "T3CODE_BOAT_CLOUD_FAKE_SEED";
 const FAKE_NO_AGENTS_ENV_VAR = "T3CODE_BOAT_CLOUD_FAKE_NO_AGENTS";
 /** Simulates an account without Boat's GitHub app. */
 const FAKE_NO_GITHUB_ENV_VAR = "T3CODE_BOAT_CLOUD_FAKE_NO_GITHUB";
+/** A JSON file, such as `boat limits --json` saved from a real account, answered for `/limits`. */
+const FAKE_LIMITS_ENV_VAR = "T3CODE_BOAT_CLOUD_FAKE_LIMITS";
 /** Simulates this machine signed in to Claude and Codex, with dummy values; unset, it has none. */
 const FAKE_LOCAL_SIGN_INS_ENV_VAR = "T3CODE_BOAT_CLOUD_FAKE_LOCAL_SIGNINS";
 
@@ -51,6 +53,7 @@ interface FakeLayerOptions {
   readonly noAgents?: boolean;
   readonly noGithub?: boolean;
   readonly localSignIns?: boolean;
+  readonly limits?: unknown;
 }
 
 const FAKE_API_KEY = "fake-boat-key";
@@ -105,6 +108,37 @@ const seedState = (now: string, seed: boolean) => ({
       ],
 });
 
+/**
+ * A VM Boat already deleted, so only this machine's usage record knows it: a large VM on for a
+ * few hours on each of three days last week.
+ */
+const seedUsageHistory = (nowMillis: number) => {
+  const dayStart = Math.floor(nowMillis / 86_400_000) * 86_400_000;
+  const hours = [
+    [6, 15, 3],
+    [5, 16, 2],
+    [4, 14, 4],
+  ].flatMap(([daysAgo = 0, hourOfDay = 0, count = 0]) =>
+    Array.from({ length: count }, (_, index) => ({
+      start: dayStart - daysAgo * 86_400_000 + (hourOfDay + index) * 3_600_000,
+      seconds: 7200,
+      dollars: 0.072,
+    })),
+  );
+  return {
+    machines: {
+      "fakevm-gone": {
+        machineType: "large",
+        environmentId: null,
+        settledUntil: dayStart - 3 * 86_400_000,
+        hours,
+        open: null,
+        gone: true,
+      },
+    },
+  };
+};
+
 /** The key lives in memory and starts set, so the fake is connected from the start. */
 const layerMemorySecretStore = Layer.sync(ServerSecretStore.ServerSecretStore, () => {
   const values = new Map<string, Uint8Array>([
@@ -150,6 +184,12 @@ const layerFakeConfig = (seed: boolean) =>
         path.join(directory, "state.json"),
         encodeJson(seedState(DateTime.formatIso(yield* DateTime.now), seed)),
       );
+      yield* fs.writeFileString(
+        path.join(directory, "usage-history.json"),
+        encodeJson(
+          seed ? seedUsageHistory(DateTime.toEpochMillis(yield* DateTime.now)) : { machines: {} },
+        ),
+      );
       return { ...config, stateDir };
     }).pipe(Effect.orDie),
   );
@@ -165,6 +205,7 @@ const layerFakeHttp = (options: FakeLayerOptions) =>
         seed: options.seed ?? false,
         noAgents: options.noAgents ?? false,
         noGithub: options.noGithub ?? false,
+        ...(options.limits === undefined ? {} : { limits: options.limits }),
       }),
     ).pipe(Effect.map((fake) => fake.http)),
   );
@@ -265,6 +306,16 @@ const layerFakeLocal = Layer.effect(
   }),
 );
 
+const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
+const fakeLimits = Effect.gen(function* () {
+  const file = (yield* Config.String(FAKE_LIMITS_ENV_VAR).pipe(Config.withDefault(""))).trim();
+  if (file === "") return {};
+  const fs = yield* FileSystem.FileSystem;
+  const text = yield* fs.readFileString(file).pipe(Effect.orElseSucceed(() => ""));
+  const limits = Option.getOrUndefined(decodeJson(text));
+  return limits === undefined ? {} : { limits };
+});
+
 /**
  * The real BoatCloudService, reading this machine's sign-ins with `realSignIns`, or the fake
  * one when the env var is set on a dev server.
@@ -306,6 +357,7 @@ export const layerWith = <E, R, SE, SR>(
         noAgents: yield* on(FAKE_NO_AGENTS_ENV_VAR),
         noGithub: yield* on(FAKE_NO_GITHUB_ENV_VAR),
         localSignIns: yield* on(FAKE_LOCAL_SIGN_INS_ENV_VAR),
+        ...(yield* fakeLimits),
       });
     }).pipe(Effect.orDie),
   );

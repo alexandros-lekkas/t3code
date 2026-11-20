@@ -54,6 +54,8 @@ export interface FakeBoatOptions {
   readonly noAgents?: boolean;
   /** Boat's GitHub app is not installed, so only public repositories clone. */
   readonly noGithub?: boolean;
+  /** Answers `/limits` with this body, such as a real account's, instead of the demo plan. */
+  readonly limits?: unknown;
 }
 
 type MachineType = "small" | "default" | "large" | "xlarge";
@@ -79,6 +81,8 @@ interface FakeSandbox {
   readonly createdAt: string;
   /** Billed seconds before the current run. */
   billedSeconds: number;
+  /** Past runs as epoch-ms spans of wall time, so usage reads for a range. */
+  runs?: Array<readonly [number, number]>;
   /** When the current run started, null while stopped. */
   runningSince: number | null;
   /** Epoch ms of the last hand-out or checkout, which the idle check counts from. */
@@ -127,7 +131,32 @@ export const makeFakeBoat = Effect.fn("FakeBoat.make")(function* (options: FakeB
 
   const sandboxes = new Map<string, FakeSandbox>();
   const addSandbox = (sandbox: FakeSandbox) => sandboxes.set(sandbox.id, sandbox);
+  /** Runs of `hours` each starting `daysAgo` days and `hourOfDay` hours past the start of that day. */
+  const runsOf = (spans: ReadonlyArray<readonly [number, number, number]>) =>
+    spans.map(([daysAgo, hourOfDay, hours]) => {
+      const start =
+        Math.floor(startedAt / 86_400_000) * 86_400_000 -
+        daysAgo * 86_400_000 +
+        hourOfDay * 3_600_000;
+      return [start, start + hours * 3_600_000] as const;
+    });
+  const billedOf = (runs: ReadonlyArray<readonly [number, number]>, multiplier: number) =>
+    runs.reduce((sum, [start, end]) => sum + (end - start) / 1000, 0) * multiplier;
   if (options.seed) {
+    const runningRuns = runsOf([
+      [3, 14, 2],
+      [2, 15, 1.5],
+      [1, 13, 3.25],
+    ]);
+    const stoppedRuns = runsOf([
+      [9, 16, 1],
+      [8, 14, 4],
+      [7, 18, 2.5],
+      [5, 15, 3],
+      [3, 17, 1.75],
+      [2, 13, 2],
+      [1, 10, 0.75],
+    ]);
     addSandbox({
       id: FAKE_RUNNING_VM,
       name: machineNameOf("pingdotgg/t3code"),
@@ -137,7 +166,8 @@ export const makeFakeBoat = Effect.fn("FakeBoat.make")(function* (options: FakeB
       labels: { ...MACHINE_LABELS },
       environment: "default",
       createdAt: iso(startedAt - 3 * 24 * 3600 * 1000),
-      billedSeconds: 2.3 * 3600 * 0.5,
+      billedSeconds: billedOf(runningRuns, MACHINE_SPECS.small.multiplier),
+      runs: runningRuns,
       runningSince: startedAt - 25 * 60 * 1000,
       lastActive: startedAt,
       diskUsedBytes: 9.4 * 1024 ** 3,
@@ -151,7 +181,8 @@ export const makeFakeBoat = Effect.fn("FakeBoat.make")(function* (options: FakeB
       labels: { ...MACHINE_LABELS },
       environment: "default",
       createdAt: iso(startedAt - 9 * 24 * 3600 * 1000),
-      billedSeconds: 5.1 * 3600,
+      billedSeconds: billedOf(stoppedRuns, MACHINE_SPECS.default.multiplier),
+      runs: stoppedRuns,
       runningSince: null,
       lastActive: startedAt - 2 * 3600 * 1000,
       diskUsedBytes: 14.2 * 1024 ** 3,
@@ -272,8 +303,22 @@ export const makeFakeBoat = Effect.fn("FakeBoat.make")(function* (options: FakeB
     (sandbox.runningSince === null
       ? 0
       : ((now - sandbox.runningSince) / 1000) * MACHINE_SPECS[sandbox.type].multiplier);
+  /** Billed seconds within `[since, until]`, from the recorded runs and the current one. */
+  const billedSecondsBetween = (sandbox: FakeSandbox, since: number, until: number) =>
+    ([
+      ...(sandbox.runs ?? []),
+      ...(sandbox.runningSince === null ? [] : [[sandbox.runningSince, until] as const]),
+    ].reduce(
+      (sum, [start, end]) => sum + Math.max(0, Math.min(end, until) - Math.max(start, since)),
+      0,
+    ) /
+      1000) *
+    MACHINE_SPECS[sandbox.type].multiplier;
   const stop = (sandbox: FakeSandbox, now: number) => {
     sandbox.billedSeconds = billedSecondsOf(sandbox, now);
+    if (sandbox.runningSince !== null) {
+      sandbox.runs = [...(sandbox.runs ?? []), [sandbox.runningSince, now]];
+    }
     sandbox.runningSince = null;
     sandbox.state = "stopped";
     sandbox.deadline = null;
@@ -409,6 +454,7 @@ export const makeFakeBoat = Effect.fn("FakeBoat.make")(function* (options: FakeB
 
       if (path === "/me") return reply({ user: { login: "demo", email: FAKE_ACCOUNT } });
       if (path === "/limits") {
+        if (options.limits !== undefined) return reply(options.limits);
         return reply({
           machineTypes: [
             { type: "small", available: true },
@@ -418,6 +464,34 @@ export const makeFakeBoat = Effect.fn("FakeBoat.make")(function* (options: FakeB
           ],
           overagePrices: { vmHourDollars: DOLLARS_PER_SECOND * 3600 },
           creditSecondsPerDollar: 1 / DOLLARS_PER_SECOND,
+          // Shaped like a real account: a $20 plan early in its month, and a $45 wallet.
+          ...(() => {
+            const sandboxSeconds = [...sandboxes.values()].reduce(
+              (sum, sandbox) => sum + billedSecondsOf(sandbox, now),
+              0,
+            );
+            const last24h = [...sandboxes.values()].reduce(
+              (sum, sandbox) => sum + billedSecondsBetween(sandbox, now - 86_400_000, now),
+              0,
+            );
+            const planSeconds = 20 / DOLLARS_PER_SECOND;
+            const planRemaining = Math.max(0, Math.round(planSeconds * 0.92 - sandboxSeconds));
+            const packSeconds = 45 / DOLLARS_PER_SECOND;
+            return {
+              creditBalanceSeconds: planRemaining + packSeconds,
+              creditUsedSeconds: Math.round(planSeconds - planRemaining),
+              packBalanceSeconds: packSeconds,
+              subscriptionQuotaSeconds: planSeconds,
+              activeSandboxPlanKey: "box_20",
+              sandboxPlanDollars: 20,
+              subscriptionRemainingSeconds: planRemaining,
+              subscriptionCurrentPeriodEnd: iso(startedAt + 28 * 86_400_000),
+              last24hUsageSeconds: Math.round(last24h),
+              canStart: true,
+              blockedReason: null,
+              keepGoing: { available: true, enabled: false, usedDollars: 0, capDollars: 80 },
+            };
+          })(),
         });
       }
 
@@ -570,13 +644,20 @@ export const makeFakeBoat = Effect.fn("FakeBoat.make")(function* (options: FakeB
         return reply({});
       }
       if (action === "/usage") {
-        const seconds = billedSecondsOf(sandbox, now);
+        const sinceParam = url.searchParams.get("since");
+        const untilParam = url.searchParams.get("until");
+        const since = sinceParam === null ? Date.parse(sandbox.createdAt) : Date.parse(sinceParam);
+        const until = untilParam === null ? now : Math.min(now, Date.parse(untilParam));
+        const seconds =
+          sinceParam === null && untilParam === null
+            ? billedSecondsOf(sandbox, now)
+            : billedSecondsBetween(sandbox, since, until);
         return reply({
           sandboxId: sandbox.id,
           sandboxType: sandbox.type,
           billingMultiplier: MACHINE_SPECS[sandbox.type].multiplier,
-          since: sandbox.createdAt,
-          until: iso(now),
+          since: iso(since),
+          until: iso(until),
           seconds: Math.round(seconds),
           dollars: Math.round(seconds * DOLLARS_PER_SECOND * 10_000) / 10_000,
           secondsPerDollar: 1 / DOLLARS_PER_SECOND,

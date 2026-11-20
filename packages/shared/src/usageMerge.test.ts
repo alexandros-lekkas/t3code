@@ -3,6 +3,7 @@ import {
   USAGE_MERGE_COMPATIBLE_SINCE,
   type EnvironmentId,
   type UsageBucket,
+  type UsageComputeBucket,
   type UsageDay,
   type UsageProviderKind,
   UsageSummary,
@@ -10,7 +11,12 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
-import { isModelCostUnknown, mergeUsage, type EnvironmentUsage } from "./usageMerge.ts";
+import {
+  isModelCostUnknown,
+  mergeComputeUsage,
+  mergeUsage,
+  type EnvironmentUsage,
+} from "./usageMerge.ts";
 
 const decodeSummary = Schema.decodeUnknownSync(UsageSummary);
 
@@ -705,5 +711,54 @@ describe("mergeUsage", () => {
 
     expect(merged.sessions).toBe(1);
     expect(merged.providers[0]?.sessions).toBe(1);
+  });
+});
+
+describe("mergeComputeUsage", () => {
+  const vm = (overrides: Partial<UsageComputeBucket> = {}): UsageComputeBucket => ({
+    day: "2026-08-07" as UsageDay,
+    sandboxId: "bx_one",
+    machineType: "small",
+    environmentId: null,
+    seconds: 1800,
+    dollars: 0.018,
+    ...overrides,
+  });
+  const reporting = (id: string, readAt: string, compute: readonly UsageComputeBucket[]) => ({
+    environmentId: id as EnvironmentId,
+    summary: { ...summary([], []), readAt, compute },
+  });
+
+  it("counts a VM once when two holders on one account report it, from the newer report", () => {
+    const merged = mergeComputeUsage(
+      [
+        reporting("mac", "2026-08-07T10:00:00.000Z", [vm({ seconds: 900, dollars: 0.009 })]),
+        reporting("laptop", "2026-08-07T11:00:00.000Z", [vm(), vm({ sandboxId: "bx_two" })]),
+      ],
+      null,
+    );
+    expect(merged.dollars).toBeCloseTo(0.036);
+    expect(merged.machines.map((machine) => machine.sandboxId)).toEqual(["bx_one", "bx_two"]);
+    expect(merged.machineTypes).toEqual([
+      { machineType: "small", seconds: 3600, dollars: 0.036, machines: 2 },
+    ]);
+    expect(merged.daily.get("2026-08-07")?.seconds).toBe(3600);
+  });
+
+  it("counts a VM for the environment it served when that one is listed, else its holder", () => {
+    const environments = [
+      reporting("mac", "2026-08-07T10:00:00.000Z", [
+        vm({ sandboxId: "bx_served", environmentId: "boat-env" as EnvironmentId }),
+        vm({ sandboxId: "bx_spare" }),
+        vm({ sandboxId: "bx_unlisted", environmentId: "forgotten" as EnvironmentId }),
+      ]),
+      reporting("boat-env", "2026-08-07T10:00:00.000Z", []),
+    ];
+    const ids = (selected: readonly string[]) =>
+      mergeComputeUsage(environments, new Set(selected as EnvironmentId[])).machines.map(
+        (machine) => machine.sandboxId,
+      );
+    expect(ids(["boat-env"])).toEqual(["bx_served"]);
+    expect(ids(["mac"]).toSorted()).toEqual(["bx_spare", "bx_unlisted"]);
   });
 });

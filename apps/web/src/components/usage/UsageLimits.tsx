@@ -1,5 +1,6 @@
 import {
   AuthProvidersManageScope,
+  type BoatCloudCredit,
   type EnvironmentId,
   type ProviderConsumeResetCreditOutcome,
   ProviderConsumeResetCreditInput,
@@ -39,6 +40,8 @@ import {
 } from "../ui/alert-dialog";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { useBoatCloudKeyHolderStates } from "../../boatCloud";
+import { BoatLimitsSection } from "./UsageLimitsBoat";
 import { UsageLimitsPooled } from "./UsageLimitsPooled";
 import { formatResetsIn, resetCreditChoices } from "@t3tools/shared/usageLimitsCopy";
 import { PROVIDER_PRESENTATION } from "./usageProviders";
@@ -392,12 +395,24 @@ export function ResetCredits({
 export function UsageLimitsSection({
   selectedEnvironmentIds,
   hiddenProviders,
+  hideCompute = false,
   now,
+  onOpenComputeCost,
 }: {
   readonly selectedEnvironmentIds: ReadonlySet<EnvironmentId> | null;
   readonly hiddenProviders: ReadonlySet<UsageProviderKind>;
+  readonly hideCompute?: boolean;
   readonly now: number;
+  readonly onOpenComputeCost?: () => void;
 }) {
+  const boatHolders = useBoatCloudKeyHolderStates();
+  // Holders on one Boat account report the same credit; show each account once.
+  const boatCredits = new Map<string, BoatCloudCredit>();
+  for (const [environmentId, status] of boatHolders) {
+    if (hideCompute || status === null || status === "unsupported" || !status.connected) continue;
+    if (selectedEnvironmentIds !== null && !selectedEnvironmentIds.has(environmentId)) continue;
+    if (status.credit) boatCredits.set(status.account ?? environmentId, status.credit);
+  }
   const presentations = useAtomValue(environmentPresentations.presentationsWithProvidersAtom);
   const hiddenDrivers = new Set<ServerProvider["driver"]>(
     [...hiddenProviders].map((provider) => PROVIDER_PRESENTATION[provider].driverKind),
@@ -428,5 +443,12 @@ export function UsageLimitsSection({
       ];
     }),
   );
-  return <UsageLimitsPooled presentations={selected} now={now} />;
+  return (
+    <div className="flex flex-col gap-8">
+      <UsageLimitsPooled presentations={selected} now={now} />
+      {[...boatCredits].map(([account, credit]) => (
+        <BoatLimitsSection key={account} credit={credit} now={now} onOpenCost={onOpenComputeCost} />
+      ))}
+    </div>
+  );
 }

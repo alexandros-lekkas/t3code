@@ -2,6 +2,9 @@ import type { UsageTokenTotals } from "@t3tools/contracts";
 import {
   isModelCostUnknown,
   type CategoryCost,
+  type ComputeFigures,
+  type DailyTotals,
+  type HourlyTotals,
   type ModelTotals,
   type SpeedCost,
 } from "@t3tools/shared/usageMerge";
@@ -9,6 +12,7 @@ import {
 import { msg } from "gt-react";
 
 import type { ShareSegment } from "./UsageShareBar";
+import { COMPUTE_PRESENTATION } from "./usageProviders";
 
 export function sortModelsByTokens(models: readonly ModelTotals[]) {
   return models.toSorted(
@@ -59,6 +63,41 @@ export function costTypeSegments(cost: CategoryCost): readonly ShareSegment[] {
       color: TYPE_COLORS.other,
     },
   ];
+}
+
+export function computeCostSegment(dollars: number): ShareSegment {
+  return { label: msg("Boat VMs"), value: dollars, color: COMPUTE_PRESENTATION.color };
+}
+
+export interface BreakdownPeriod {
+  /** The day, or the hour start in an hourly window. */
+  readonly key: string;
+  readonly totals: DailyTotals | HourlyTotals | undefined;
+  readonly compute: ComputeFigures | undefined;
+  /** Model cost plus Boat's VM cost. */
+  readonly costUsd: number;
+}
+
+/** Newest first, every period with model usage or Boat VM time. */
+export function breakdownPeriods(
+  periods: readonly (DailyTotals | HourlyTotals)[],
+  computeByPeriod: ReadonlyMap<string, ComputeFigures>,
+): readonly BreakdownPeriod[] {
+  const byKey = new Map(
+    periods.map((period) => ["hourStart" in period ? period.hourStart : period.day, period]),
+  );
+  return [...new Set([...byKey.keys(), ...computeByPeriod.keys()])]
+    .toSorted((a, b) => b.localeCompare(a))
+    .map((key) => {
+      const totals = byKey.get(key);
+      const compute = computeByPeriod.get(key);
+      return {
+        key,
+        totals,
+        compute,
+        costUsd: (totals?.costUsd ?? 0) + (compute?.dollars ?? 0),
+      };
+    });
 }
 
 export function tokenTypeSegments(

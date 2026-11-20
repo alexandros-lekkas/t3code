@@ -8,6 +8,8 @@ const UsagePagePreferencesSchema = Schema.Struct({
   metric: Schema.Literals(["cost", "tokens", "limits"]),
   windowDays: Schema.Literals([1, 7, 30, 90]),
   hiddenProviders: Schema.optional(Schema.Array(UsageProviderKind)),
+  /** Hides Boat's VM cost, which is not a provider's. */
+  hideCompute: Schema.optional(Schema.Boolean),
 });
 export type UsagePagePreferences = typeof UsagePagePreferencesSchema.Type;
 

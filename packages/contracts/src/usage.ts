@@ -1,6 +1,11 @@
 import * as Schema from "effect/Schema";
 
-import { ForwardCompatibleArray, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import {
+  EnvironmentId,
+  ForwardCompatibleArray,
+  NonNegativeInt,
+  TrimmedNonEmptyString,
+} from "./baseSchemas.ts";
 
 /** Bump for incompatible UsageSummary changes; skipped unknown array variants need no bump. */
 export const USAGE_CONTRACT_VERSION = 6 as const;
@@ -71,6 +76,23 @@ export const UsageBucket = Schema.Struct({
   sessions: NonNegativeInt,
 });
 export type UsageBucket = typeof UsageBucket.Type;
+
+/**
+ * Boat cloud VM time in one period, as Boat billed it: a real charge, not an estimate. Only the
+ * server holding the Boat key reports it; every holder on one account reports the same VMs.
+ */
+export const UsageComputeBucket = Schema.Struct({
+  day: UsageDay,
+  hourStart: Schema.optional(TrimmedNonEmptyString),
+  sandboxId: TrimmedNonEmptyString,
+  machineType: Schema.NullOr(TrimmedNonEmptyString),
+  /** The Boat cloud environment the VM served; null for a spare or one T3 no longer knows. */
+  environmentId: Schema.NullOr(EnvironmentId),
+  /** Billed seconds: time on, times the machine type's billing multiplier. */
+  seconds: Schema.Number,
+  dollars: Schema.Number,
+});
+export type UsageComputeBucket = typeof UsageComputeBucket.Type;
 
 export const UsageSourceFingerprint = Schema.Struct({
   hostId: TrimmedNonEmptyString,
@@ -160,6 +182,8 @@ export const UsageSummary = Schema.Struct({
   scanDurationMs: NonNegativeInt,
   /** The filter the server applied; absent means unfiltered, including servers that predate filters. */
   modelFilter: Schema.optional(UsageModelFilter),
+  /** Absent from servers without a Boat key, and from those that predate it. */
+  compute: Schema.optional(ForwardCompatibleArray(UsageComputeBucket)),
 });
 export type UsageSummary = typeof UsageSummary.Type;
 

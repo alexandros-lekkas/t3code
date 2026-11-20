@@ -223,6 +223,38 @@ export const BoatCloudEnvironmentUsage = Schema.Struct({
 });
 export type BoatCloudEnvironmentUsage = typeof BoatCloudEnvironmentUsage.Type;
 
+/**
+ * The Boat account's VM time left, from Boat's limits. All figures are billed seconds
+ * (default-size VM seconds). Boat spends the plan's monthly grant first, then bought credit.
+ */
+export const BoatCloudCredit = Schema.Struct({
+  /** Plan and bought credit left together. */
+  balanceSeconds: Schema.Number,
+  /** The plan's monthly grant and what is left of it; null without a plan. */
+  planSeconds: Schema.NullOr(Schema.Number),
+  planRemainingSeconds: Schema.NullOr(Schema.Number),
+  /** The plan's monthly price in dollars; null without a plan or when Boat does not say. */
+  planDollars: Schema.NullOr(Schema.Number),
+  /** When the plan's month ends and its grant renews; null when Boat does not say. */
+  periodEnd: Schema.NullOr(Schema.String),
+  /** Bought credit left, which does not expire with the month. */
+  purchasedRemainingSeconds: Schema.Number,
+  usedSeconds: Schema.Number,
+  last24hSeconds: Schema.Number,
+  secondsPerDollar: Schema.Number,
+  canStart: Schema.Boolean,
+  blockedReason: Schema.NullOr(Schema.String),
+  /** Starts past the plan's limits, billed up to a monthly cap; null when Boat does not offer it. */
+  overage: Schema.NullOr(
+    Schema.Struct({
+      enabled: Schema.Boolean,
+      usedDollars: Schema.Number,
+      capDollars: Schema.Number,
+    }),
+  ),
+});
+export type BoatCloudCredit = typeof BoatCloudCredit.Type;
+
 /** The agent drivers a holder can pass its own sign-ins to. */
 const BOAT_CLOUD_LOCAL_SIGN_IN_DRIVERS = ["claudeAgent", "codex"] as const;
 
@@ -332,6 +364,8 @@ export const BoatCloudStatus = Schema.Struct({
   environmentUsage: Schema.Array(BoatCloudEnvironmentUsage).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
+  /** Null until Boat's limits have been read. */
+  credit: Schema.optional(Schema.NullOr(BoatCloudCredit)),
   /** This holder's own provider sign-ins, which its VMs get alongside the Boat profile's. */
   localSignIns: BoatCloudLocalSignIns.pipe(
     Schema.withDecodingDefault(Effect.succeed(BOAT_CLOUD_NO_LOCAL_SIGN_INS)),
