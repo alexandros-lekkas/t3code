@@ -1,4 +1,6 @@
 import {
+  BOAT_CLOUD_DELETE_STOPPED_DAYS,
+  BOAT_CLOUD_IDLE_STOP_MINUTES,
   BOAT_CLOUD_REQUIRED_SCOPES,
   BOAT_CLOUD_SETUP_STEPS,
   type BoatCloudEnvironmentAccess,
@@ -34,8 +36,24 @@ import {
   boatCloudLocalDrivers,
   boatCloudProviderDrivers,
 } from "@t3tools/shared/boatCloudVm";
+import {
+  AlertDialog,
+  AlertDialogClose,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogPopup,
+  AlertDialogTitle,
+} from "../ui/alert-dialog";
 import { Badge } from "../ui/badge";
 import { Input } from "../ui/input";
+import {
+  NumberField,
+  NumberFieldDecrement,
+  NumberFieldGroup,
+  NumberFieldIncrement,
+  NumberFieldInput,
+} from "../ui/number-field";
 import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
@@ -560,6 +578,8 @@ function NewMachineRows({
     readonly shareMachines?: boolean;
     readonly defaultMachineType?: BoatCloudMachineType;
     readonly keepReadyMachine?: boolean;
+    readonly idleStopMinutes?: number;
+    readonly deleteStoppedAfterDays?: number;
   }) => {
     setBusy(true);
     await Promise.all(
@@ -642,6 +662,36 @@ function NewMachineRows({
         }
       />
       <SettingsRow
+        title={gt("Stop when idle after")}
+        description={gt("Minutes without a turn or a busy terminal before a machine stops.")}
+        control={
+          <BoundedNumberField
+            value={status.idleStopMinutes}
+            bounds={BOAT_CLOUD_IDLE_STOP_MINUTES}
+            unit={gt("min", { $context: "minutes, after a number" })}
+            label={gt("Stop when idle after")}
+            disabled={busy}
+            onCommit={(idleStopMinutes) => void apply({ idleStopMinutes })}
+          />
+        }
+      />
+      <SettingsRow
+        title={gt("Delete stopped machines after")}
+        description={gt(
+          "Days a stopped machine stays on Boat. Its threads wake from this computer's saved copy.",
+        )}
+        control={
+          <BoundedNumberField
+            value={status.deleteStoppedAfterDays}
+            bounds={BOAT_CLOUD_DELETE_STOPPED_DAYS}
+            unit={gt("days", { $context: "after a number" })}
+            label={gt("Delete stopped machines after")}
+            disabled={busy}
+            onCommit={(deleteStoppedAfterDays) => void apply({ deleteStoppedAfterDays })}
+          />
+        }
+      />
+      <SettingsRow
         title={
           <StatusTitle
             state={
@@ -688,6 +738,217 @@ function NewMachineRows({
   );
 }
 
+/** A whole number kept within `bounds`; an out-of-range entry snaps to the nearest bound. */
+function BoundedNumberField({
+  value,
+  bounds,
+  unit,
+  label,
+  disabled,
+  onCommit,
+}: {
+  readonly value: number;
+  readonly bounds: { readonly min: number; readonly max: number };
+  readonly unit: string;
+  readonly label: string;
+  readonly disabled: boolean;
+  readonly onCommit: (value: number) => void;
+}) {
+  const [draft, setDraft] = useState<number | null>(value);
+  const [saved, setSaved] = useState(value);
+  if (saved !== value) {
+    setSaved(value);
+    setDraft(value);
+  }
+  return (
+    <span className="flex items-center gap-2">
+      <NumberField
+        value={draft}
+        min={bounds.min}
+        max={bounds.max}
+        step={1}
+        size="sm"
+        className="w-28"
+        disabled={disabled}
+        onValueChange={setDraft}
+        onValueCommitted={(next) => {
+          if (next === null) {
+            setDraft(value);
+            return;
+          }
+          const clamped = Math.min(bounds.max, Math.max(bounds.min, Math.round(next)));
+          setDraft(clamped);
+          if (clamped !== value) onCommit(clamped);
+        }}
+      >
+        <NumberFieldGroup>
+          <NumberFieldDecrement aria-label={`${label} −`} />
+          <NumberFieldInput aria-label={label} />
+          <NumberFieldIncrement aria-label={`${label} +`} />
+        </NumberFieldGroup>
+      </NumberField>
+      <span className="w-8 text-xs text-muted-foreground">{unit}</span>
+    </span>
+  );
+}
+
+/**
+ * Disconnecting removes the key, after which T3 can neither stop nor delete the machines it
+ * made: a running one runs until its lease ends, a stopped one stays until Boat drops it. So
+ * the confirmation counts them and offers to delete them first.
+ */
+function DisconnectDialog({
+  open,
+  status,
+  holders,
+  holderEnvironmentId,
+  onClose,
+}: {
+  readonly open: boolean;
+  readonly status: BoatCloudStatus;
+  readonly holders: ReadonlyArray<EnvironmentPresentation>;
+  readonly holderEnvironmentId: EnvironmentId;
+  readonly onClose: () => void;
+}) {
+  const gt = useGT();
+  const disconnect = useAtomCommand(serverEnvironment.disconnectBoatCloud);
+  const remove = useAtomCommand(serverEnvironment.boatCloudDeleteMachine);
+  const [busy, setBusy] = useState<"delete" | "disconnect" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  // A machine Boat already deleted ("Saved copy") is not on Boat any more.
+  const onBoat = status.machines.filter((machine) => machine.state !== "gone");
+  const running = onBoat.filter(
+    (machine) => machine.state === "running" || machine.state === "starting",
+  ).length;
+  const saved = onBoat.filter((machine) => machine.backedUpAt !== null).length;
+  // Every computer holding the key, this one always among them.
+  const holderIds = new Set([
+    holderEnvironmentId,
+    ...holders.map((holder) => holder.environmentId),
+  ]);
+  const disconnectAll = () =>
+    Promise.all([...holderIds].map((environmentId) => disconnect({ environmentId, input: {} })));
+  const finish = async (deleteFirst: boolean) => {
+    setBusy(deleteFirst ? "delete" : "disconnect");
+    setError(null);
+    if (deleteFirst) {
+      const results = await Promise.all(
+        onBoat.map((machine) =>
+          remove({
+            environmentId: holderEnvironmentId,
+            input: {
+              sandboxId: machine.sandboxId,
+              ...(machine.state === "running" || machine.state === "starting"
+                ? { force: true }
+                : {}),
+            },
+          }),
+        ),
+      );
+      const failed = results.filter((result) => result._tag !== "Success").length;
+      if (failed > 0) {
+        // Still connected, so the user can retry or delete the rest from the list.
+        setBusy(null);
+        setError(
+          gt("Could not delete {count} of the machines. Nothing was disconnected.", {
+            count: failed,
+          }),
+        );
+        return;
+      }
+    }
+    await disconnectAll();
+    setBusy(null);
+    onClose();
+  };
+  const computers = holderIds.size;
+  return (
+    <AlertDialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!next && busy === null) {
+          setError(null);
+          onClose();
+        }
+      }}
+    >
+      <AlertDialogPopup>
+        <AlertDialogHeader>
+          <AlertDialogTitle>
+            {computers > 1
+              ? gt("Disconnect Boat on {count} computers?", { count: computers })
+              : gt("Disconnect Boat?")}
+          </AlertDialogTitle>
+          <AlertDialogDescription>
+            {onBoat.length === 0
+              ? gt("The Boat key is removed. You can connect again at any time.")
+              : gt(
+                  "{count, plural, one {1 machine will be left on Boat.} other {# machines will be left on Boat.}} T3 can't stop or delete them once disconnected.",
+                  { count: onBoat.length },
+                )}
+            {running > 0
+              ? ` ${gt(
+                  "{count, plural, one {1 is running and stays on until it has been idle for {minutes} minutes.} other {# are running and stay on until they have been idle for {minutes} minutes.}}",
+                  { count: running, minutes: status.idleStopMinutes },
+                )}`
+              : null}
+          </AlertDialogDescription>
+          {onBoat.length > 0 ? (
+            <AlertDialogDescription>
+              {saved === 0
+                ? gt(
+                    "Deleting them takes their threads' machines with them; none has a saved copy on this computer.",
+                  )
+                : saved === onBoat.length
+                  ? gt(
+                      "Deleting them takes their threads' machines with them. Each has a saved copy on this computer, so its threads come back if you reconnect, without work since that copy.",
+                    )
+                  : gt(
+                      "Deleting them takes their threads' machines with them. {saved, plural, one {1 of them has a saved copy on this computer, so its threads come back if you reconnect.} other {# of them have a saved copy on this computer, so their threads come back if you reconnect.}}",
+                      { saved },
+                    )}
+            </AlertDialogDescription>
+          ) : null}
+          {error ? <p className="text-sm text-destructive-foreground">{error}</p> : null}
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogClose
+            disabled={busy !== null}
+            render={<Button variant="ghost" disabled={busy !== null} />}
+          >
+            {gt("Cancel")}
+          </AlertDialogClose>
+          {onBoat.length === 0 ? (
+            <Button
+              variant="destructive"
+              disabled={busy !== null}
+              onClick={() => void finish(false)}
+            >
+              {busy ? <Spinner aria-hidden size="sm" /> : null}
+              {gt("Disconnect")}
+            </Button>
+          ) : (
+            <>
+              <Button variant="outline" disabled={busy !== null} onClick={() => void finish(false)}>
+                {busy === "disconnect" ? <Spinner aria-hidden size="sm" /> : null}
+                {gt("Disconnect only")}
+              </Button>
+              <Button
+                variant="destructive"
+                disabled={busy !== null}
+                onClick={() => void finish(true)}
+              >
+                {busy === "delete" ? <Spinner aria-hidden size="sm" /> : null}
+                {gt("Delete machines and disconnect")}
+              </Button>
+            </>
+          )}
+        </AlertDialogFooter>
+      </AlertDialogPopup>
+    </AlertDialog>
+  );
+}
+
 export function BoatCloudSettings() {
   const gt = useGT();
   const searchableSetting = useSearchableSetting();
@@ -708,7 +969,7 @@ export function BoatCloudSettings() {
     const state = holderStates.get(holder.environmentId);
     return typeof state === "object" && state?.connected === false;
   });
-  const disconnect = useAtomCommand(serverEnvironment.disconnectBoatCloud);
+  const [disconnecting, setDisconnecting] = useState(false);
   // Hidden while this machine's status loads, and on a T3 Code without Boat cloud.
   if (status === null) return null;
   const connected = status.connected;
@@ -741,11 +1002,7 @@ export function BoatCloudSettings() {
               <Button
                 size="xs"
                 variant="destructive-outline"
-                onClick={() => {
-                  for (const holder of holders) {
-                    void disconnect({ environmentId: holder.environmentId, input: {} });
-                  }
-                }}
+                onClick={() => setDisconnecting(true)}
               >
                 {gt("Disconnect")}
               </Button>
@@ -773,6 +1030,13 @@ export function BoatCloudSettings() {
       </SettingsSection>
       {connected && holderEnvironmentId !== null ? (
         <>
+          <DisconnectDialog
+            open={disconnecting}
+            status={status}
+            holders={holders}
+            holderEnvironmentId={holderEnvironmentId}
+            onClose={() => setDisconnecting(false)}
+          />
           <BoatCloudMachinesSection status={status} holderEnvironmentId={holderEnvironmentId} />
           <SettingsSection id="boat-cloud-new-machines" title={gt("New machines")}>
             <NewMachineRows
