@@ -41,6 +41,9 @@
         "prepare-server-compile-cache.cjs",
         "smoke-desktop-app.ts",
         "verify-windows-desktop-artifact.ts",
+        // Fork: upstream's Icon Composer exports, kept for merges; render-boat-mark.ts replaces them.
+        "export-brand-icons.ts",
+        "export-android-icons.ts",
       ],
       "ignoreDependencies": ["esbuild"],
       // The `t3` npm package's files: copied into the package, never imported.

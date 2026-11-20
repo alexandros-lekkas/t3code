@@ -1,5 +1,7 @@
 # Brand icons
 
+> Fork (alexandros-lekkas/t3code): every tracked icon below is rendered by `scripts/render-boat-mark.ts` (`vp run icons:export`, checked by `vp run icons:check`). The Icon Composer projects and the export steps this file describes are upstream's and are no longer used here.
+
 The three Icon Composer projects are the source of truth for full application icons:
 
 - `dev/app-icon.icon`

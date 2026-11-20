@@ -12,6 +12,7 @@
 - Syncing by hand: fast-forward `main` with `git push origin upstream/main:main`, then merge `main` into `boat`. Resolve conflicts so both upstream's changes and the Boat features stay. Run `vp i`, `vp run typecheck` and `vp run check:changed upstream/main`, then push `boat` (fast-forward only).
 - Building the app locally: `T3CODE_DESKTOP_VERSION=<x.y.z-boat.N> node scripts/build-desktop-artifact.ts --platform mac --target dir --arch arm64`, with the `T3CODE_*` values from `.env.example` exported. The app lands in `release/mac-arm64/`. A `-boat.N` version keeps the Nightly name and identity. Without `T3CODE_DESKTOP_UPDATE_REPOSITORY` it has no update feed.
 - Installing a local build by hand: `~/Applications-backup/swap-t3-app.sh "<path to the .app>"` quits T3 Code, swaps the build in and relaunches. `~/Applications-backup/swap-on-quit.sh "<path to the .app>"` waits for you to quit instead. Only one watcher waits at a time.
+- Icons come from scripts/render-boat-mark.ts; rerun it after upstream merges if icons changed.
 
 T3 Code is a minimal GUI for coding agents. A Node WebSocket server wraps provider CLIs and agents (Codex, Claude Code, Cursor, Grok, OpenCode, Antigravity, Kiro, Pi, Muse Code, fx) and serves web, desktop, and mobile clients.
 
