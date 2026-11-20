@@ -216,15 +216,49 @@ export const isWritableMacInstall = (bundlePath: string) =>
     }
   });
 
+const DOWNLOAD_IDLE_TIMEOUT_MS = 60_000;
+
+/** An abort signal that fires once `ms` pass without a `touch`. */
+function idleWatchdog(ms: number) {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const touch = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => controller.abort(), ms);
+  };
+  touch();
+  return { signal: controller.signal, touch, stop: () => clearTimeout(timer) };
+}
+
 /** Streams the zip to disk, checking size and sha512 against the feed. */
 const downloadZip = Effect.fn("desktop.updates.unsignedMac.download")(function* (input: {
   readonly url: string;
   readonly zip: MacUpdateZip;
   readonly destination: string;
   readonly onProgress: (percent: number) => Effect.Effect<void>;
+  readonly idleTimeoutMs?: number;
 }) {
-  const response = yield* fsStep("download", "request failed", () => fetch(input.url));
+  // A connection that stops sending (sleep, a network switch) never errors on its own; without
+  // this the download, and every later attempt the app refuses while it runs, would hang.
+  const idleTimeoutMs = input.idleTimeoutMs ?? DOWNLOAD_IDLE_TIMEOUT_MS;
+  const watchdog = idleWatchdog(idleTimeoutMs);
+  const networkStep = <A>(detail: string, f: () => Promise<A>) =>
+    Effect.tryPromise({
+      try: f,
+      catch: (cause) => {
+        watchdog.stop();
+        return new UnsignedMacUpdateError({
+          step: "download",
+          detail: watchdog.signal.aborted ? `no data for ${idleTimeoutMs / 1000}s` : detail,
+          cause,
+        });
+      },
+    });
+  const response = yield* networkStep("request failed", () =>
+    fetch(input.url, { signal: watchdog.signal }),
+  );
   if (!response.ok || response.body === null) {
+    watchdog.stop();
     return yield* new UnsignedMacUpdateError({
       step: "download",
       detail: `server answered ${response.status}`,
@@ -241,8 +275,9 @@ const downloadZip = Effect.fn("desktop.updates.unsignedMac.download")(function* 
       Effect.gen(function* () {
         const reader = response.body!.getReader();
         while (true) {
-          const chunk = yield* fsStep("download", "connection lost", () => reader.read());
+          const chunk = yield* networkStep("connection lost", () => reader.read());
           if (chunk.done) break;
+          watchdog.touch();
           hash.update(chunk.value);
           received += chunk.value.byteLength;
           yield* fsStep("download", "could not write the download", () =>
@@ -251,7 +286,8 @@ const downloadZip = Effect.fn("desktop.updates.unsignedMac.download")(function* 
           if (total > 0) yield* input.onProgress(Math.min(100, (received / total) * 100));
         }
       }),
-    (handle) => Effect.promise(() => handle.close()),
+    (handle) =>
+      Effect.sync(watchdog.stop).pipe(Effect.andThen(Effect.promise(() => handle.close()))),
   );
   if (input.zip.size !== undefined && received !== input.zip.size) {
     return yield* new UnsignedMacUpdateError({
@@ -284,6 +320,8 @@ export const prepareUnsignedMacUpdate = Effect.fn("desktop.updates.unsignedMac.p
     readonly workDir: string;
     readonly currentBundlePath: string;
     readonly onProgress: (percent: number) => Effect.Effect<void>;
+    /** How long the download may go without data before it fails. */
+    readonly idleTimeoutMs?: number;
   }) {
     const expectedIdentifier = yield* readPlistValue(
       NodePath.join(input.currentBundlePath, "Contents", "Info.plist"),
@@ -300,6 +338,7 @@ export const prepareUnsignedMacUpdate = Effect.fn("desktop.updates.unsignedMac.p
       zip: input.zip,
       destination: zipPath,
       onProgress: input.onProgress,
+      ...(input.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: input.idleTimeoutMs }),
     });
     yield* run("/usr/bin/ditto", ["-x", "-k", zipPath, extractDir], "extract");
     yield* fsStep("extract", "could not remove the downloaded zip", () => NodeFSP.rm(zipPath));

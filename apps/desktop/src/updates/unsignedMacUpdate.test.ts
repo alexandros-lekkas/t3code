@@ -1,8 +1,10 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Runs the real swap helper against fake bundles on disk.
 // @effect-diagnostics globalTimers:off -- Waits briefly for detached fake bundles to record their launch.
 import * as NodeChildProcess from "node:child_process";
+import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
+import * as NodeHttp from "node:http";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
@@ -18,6 +20,7 @@ import {
   bootCheckEnvironment,
   bootCheckUnsignedMacUpdate,
   macUpdateAssetUrl,
+  prepareUnsignedMacUpdate,
   resolveMacAppBundlePath,
   selectMacUpdateZip,
   unsignedMacHelperEnvironment,
@@ -384,6 +387,106 @@ http.createServer((request, response) => {
       const { exit } = yield* runCheck("wrong-version");
       expect(Exit.isFailure(exit)).toBe(true);
       expect(JSON.stringify(exit)).toContain("unexpected body");
+    }),
+  );
+});
+
+// Extracting and reading the bundle use macOS's own ditto and plutil.
+const hasMacTools = NodeFS.existsSync("/usr/bin/ditto") && NodeFS.existsSync("/usr/bin/plutil");
+
+describe.skipIf(!hasMacTools)("unsigned macOS update download", () => {
+  const roots: Array<string> = [];
+  const servers: Array<NodeHttp.Server> = [];
+  afterEach(async () => {
+    for (const server of servers.splice(0)) server.closeAllConnections();
+    await Promise.all(
+      roots.splice(0).map((root) => NodeFSP.rm(root, { recursive: true, force: true })),
+    );
+  });
+
+  const plist = (path: string, entries: Record<string, string>) => {
+    NodeChildProcess.execFileSync("/usr/bin/plutil", ["-create", "xml1", path]);
+    for (const [key, value] of Object.entries(entries)) {
+      NodeChildProcess.execFileSync("/usr/bin/plutil", ["-insert", key, "-string", value, path]);
+    }
+  };
+
+  // A release zip of a fake bundle, the running bundle it replaces, and a local feed serving it.
+  const setup = async (serve: "all" | "stall") => {
+    const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3code-download-"));
+    roots.push(root);
+    const current = NodePath.join(root, "current", "T3 Code (Nightly).app");
+    await NodeFSP.mkdir(NodePath.join(current, "Contents"), { recursive: true });
+    plist(NodePath.join(current, "Contents", "Info.plist"), {
+      CFBundleIdentifier: "com.t3tools.t3code",
+    });
+    const release = NodePath.join(root, "release", "T3 Code (Nightly).app");
+    await NodeFSP.mkdir(NodePath.join(release, "Contents", "MacOS"), { recursive: true });
+    plist(NodePath.join(release, "Contents", "Info.plist"), {
+      CFBundleIdentifier: "com.t3tools.t3code",
+      CFBundleShortVersionString: "0.1.11-boat.9",
+      CFBundleExecutable: "T3 Code (Nightly)",
+    });
+    const zipPath = NodePath.join(root, "update.zip");
+    NodeChildProcess.execFileSync("/usr/bin/ditto", ["-c", "-k", "--keepParent", release, zipPath]);
+    const bytes = await NodeFSP.readFile(zipPath);
+    const server = NodeHttp.createServer((_request, response) => {
+      response.writeHead(200, { "content-length": String(bytes.byteLength) });
+      if (serve === "all") response.end(bytes);
+      // Sends the first bytes, then goes quiet without closing, like a connection lost in sleep.
+      else response.write(bytes.subarray(0, 16));
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address() as { port: number };
+    return {
+      root,
+      current,
+      url: `http://127.0.0.1:${address.port}/update.zip`,
+      zip: {
+        url: "update.zip",
+        sha512: NodeCrypto.createHash("sha512").update(bytes).digest("base64"),
+        size: bytes.byteLength,
+      },
+    };
+  };
+
+  const prepare = (serve: "all" | "stall", idleTimeoutMs: number) =>
+    Effect.gen(function* () {
+      const { root, current, url, zip } = yield* Effect.promise(() => setup(serve));
+      const exit = yield* Effect.exit(
+        prepareUnsignedMacUpdate({
+          version: "0.1.11-boat.9",
+          url,
+          zip,
+          workDir: NodePath.join(root, "work"),
+          currentBundlePath: current,
+          onProgress: () => Effect.void,
+          idleTimeoutMs,
+        }),
+      );
+      return { root, exit };
+    });
+
+  effectIt.live("downloads, verifies and extracts the release bundle", () =>
+    Effect.gen(function* () {
+      const { root, exit } = yield* prepare("all", 1_000);
+      expect(exit).toEqual(
+        Exit.succeed({
+          version: "0.1.11-boat.9",
+          stagedBundlePath: NodePath.join(root, "work", "extracted", "T3 Code (Nightly).app"),
+          executable: NodePath.join("Contents", "MacOS", "T3 Code (Nightly)"),
+        }),
+      );
+    }),
+  );
+
+  // Without the idle timeout this hangs until the test times out.
+  effectIt.live("fails a download that stops sending instead of waiting forever", () =>
+    Effect.gen(function* () {
+      const { exit } = yield* prepare("stall", 300);
+      expect(Exit.isFailure(exit)).toBe(true);
+      expect(JSON.stringify(exit)).toContain("no data for 0.3s");
     }),
   );
 });
