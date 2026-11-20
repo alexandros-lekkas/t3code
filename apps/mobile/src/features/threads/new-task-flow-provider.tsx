@@ -937,6 +937,7 @@ export function NewTaskFlowProvider(
 
   const scratchEnvironments = connectedEnvironments.filter(
     (environment) =>
+      !boatCloudMachines.has(environment.environmentId) &&
       availableScratchWorkspaceRoot(
         environment.connectionState,
         serverConfigs.get(environment.environmentId),

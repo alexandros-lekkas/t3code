@@ -2,10 +2,11 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   connectionCatalogDisplayUrl,
   hasRelayRoute,
+  isBoatCloudConnectionEntry,
   type EnvironmentPresentation as BaseEnvironmentPresentation,
 } from "@t3tools/client-runtime/connection";
 import { Discovery } from "@t3tools/client-runtime/relay";
-import { type EnvironmentId, isBoatCloudHttpBaseUrl } from "@t3tools/contracts";
+import type { EnvironmentId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 
 import { environmentCatalog } from "../connection/catalog";
@@ -38,7 +39,7 @@ function projectEnvironmentPresentation(
   presentation: BaseEnvironmentPresentation,
 ): EnvironmentPresentation {
   const displayUrl = connectionCatalogDisplayUrl(presentation.entry);
-  const boatCloud = isBoatCloudHttpBaseUrl(displayUrl);
+  const boatCloud = isBoatCloudConnectionEntry(presentation.entry);
   return {
     ...presentation,
     environmentId,
@@ -64,6 +65,29 @@ export function useEnvironments() {
     environments,
     presentationById,
   };
+}
+
+/**
+ * One of the user's machines: anything but a Boat cloud VM, which is one thread's throwaway
+ * server. Pickers, settings scopes and machine lists keep only these; lookups of a thread's own
+ * environment use `useEnvironments`. A VM serving this page itself (its own web UI) stays.
+ */
+export function isMachineEnvironment(environment: Pick<BaseEnvironmentPresentation, "entry">) {
+  return (
+    environment.entry.target._tag === "PrimaryConnectionTarget" ||
+    !isBoatCloudConnectionEntry(environment.entry)
+  );
+}
+
+export function machineEnvironmentsOf<T extends Pick<BaseEnvironmentPresentation, "entry">>(
+  environments: ReadonlyArray<T>,
+): T[] {
+  return environments.filter(isMachineEnvironment);
+}
+
+export function useMachineEnvironments() {
+  const result = useEnvironments();
+  return { ...result, environments: machineEnvironmentsOf(result.environments) };
 }
 
 /** Provider statuses change on every push, so they live apart from the presentations. */

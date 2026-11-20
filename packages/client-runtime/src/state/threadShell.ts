@@ -9,7 +9,6 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import {
-  isBoatCloudHttpBaseUrl,
   isListedThreadLineage,
   isProviderNativeSubagentThread,
   OrchestrationV2ThreadShell,
@@ -18,7 +17,7 @@ import { parseRepository } from "@t3tools/shared/boatCloudVm";
 import * as Schema from "effect/Schema";
 import { Atom } from "effect/reactivity";
 
-import { connectionCatalogDisplayUrl } from "../connection/presentation.ts";
+import { isBoatCloudConnectionEntry } from "../connection/presentation.ts";
 import type { EnvironmentThreadShell, PendingSubagentRequest } from "./models.ts";
 import { presentThreadShell, threadRuntimeIsActive } from "./models.ts";
 import { hiddenThreadKeys, NO_HIDDEN_THREADS } from "./threadTagFilter.ts";
@@ -276,7 +275,7 @@ export function createBoatCloudThreadListAtoms(input: {
   const onBoatCloudAtom = Atom.family((environmentId: EnvironmentId) =>
     Atom.make((get) => {
       const entry = get(input.catalogValueAtom).entries.get(environmentId);
-      return entry !== undefined && isBoatCloudHttpBaseUrl(connectionCatalogDisplayUrl(entry));
+      return entry !== undefined && isBoatCloudConnectionEntry(entry);
     }).pipe(Atom.withLabel(`boat-cloud-environment:${environmentId}`)),
   );
   const listedThreadIdsAtom = Atom.family((environmentId: EnvironmentId) =>

@@ -12,7 +12,7 @@ import {
 import { useEffect, useState } from "react";
 
 import { useAllEnvironmentShellsBootstrapped, useProjects } from "~/state/entities";
-import { useEnvironments } from "~/state/environments";
+import { machineEnvironmentsOf, useEnvironments } from "~/state/environments";
 import {
   applyPullRequestOverrides,
   findProjectForRepository,
@@ -71,7 +71,7 @@ export function usePullRequestScope(
   const { environments } = useEnvironments();
   const allProjects = useProjects();
   const projectsKnown = useAllEnvironmentShellsBootstrapped();
-  const capableEnvironments = environments
+  const capableEnvironments = machineEnvironmentsOf(environments)
     .filter((environment) => environment.serverConfig !== null)
     .toSorted((left, right) => left.environmentId.localeCompare(right.environmentId));
   const scopedEnvironmentId =

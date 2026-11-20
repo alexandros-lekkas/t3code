@@ -137,6 +137,7 @@ import { useOrderWhileOpen } from "../hooks/useOrderWhileOpen";
 import { reportProjectFailure, useProjectPin } from "../hooks/useProjectGroupUpdate";
 import {
   useEnvironmentProviders,
+  machineEnvironmentsOf,
   useEnvironments,
   usePrimaryEnvironmentId,
 } from "../state/environments";
@@ -613,7 +614,7 @@ function OpenCommandPaletteDialog(props: {
   };
 
   const addProjectEnvironmentOptions = (() => {
-    const options = environments
+    const options = machineEnvironmentsOf(environments)
       .filter((environment) => canCreateProjectInEnvironment(environment.connection.phase))
       .map((environment): AddProjectEnvironmentOption => {
         const isPrimary = environment.entry.target._tag === "PrimaryConnectionTarget";
@@ -736,7 +737,7 @@ function OpenCommandPaletteDialog(props: {
   const triageEnvironmentId = pickTriageEnvironment({
     onScreen: currentProjectEnvironmentId,
     primary: primaryEnvironmentId,
-    connected: environments
+    connected: machineEnvironmentsOf(environments)
       .filter((environment) => environment.connection.phase === "connected")
       .map((environment) => environment.environmentId),
     supportsTriage,

@@ -68,7 +68,7 @@ import { cn } from "~/lib/utils";
 import { readLocalApi } from "~/localApi";
 import type { ReviewCommentContext } from "~/reviewCommentContext";
 import { useProjects, useServerConfigs } from "~/state/entities";
-import { useEnvironments } from "~/state/environments";
+import { useMachineEnvironments } from "~/state/environments";
 import { useEnvironmentQuery } from "~/state/query";
 import { readEnvironmentScope, useEnvironmentScope } from "~/state/session";
 import { useLiveRefresh } from "~/hooks/useLiveRefresh";
@@ -825,7 +825,7 @@ export function PullRequestDetailPanel({
   const [pendingAction, setPendingAction] = useState<PullRequestAction | null>(null);
   const actionPending = pendingAction !== null;
   const newThread = useNewThreadHandler();
-  const { environments } = useEnvironments();
+  const { environments } = useMachineEnvironments();
   const pickableEnvironments =
     context === "page"
       ? resolvePickableEnvironments(

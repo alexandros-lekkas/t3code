@@ -24,7 +24,7 @@ import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { useUpdatePrimarySettings } from "~/hooks/useSettings";
 import { isHostedStaticApp } from "~/hostedPairing";
 import {
-  useEnvironments,
+  useMachineEnvironments,
   usePrimaryEnvironment,
   usePrimaryEnvironmentId,
 } from "~/state/environments";
@@ -79,7 +79,7 @@ function ConfiguredConnectOnboardingDialog() {
     ConnectOnboardingOptOutSchema,
   );
 
-  const { environments, isReady: environmentsReady } = useEnvironments();
+  const { environments, isReady: environmentsReady } = useMachineEnvironments();
   // The empty hosted home already adds account computers after sign-in.
   const homeScreenAddsComputers =
     isHostedStaticApp() && environmentsReady && environments.length === 0;
@@ -451,7 +451,7 @@ function OnboardingToggleRow({
 }
 
 function DevicesStep() {
-  const { environments } = useEnvironments();
+  const { environments } = useMachineEnvironments();
   const primaryEnvironment = usePrimaryEnvironment();
   const savedEnvironments = environments.filter(
     (environment) => environment.entry.target._tag !== "PrimaryConnectionTarget",

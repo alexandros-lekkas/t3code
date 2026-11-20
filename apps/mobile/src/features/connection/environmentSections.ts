@@ -13,6 +13,11 @@ export interface EnvironmentSections {
   readonly availableCloudEnvironments: ReadonlyArray<RelayClientEnvironmentRecord>;
 }
 
+/** A Boat cloud VM: one thread's throwaway server, which lists of the user's machines leave out. */
+export function isBoatCloudEnvironment(environment: { readonly displayUrl: string | null }) {
+  return isBoatCloudHttpBaseUrl(environment.displayUrl);
+}
+
 export function relayManagedEnvironmentIds(
   environments: ReadonlyArray<{
     readonly environmentId: EnvironmentId;
@@ -32,8 +37,7 @@ export function splitEnvironmentSections(input: EnvironmentSectionsInput): Envir
   return {
     // Boat cloud VMs come and go with threads; the Boat cloud section lists them instead.
     localEnvironments: input.connectedEnvironments.filter(
-      (environment) =>
-        !environment.isRelayManaged && !isBoatCloudHttpBaseUrl(environment.displayUrl),
+      (environment) => !environment.isRelayManaged && !isBoatCloudEnvironment(environment),
     ),
     connectedCloudEnvironments: input.connectedEnvironments.filter(
       (environment) => environment.isRelayManaged,

@@ -6,6 +6,7 @@ import { msg, T, useGT, useMessages, Var } from "gt-react";
 import { useRef, useState } from "react";
 
 import { cn } from "../../lib/utils";
+import { isMachineEnvironment } from "../../state/environments";
 import { environmentPresentations } from "../../state/presentation";
 import { serverEnvironment } from "../../state/server";
 import { environmentSession, readEnvironmentScope } from "../../state/session";
@@ -43,7 +44,8 @@ import {
 } from "./usagePriceTargets";
 
 const priceTargetsAtom = Atom.make((get): readonly UsagePriceTarget[] =>
-  [...get(environmentPresentations.presentationsAtom)].map(([environmentId, environment]) => {
+  [...get(environmentPresentations.presentationsAtom)].flatMap(([environmentId, environment]) => {
+    if (!isMachineEnvironment(environment)) return [];
     const settings = get(serverEnvironment.settingsValueAtom(environmentId));
     const session = get(environmentSession.sessionStateAtom(environmentId));
     const sessionData = AsyncResult.getOrElse(session, () => null);
@@ -57,25 +59,27 @@ const priceTargetsAtom = Atom.make((get): readonly UsagePriceTarget[] =>
           : sessionGrantsScope(sessionData, AuthSettingsWriteScope)
             ? "granted"
             : "denied";
-    return {
-      environmentId,
-      label: environment.entry.target.label,
-      prices: settings?.usagePriceOverrides ?? null,
-      aliases:
-        environment.serverConfig?.environment.capabilities.usageModelAliases === true
-          ? (settings?.usageModelAliases ?? null)
-          : null,
-      unavailable:
-        environment.connection.phase !== "connected"
-          ? msg("Offline")
-          : settings === null
-            ? msg("Prices not loaded")
-            : access === "pending"
-              ? msg("Checking permissions…")
-              : access === "denied"
-                ? msg("Read-only access")
-                : null,
-    };
+    return [
+      {
+        environmentId,
+        label: environment.entry.target.label,
+        prices: settings?.usagePriceOverrides ?? null,
+        aliases:
+          environment.serverConfig?.environment.capabilities.usageModelAliases === true
+            ? (settings?.usageModelAliases ?? null)
+            : null,
+        unavailable:
+          environment.connection.phase !== "connected"
+            ? msg("Offline")
+            : settings === null
+              ? msg("Prices not loaded")
+              : access === "pending"
+                ? msg("Checking permissions…")
+                : access === "denied"
+                  ? msg("Read-only access")
+                  : null,
+      },
+    ];
   }),
 );
 

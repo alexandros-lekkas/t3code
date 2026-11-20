@@ -1,4 +1,4 @@
-import type { ServerConfig } from "@t3tools/contracts";
+import { isBoatCloudHttpBaseUrl, type ServerConfig } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { mFallback, msg } from "gt-i18n";
 import type { MFunctionType } from "gt-i18n/types";
@@ -200,4 +200,12 @@ export function connectionCatalogDisplayUrl(entry: ConnectionCatalogEntry): stri
         ? `${entry.profile.value.target.username}@${entry.profile.value.target.hostname}`
         : null;
   }
+}
+
+/**
+ * A Boat cloud VM: one thread's throwaway T3 server, not one of the user's machines. Lists of
+ * machines and settings scopes leave these out; the single Boat entry in "Run on" stands for them.
+ */
+export function isBoatCloudConnectionEntry(entry: ConnectionCatalogEntry): boolean {
+  return isBoatCloudHttpBaseUrl(connectionCatalogDisplayUrl(entry));
 }

@@ -73,3 +73,24 @@ export function draftStartsOwnBoatCloudMachine(
 ): boolean {
   return draft?.environmentSelection === "cloud" && !draft.promotedTo;
 }
+
+/**
+ * Paired Boat VM environments this machine no longer holds in any state: Boat deleted the VM
+ * and no backup can bring it back, so nothing of it can open again. A VM listed as stopped or
+ * gone stays, since waking a thread on it restores it. One that is connected is alive (another
+ * holder's, say) and stays too.
+ */
+export function boatCloudEnvironmentsToForget(input: {
+  readonly status: BoatCloudStatus | null;
+  readonly boatCloudEnvironmentIds: ReadonlyArray<EnvironmentId>;
+  readonly connectedEnvironmentIds: ReadonlySet<EnvironmentId>;
+}): ReadonlyArray<EnvironmentId> {
+  const { status } = input;
+  // A start in flight pairs its client before the holder may list the VM's environment.
+  if (status === null || !status.connected || status.starts.length > 0) return [];
+  const held = new Set(status.machines.map((machine) => machine.environmentId));
+  return input.boatCloudEnvironmentIds.filter(
+    (environmentId) =>
+      !held.has(environmentId) && !input.connectedEnvironmentIds.has(environmentId),
+  );
+}

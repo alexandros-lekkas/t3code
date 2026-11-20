@@ -9,7 +9,7 @@ import {
 import { useRef, useState } from "react";
 import { T, useGT } from "gt-react";
 
-import { useEnvironmentProviders, useEnvironments } from "~/state/environments";
+import { useEnvironmentProviders, useMachineEnvironments } from "~/state/environments";
 import { serverEnvironment } from "~/state/server";
 import { useEnvironmentsWithScope } from "~/state/session";
 import { useAtomCommand } from "~/state/use-atom-command";
@@ -27,7 +27,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 // drops it only when the model manifest changed.
 export function useCheckProviderUpdates() {
   const gt = useGT();
-  const { environments } = useEnvironments();
+  const { environments } = useMachineEnvironments();
   const manageableIds = useEnvironmentsWithScope(environments, AuthProvidersManageScope);
   const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
@@ -72,7 +72,7 @@ export function useCheckProviderUpdates() {
 }
 
 export function useProviderUpdates() {
-  const { environments } = useEnvironments();
+  const { environments } = useMachineEnvironments();
   const manageableIds = useEnvironmentsWithScope(environments, AuthProvidersManageScope);
   const providersByEnvironment = useEnvironmentProviders();
   const updateProvider = useAtomCommand(serverEnvironment.updateProvider, {

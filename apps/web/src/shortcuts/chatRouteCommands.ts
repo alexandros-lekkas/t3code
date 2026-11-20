@@ -24,6 +24,7 @@ import { appAtomRegistry } from "../rpc/atomRegistry";
 import { buildSidebarProjectSnapshots } from "../sidebarProjectGrouping";
 import { readProjects, readThreadShell } from "../state/entities";
 import { defaultProjectFallbackReadyAtom } from "../state/projects";
+import { isMachineEnvironment } from "../state/environments";
 import { environmentPresentations } from "../state/presentation";
 import { primaryEnvironmentIdAtom } from "../state/primaryEnvironment";
 import { readEnvironmentScope } from "../state/session";
@@ -44,8 +45,9 @@ export function installChatRouteCommands(router: AnyRouter): () => void {
   const handleNewThread = createNewThreadHandler(router);
   const scratch = createScratchProjectActions({
     environments: () =>
-      [...appAtomRegistry.get(environmentPresentations.presentationsAtom)].map(
-        ([environmentId, presentation]) => ({ ...presentation, environmentId }),
+      [...appAtomRegistry.get(environmentPresentations.presentationsAtom)].flatMap(
+        ([environmentId, presentation]) =>
+          isMachineEnvironment(presentation) ? [{ ...presentation, environmentId }] : [],
       ),
     primaryEnvironmentId: () => appAtomRegistry.get(primaryEnvironmentIdAtom),
     registry: appAtomRegistry,

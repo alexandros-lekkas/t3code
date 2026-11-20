@@ -95,6 +95,7 @@ import {
   resolveUsageShortcut,
   type UsageMetric,
 } from "./usageShortcuts";
+import { usageEnvironmentRows } from "./usageEnvironmentRows";
 import {
   PROVIDER_ORDER,
   PROVIDER_PRESENTATION,
@@ -1204,12 +1205,14 @@ function UsageEnvironmentFilter({
   const gt = useGT();
   const m = useMessages();
   const allSelected = selectedEnvironmentIds === null;
+  const rows = usageEnvironmentRows(environments);
+  const selectedRows = usageEnvironmentRows(selectedEnvironments);
   const label = allSelected
     ? gt("All environments")
-    : selectedEnvironments.length === 1
-      ? selectedEnvironments[0]!.label
+    : selectedRows.length === 1
+      ? selectedRows[0]!.label
       : gt("{count, plural, one {{count} environments} other {{count} environments}}", {
-          count: selectedEnvironments.length,
+          count: selectedRows.length,
         });
   const hasIssue =
     selectedEnvironments.some((environment) => environment.error !== null) ||
@@ -1242,13 +1245,18 @@ function UsageEnvironmentFilter({
           <T>All environments</T>
         </MenuCheckboxItem>
         <MenuSeparator />
-        {environments.map((environment) => {
+        {rows.map((row) => {
+          const { environment } = row;
           const checked =
             selectedEnvironmentIds === null ||
-            selectedEnvironmentIds.has(environment.environmentId);
-          const progress = usageEnvironmentProgress(environment, refreshing);
+            row.environmentIds.every((id) => selectedEnvironmentIds.has(id));
+          const progress = environment && usageEnvironmentProgress(environment, refreshing);
           const status =
-            environment.error !== null
+            environment === null || progress === null
+              ? row.isPending
+                ? gt("Scanning…")
+                : gt("Ready", { $context: "environment usage status" })
+              : environment.error !== null
               ? gt("Unavailable")
               : environment.summary !== null &&
                   !isCompatibleUsageContractVersion(
@@ -1267,23 +1275,25 @@ function UsageEnvironmentFilter({
                         : gt("Ready", { $context: "environment usage status" });
           return (
             <MenuCheckboxItem
-              key={environment.environmentId}
+              key={row.key}
               checked={checked}
               closeOnClick={false}
               onCheckedChange={(nextChecked) => {
                 const next = new Set(selectedEnvironments.map((entry) => entry.environmentId));
-                if (nextChecked) next.add(environment.environmentId);
-                else next.delete(environment.environmentId);
+                for (const id of row.environmentIds) {
+                  if (nextChecked) next.add(id);
+                  else next.delete(id);
+                }
                 onSelectionChange(next.size === environments.length ? null : next);
               }}
             >
               <span className="flex min-w-0 items-center gap-3">
-                <span className="min-w-0 flex-1 truncate">{environment.label}</span>
+                <span className="min-w-0 flex-1 truncate">{row.label}</span>
                 {showUsageStatus ? (
                   <span
                     className={cn(
                       "shrink-0 text-xs text-muted-foreground",
-                      environment.error !== null && "text-destructive",
+                      environment?.error != null && "text-destructive",
                     )}
                   >
                     {status}

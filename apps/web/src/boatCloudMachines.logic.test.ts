@@ -7,6 +7,7 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  boatCloudEnvironmentsToForget,
   boatCloudMachineOfThread,
   boatCloudMachinesToPair,
   boatCloudThreadMachineKey,
@@ -65,6 +66,37 @@ describe("boatCloudMachinesToPair", () => {
     expect(toPair({ attemptedSandboxIds: new Set(["running-new"]) })).toEqual([]);
     expect(toPair({ status: status(machines, [{ requestId: "start", steps: [] }]) })).toEqual([]);
     expect(toPair({ status: null })).toEqual([]);
+  });
+});
+
+describe("boatCloudEnvironmentsToForget", () => {
+  const stopped = EnvironmentId.make("stopped-env");
+  const gone = EnvironmentId.make("gone-env");
+  const deleted = EnvironmentId.make("deleted-env");
+  const live = EnvironmentId.make("other-holder-env");
+  const held = status([
+    machine("running", "running", vmEnvironment),
+    machine("stopped", "stopped", stopped),
+    machine("restorable", "gone", gone),
+  ]);
+  const forget = (input: Partial<Parameters<typeof boatCloudEnvironmentsToForget>[0]>) =>
+    boatCloudEnvironmentsToForget({
+      status: held,
+      boatCloudEnvironmentIds: [vmEnvironment, stopped, gone, deleted, live],
+      connectedEnvironmentIds: new Set([vmEnvironment, live]),
+      ...input,
+    });
+
+  it("forgets only VMs the holder dropped, keeping ones a wake can still restore", () => {
+    expect(forget({})).toEqual([deleted]);
+  });
+
+  it("forgets nothing until the holder's list is in, or while a start pairs its VM", () => {
+    expect(forget({ status: null })).toEqual([]);
+    expect(forget({ status: { ...held, connected: false } })).toEqual([]);
+    expect(forget({ status: status(held.machines, [{ requestId: "start", steps: [] }]) })).toEqual(
+      [],
+    );
   });
 });
 

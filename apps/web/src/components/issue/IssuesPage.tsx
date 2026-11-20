@@ -93,7 +93,7 @@ import {
 import { useAtomCommand } from "~/state/use-atom-command";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { useProjects } from "~/state/entities";
-import { useEnvironments, useIssuesSupported } from "~/state/environments";
+import { machineEnvironmentsOf, useEnvironments, useIssuesSupported } from "~/state/environments";
 import { issueEnvironment, useIssueList, type IssueListTarget } from "~/state/issues";
 import { useDebouncedValue } from "~/state/queries";
 import { primaryServerKeybindingsAtom } from "~/state/server";
@@ -196,7 +196,7 @@ export function IssuesPage() {
   const issuesSupported = useIssuesSupported();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
 
-  const capableEnvironments = environments.filter(
+  const capableEnvironments = machineEnvironmentsOf(environments).filter(
     (environment) => environment.serverConfig?.environment.capabilities.issues === true,
   );
   const environmentLabels = new Map(environments.map((e) => [e.environmentId, e.label] as const));

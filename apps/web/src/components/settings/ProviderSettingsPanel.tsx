@@ -59,7 +59,7 @@ import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
 import { cn } from "../../lib/utils";
 import { resolveAppModelSelectionState } from "../../modelSelection";
 import {
-  useEnvironments,
+  useMachineEnvironments,
   usePrimaryEnvironmentId,
   type EnvironmentPresentation,
 } from "../../state/environments";
@@ -345,7 +345,7 @@ function ProviderSettingsPanelContent(target: ProviderSettingsTarget) {
   const searchableSetting = useSearchableSetting();
   const gt = useGT();
   const m = useMessages();
-  const { environments, isReady } = useEnvironments();
+  const { environments, isReady } = useMachineEnvironments();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const searchTargetId = useSettingsSearchTargetId();
   const options = buildProviderEnvironmentOptions(

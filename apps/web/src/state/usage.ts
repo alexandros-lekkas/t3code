@@ -16,6 +16,9 @@ import { useState } from "react";
 
 import { mergeUsage, type EnvironmentUsage, type MergedUsage } from "@t3tools/shared/usageMerge";
 import { appAtomRegistry } from "../rpc/atomRegistry";
+import { boatCloudUsageLedgerAtom } from "./boatCloudUsageLedger";
+import { boatCloudUsageSummaryOf } from "./boatCloudUsageLedger.logic";
+import { BOAT_CLOUD_LABEL, isMachineEnvironment } from "./environments";
 import { environmentPresentations } from "./presentation";
 import { serverEnvironment } from "./server";
 import { environmentSession, readEnvironmentScope } from "./session";
@@ -29,22 +32,47 @@ export interface EnvironmentUsageStatus {
   readonly isConnected: boolean;
   readonly error: string | null;
   readonly summary: UsageSummary | null;
+  /** A Boat cloud VM: listed as one Boat entry, and counted from what was kept once it is gone. */
+  readonly boatCloud: boolean;
 }
 
 const usageByWindowAtom = Atom.family((windowKey: string) =>
   Atom.make((get): readonly EnvironmentUsageStatus[] => {
     const input = JSON.parse(windowKey) as UsageSummaryInput;
     const presentations = get(environmentPresentations.presentationsAtom);
+    const ledger = get(boatCloudUsageLedgerAtom);
+    const kept = (environmentId: EnvironmentId): EnvironmentUsageStatus | null => {
+      const summary = boatCloudUsageSummaryOf(ledger[environmentId], input);
+      return summary === null
+        ? null
+        : {
+            environmentId,
+            label: BOAT_CLOUD_LABEL,
+            isPending: false,
+            canReadDiagnostics: true,
+            isConnected: false,
+            error: null,
+            summary,
+            boatCloud: true,
+          };
+    };
 
     const statuses: EnvironmentUsageStatus[] = [];
     for (const [environmentId, presentation] of presentations) {
       const isConnected = presentation.connection.phase === "connected";
+      const boatCloud = !isMachineEnvironment(presentation);
       const sessionResult = get(environmentSession.sessionStateAtom(environmentId));
       const access = resolveUsageAccess({
         connectionPhase: presentation.connection.phase,
         session: AsyncResult.getOrElse(sessionResult, () => null),
         hasSessionError: sessionResult._tag === "Failure",
       });
+      // A stopped or deleted VM is not asked; what was read while it ran stands in for it.
+      if (boatCloud && (!isConnected || !access.canReadDiagnostics)) {
+        const keptStatus = kept(environmentId);
+        if (keptStatus !== null) statuses.push(keptStatus);
+        continue;
+      }
       if (!access.canReadDiagnostics) {
         statuses.push({
           environmentId,
@@ -52,6 +80,7 @@ const usageByWindowAtom = Atom.family((windowKey: string) =>
           isConnected,
           ...access,
           summary: null,
+          boatCloud,
         });
         continue;
       }
@@ -65,16 +94,27 @@ const usageByWindowAtom = Atom.family((windowKey: string) =>
         }),
       );
       const summary = AsyncResult.getOrElse(result, () => null);
+      if (boatCloud && result._tag === "Failure") {
+        const keptStatus = kept(environmentId);
+        if (keptStatus !== null) statuses.push(keptStatus);
+        continue;
+      }
       statuses.push({
         environmentId,
-        label: presentation.entry.target.label,
+        label: boatCloud ? BOAT_CLOUD_LABEL : presentation.entry.target.label,
         isPending: result.waiting,
         canReadDiagnostics: true,
         isConnected,
         error:
           result._tag === "Failure" ? m(msg("This environment could not report usage.")) : null,
         summary,
+        boatCloud,
       });
+    }
+    for (const environmentId of Object.keys(ledger) as EnvironmentId[]) {
+      if (presentations.has(environmentId)) continue;
+      const keptStatus = kept(environmentId);
+      if (keptStatus !== null) statuses.push(keptStatus);
     }
     return statuses;
   }).pipe(Atom.withLabel(`web-usage:window:${windowKey}`)),

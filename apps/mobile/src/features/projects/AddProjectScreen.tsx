@@ -95,6 +95,7 @@ import { ThemedSwitch } from "../../components/ui/ThemedSwitch";
 import { uuidv4 } from "../../lib/uuid";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { suggestAppAccessForRemote } from "./suggestAppAccess";
+import { isBoatCloudEnvironment } from "../connection/environmentSections";
 import { useAtomQueryRunner } from "../../state/use-atom-query-runner";
 import {
   useRemoteConnectionStatus,
@@ -453,6 +454,11 @@ function useEnvironmentOptions(
     const runtimeByEnvironmentId = new Map(
       connectedEnvironments.map((environment) => [environment.environmentId, environment] as const),
     );
+    const boatCloudEnvironmentIds = new Set(
+      connectedEnvironments.flatMap((environment) =>
+        isBoatCloudEnvironment(environment) ? [environment.environmentId] : [],
+      ),
+    );
     const options = Object.values(savedConnectionsById).map((connection) => {
       const config = serverConfigByEnvironmentId.get(connection.environmentId);
       const runtime = runtimeByEnvironmentId.get(connection.environmentId);
@@ -476,8 +482,9 @@ function useEnvironmentOptions(
     return Arr.sort(
       options.filter(
         (environment) =>
-          canCreateProjectInEnvironment(environment.connectionState) ||
-          environment.environmentId === selectedEnvironmentId,
+          !boatCloudEnvironmentIds.has(environment.environmentId) &&
+          (canCreateProjectInEnvironment(environment.connectionState) ||
+            environment.environmentId === selectedEnvironmentId),
       ),
       environmentOptionOrder,
     );

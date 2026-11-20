@@ -8,6 +8,7 @@ import {
 } from "@t3tools/contracts";
 import { refreshUsage, usageSummaryInput } from "@t3tools/client-runtime/state/usage";
 import { resolveUsageAccess } from "@t3tools/client-runtime/state/usage-access";
+import { isBoatCloudConnectionEntry } from "@t3tools/client-runtime/connection";
 import { mergeUsage, type EnvironmentUsage, type MergedUsage } from "@t3tools/shared/usageMerge";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { msg, useMessages } from "gt-react-native";
@@ -18,6 +19,9 @@ import { appAtomRegistry } from "./atom-registry";
 import { environmentPresentations } from "./presentation";
 import { serverEnvironment } from "./server";
 import { environmentSession, readEnvironmentScope } from "./session";
+
+/** Boat VMs all go by the product's name; it is not translated. */
+const BOAT_CLOUD_LABEL = "Boat";
 
 export interface EnvironmentUsageStatus {
   readonly environmentId: EnvironmentId;
@@ -36,6 +40,9 @@ const usageByWindowAtom = Atom.family((windowKey: string) =>
 
     const statuses: EnvironmentUsageStatus[] = [];
     for (const [environmentId, presentation] of presentations) {
+      const boatCloud = isBoatCloudConnectionEntry(presentation.entry);
+      // A stopped or deleted Boat VM cannot answer, and is not one of the user's machines to warn about.
+      if (boatCloud && presentation.connection.phase !== "connected") continue;
       const sessionResult = get(environmentSession.sessionStateAtom(environmentId));
       const access = resolveUsageAccess(
         {
@@ -65,9 +72,10 @@ const usageByWindowAtom = Atom.family((windowKey: string) =>
         }),
       );
       const summary = AsyncResult.getOrElse(result, () => null);
+      if (boatCloud && result._tag === "Failure") continue;
       statuses.push({
         environmentId,
-        label: presentation.entry.target.label,
+        label: boatCloud ? BOAT_CLOUD_LABEL : presentation.entry.target.label,
         isPending: result.waiting,
         isConnected: presentation.connection.phase === "connected",
         canReadDiagnostics: true,

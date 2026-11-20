@@ -5,7 +5,7 @@ import { PROVIDER_DISPLAY_NAMES } from "@t3tools/contracts";
 import { APP_VERSION } from "~/branding";
 import { isDesktopLocalConnectionTarget } from "~/connection/desktopLocal";
 import { isElectron } from "~/env";
-import { useEnvironments } from "~/state/environments";
+import { useEnvironments, useMachineEnvironments } from "~/state/environments";
 import { environmentIdsKey } from "~/state/environmentAtomList";
 import { environmentUpdateStatesAtom, serverEnvironment } from "~/state/server";
 import { environmentSessionStatesAtom } from "~/state/session";
@@ -55,7 +55,7 @@ export function useUpdateEverything(
   channelSwitch?: ChannelSwitchRelease,
 ) {
   const targetVersion = localUpdateVersion ?? APP_VERSION;
-  const { environments } = useEnvironments();
+  const { environments } = useMachineEnvironments();
   const resolve = useMessages();
   const environmentIds = environmentIdsKey(environments.map(({ environmentId }) => environmentId));
   const sessionStates = useAtomValue(environmentSessionStatesAtom(environmentIds));

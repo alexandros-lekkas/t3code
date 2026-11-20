@@ -81,7 +81,7 @@ import { ensureLocalApi, readLocalApi } from "../../localApi";
 import { isMacPlatform } from "../../lib/utils";
 import {
   useEnvironmentProviders,
-  useEnvironments,
+  useMachineEnvironments,
   usePrimaryEnvironmentId,
 } from "../../state/environments";
 import { EMPTY_SERVER_PROVIDERS } from "../../state/server";
@@ -174,7 +174,7 @@ function AboutVersionSection() {
   const updateState = useDesktopUpdateState();
   const [switchChannel, setSwitchChannel] = useState<DesktopUpdateChannel | null>(null);
   const [isUpdateActionPending, setIsUpdateActionPending] = useState(false);
-  const { environments } = useEnvironments();
+  const { environments } = useMachineEnvironments();
   const sessionStates = useAtomValue(
     environmentSessionStatesAtom(
       environmentIdsKey(environments.map(({ environmentId }) => environmentId)),

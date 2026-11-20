@@ -11,17 +11,21 @@ import { AppBar } from "../../components/ui/AppBar";
 import { useRemoteConnections } from "../../state/use-remote-environment-registry";
 import { LocalEnvironmentList } from "./LocalEnvironmentList";
 import { PullRequestRoutingSettings } from "./PullRequestRoutingSettings";
+import { isBoatCloudEnvironment } from "./environmentSections";
 import { LinkedEnvironmentsSection } from "./LinkedEnvironmentsSection";
 
 export function ConnectionsRouteScreen() {
   const gt = useGT();
   const {
-    connectedEnvironments,
+    connectedEnvironments: allEnvironments,
     onReconnectEnvironment,
     onRemoveEnvironmentPress,
     onSetEnvironmentEnabled,
     onUpdateEnvironment,
   } = useRemoteConnections();
+  const connectedEnvironments = allEnvironments.filter(
+    (environment) => !isBoatCloudEnvironment(environment),
+  );
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
   const [expandedId, setExpandedId] = useState<EnvironmentId | null>(null);

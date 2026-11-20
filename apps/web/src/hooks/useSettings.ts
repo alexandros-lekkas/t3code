@@ -52,7 +52,11 @@ import { toastManager } from "~/components/ui/toast";
 import { isHostedStaticApp } from "~/hostedPairing";
 import { environmentCatalog } from "~/connection/catalog";
 import { primaryServerSettingsAtom, serverEnvironment } from "~/state/server";
-import { useEnvironments, usePrimaryEnvironment } from "~/state/environments";
+import {
+  useEnvironments,
+  useMachineEnvironments,
+  usePrimaryEnvironment,
+} from "~/state/environments";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { useTheme } from "./useTheme";
 import { msg } from "gt-react";
@@ -585,7 +589,7 @@ export function usePrimarySettingsAvailable(): boolean {
 }
 
 function useSharedSettingsSyncTargetIds(includePending = false): ReadonlyArray<EnvironmentId> {
-  const { environments } = useEnvironments();
+  const { environments } = useMachineEnvironments();
   const targetIds = environments
     .filter(supportsSharedSettingsSync)
     .map(({ environmentId }) => environmentId);

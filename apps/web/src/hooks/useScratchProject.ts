@@ -17,7 +17,7 @@ import { stackedThreadToast, toastManager } from "~/components/ui/toast";
 import { m } from "~/i18n/messages";
 import {
   type EnvironmentPresentation,
-  useEnvironments,
+  useMachineEnvironments,
   usePrimaryEnvironmentId,
 } from "~/state/environments";
 import { projectEnvironment } from "~/state/projects";
@@ -95,7 +95,7 @@ export function createScratchProjectActions(input: {
 }
 
 export function useScratchProject() {
-  const { environments } = useEnvironments();
+  const { environments } = useMachineEnvironments();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const registry = useContext(RegistryContext);
   const handleNewThread = useNewThreadHandler();

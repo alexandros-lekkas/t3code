@@ -10,7 +10,7 @@ import { Atom } from "effect/reactivity";
 import { useEffect, useEffectEvent } from "react";
 
 import { connectionAtomRuntime } from "../connection/runtime";
-import { useEnvironmentIdentities, useEnvironments } from "./environments";
+import { useEnvironmentIdentities, useMachineEnvironments } from "./environments";
 import { environmentPresentations } from "./presentation";
 import { relayEnvironmentDiscovery } from "./relay";
 import { useEnvironmentQuery } from "./query";
@@ -52,7 +52,7 @@ export function useLinkedEnvironments(
 }
 
 export function usePeerLinkHosts() {
-  const { environments } = useEnvironments();
+  const { environments } = useMachineEnvironments();
   const supported = environments.filter(
     (environment) =>
       environment.connection.phase === "connected" &&
@@ -69,7 +69,7 @@ export function usePeerLinkHosts() {
  * whether it answers.
  */
 export function useLinkableMachines(environmentId: EnvironmentId, enabled: boolean) {
-  const { environments } = useEnvironments();
+  const { environments } = useMachineEnvironments();
   const discovery = useAtomValue(relayEnvironmentDiscovery.stateValueAtom);
   const refreshDiscovery = useAtomCommand(relayEnvironmentDiscovery.refresh, {
     reportFailure: false,

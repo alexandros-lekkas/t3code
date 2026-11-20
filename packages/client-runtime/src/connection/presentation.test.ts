@@ -17,6 +17,7 @@ import {
   connectionStatusText,
   connectionStatusTitle,
   environmentMcpUrl,
+  isBoatCloudConnectionEntry,
   presentConnectionState,
 } from "./presentation.ts";
 
@@ -93,6 +94,34 @@ describe("connection presentation", () => {
         relayHttpBaseUrl: "https://tunnel.example.test",
       }),
     ).toBe("https://tunnel.example.test/mcp");
+  });
+
+  it("tells Boat cloud VMs apart from the user's machines by their Boat address", () => {
+    const at = (httpBaseUrl: string): ConnectionCatalogEntry => ({
+      ...ENTRY,
+      profile: Option.some(
+        new BearerConnectionProfile({
+          connectionId: TARGET.connectionId,
+          environmentId: TARGET.environmentId,
+          label: TARGET.label,
+          httpBaseUrl,
+          wsBaseUrl: httpBaseUrl.replace(/^http/, "ws"),
+        }),
+      ),
+    });
+    expect(
+      isBoatCloudConnectionEntry(at("https://box-node-6adfd7ea8bbbef13-3773.on.boat.dev")),
+    ).toBe(true);
+    expect(isBoatCloudConnectionEntry(ENTRY)).toBe(false);
+    expect(isBoatCloudConnectionEntry(at("https://on.boat.dev.example.test"))).toBe(false);
+    expect(isBoatCloudConnectionEntry(at("http://127.0.0.1:3773"))).toBe(false);
+    expect(
+      isBoatCloudConnectionEntry({
+        ...ENTRY,
+        target: new RelayConnectionTarget({ environmentId: TARGET.environmentId, label: "Mac" }),
+        profile: Option.none(),
+      }),
+    ).toBe(false);
   });
 
   // regression: #16909 Copy MCP URL falls back to an alternate route when the relay route has no address

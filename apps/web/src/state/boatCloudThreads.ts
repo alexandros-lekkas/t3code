@@ -99,6 +99,23 @@ export function rememberOpenedBoatCloudThread(ref: ScopedThreadRef, sandboxId?: 
   }
 }
 
+/** Drops what this browser remembers of a VM's threads, once the VM is gone for good. */
+export function forgetBoatCloudEnvironmentThreads(environmentId: EnvironmentId): void {
+  const opened = readStored().filter((ref) => ref.environmentId !== environmentId);
+  const prefix = `${environmentId}:`;
+  const machines = Object.fromEntries(
+    Object.entries(readStoredMachines()).filter(([key]) => !key.startsWith(prefix)),
+  );
+  appAtomRegistry.set(openedThreadsAtom, opened);
+  appAtomRegistry.set(threadMachinesAtom, machines);
+  try {
+    setLocalStorageItem(STORAGE_KEY, opened, OpenedThreads);
+    setLocalStorageItem(MACHINES_STORAGE_KEY, machines, ThreadMachines);
+  } catch {
+    // Storage holds a stale copy; the lists skip environments the catalog no longer has.
+  }
+}
+
 const NO_LISTED_THREADS_ATOM = Atom.make<ReadonlySet<ThreadId> | null>(null).pipe(
   Atom.withLabel("boat-cloud-listed-thread-ids:none"),
 );
