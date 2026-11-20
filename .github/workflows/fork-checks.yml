@@ -1,5 +1,9 @@
 # Fork (alexandros-lekkas/t3code): runs .github/scripts/fork-checks.sh on a GitHub-hosted runner.
 # Upstream's CI needs Blacksmith runners this fork does not have, so it is disabled here.
+#
+# It also guards fork-release.yml, which something keeps disabling: on every push to boat, every
+# hour and on every dispatch, the guard job turns it back on and starts the build boat missed.
+# The guard lives here, not in its own file, because this workflow has stayed enabled.
 name: Fork checks
 
 on:
@@ -9,19 +13,33 @@ on:
         description: Branch, tag or commit to check
         required: false
         default: boat
+      guard_only:
+        description: Only run the release guard, not the checks
+        type: boolean
+        required: false
+        default: false
+  push:
+    branches: [boat]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - ".github/ISSUE_TEMPLATE/**"
+  schedule:
+    - cron: "23 * * * *"
 
 permissions:
   contents: read
 
-concurrency:
-  group: fork-checks-${{ inputs.ref }}
-  cancel-in-progress: true
-
 jobs:
   checks:
     name: Checks
+    # Pushes and the schedule only run the guard below.
+    if: github.event_name == 'workflow_dispatch' && !inputs.guard_only
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    concurrency:
+      group: fork-checks-${{ inputs.ref }}
+      cancel-in-progress: true
     steps:
       # Plain git, not actions/checkout: with persist-credentials false its auth cleanup runs
       # `git submodule foreach`, which dies on upstream's gitlinks that have no .gitmodules. The
@@ -53,3 +71,83 @@ jobs:
           name: fork-checks-logs
           path: ${{ runner.temp }}/fork-checks
           retention-days: 14
+
+  release_guard:
+    name: Keep Fork release enabled
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+      issues: write
+    concurrency:
+      group: fork-release-guard
+      cancel-in-progress: false
+    steps:
+      - name: Re-enable Fork release and build what it missed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          workflow=fork-release.yml
+          api="repos/$GITHUB_REPOSITORY/actions/workflows/$workflow"
+          now="$(date -u +'%Y-%m-%d %H:%M UTC')"
+
+          state="$(gh api "$api" --jq .state)"
+          disabled_at="$(gh api "$api" --jq .updated_at)"
+          was_disabled=false
+          if [[ "$state" != "active" ]]; then
+            was_disabled=true
+            gh api -X PUT "$api/enable"
+            echo "::warning::Fork release was $state (since $disabled_at). Re-enabled it at $now."
+          else
+            echo "Fork release is active."
+          fi
+
+          head="$(gh api "repos/$GITHUB_REPOSITORY/commits/boat" --jq .sha)"
+          dispatched=false
+          reason=""
+          if [[ "$(gh api "$api/runs?head_sha=$head&per_page=1" --jq .total_count)" != "0" ]]; then
+            reason="boat ($head) already has a Fork release run"
+          elif [[ "$GITHUB_EVENT_NAME" == "push" && "$was_disabled" == "false" ]]; then
+            # The push that started this run started the release itself, if its paths asked for one.
+            reason="this push starts its own Fork release run"
+          else
+            # Build only if boat changed something fork-release.yml builds on a push (its paths-ignore).
+            last="$(gh api "$api/runs?branch=boat&per_page=1" --jq '.workflow_runs[0].head_sha // empty')"
+            if [[ -z "$last" ]]; then
+              changed="(no earlier run)"
+            else
+              # At most 300 files are listed; a diff that large always includes something to build.
+              files="$(gh api "repos/$GITHUB_REPOSITORY/compare/$last...$head" --jq '.files[].filename')"
+              changed="$(grep -Ev '\.md$|^docs/|^\.github/ISSUE_TEMPLATE/|^\.github/workflows/fork-(sync|checks)\.yml$|^\.github/scripts/fork-checks\.sh$|^\.github/actions/fork-checks-setup/' <<<"$files" || true)"
+            fi
+            if [[ -z "$changed" ]]; then
+              reason="nothing to build changed since the last Fork release run ($last)"
+            else
+              gh workflow run "$workflow" --repo "$GITHUB_REPOSITORY" --ref boat
+              dispatched=true
+              echo "::warning::boat ($head) had no Fork release run. Started one."
+            fi
+          fi
+          [[ -z "$reason" ]] || echo "No build started: $reason."
+
+          if [[ "$was_disabled" == "true" ]]; then
+            title="Fork release was disabled"
+            if [[ "$dispatched" == "true" ]]; then
+              outcome="It started the release build that boat ($head) was missing."
+            else
+              outcome="No build was started: $reason."
+            fi
+            # shellcheck disable=SC2016
+            printf -v body 'The guard in `fork-checks.yml` found `%s` in state `%s` at %s (state last changed %s) and re-enabled it.\n\n%s\n\nGuard run: %s' \
+              "$workflow" "$state" "$now" "$disabled_at" "$outcome" "$RUN_URL"
+            number="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 200 --json number,title \
+              --jq "map(select(.title == \"$title\")) | .[0].number // empty")"
+            if [[ -n "$number" ]]; then
+              gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body "$body"
+            else
+              gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+            fi
+          fi
