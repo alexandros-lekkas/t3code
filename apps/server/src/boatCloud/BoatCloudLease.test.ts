@@ -236,6 +236,64 @@ it.layer(dependencies)("Boat cloud VM lease", (it) => {
     }),
   );
 
+  it.effect("deletes a start's VM no thread came of within minutes, while no client holds it", () =>
+    Effect.gen(function* () {
+      yield* seed();
+      const fake = yield* fakeBoat;
+      yield* withService(fake, (service) =>
+        Effect.gen(function* () {
+          const held = yield* start(service, "start-held");
+          const threaded = yield* start(service, "start-threaded");
+          fake.sandboxes.get(held.sandboxId)!.threads = 0;
+          fake.sandboxes.get(threaded.sandboxId)!.threads = 1;
+          // The client holds its VM while its message is written.
+          for (let minute = 0; minute < 6; minute++) {
+            yield* service.holdStart({ sandboxId: held.sandboxId, release: false });
+            yield* advanceMinutes(1);
+          }
+          assert.isTrue(fake.sandboxes.has(held.sandboxId));
+          // The client is gone, so nothing holds it any more.
+          yield* advanceMinutes(4);
+          assert.isFalse(fake.sandboxes.has(held.sandboxId));
+          assert.strictEqual(fake.sandboxes.get(threaded.sandboxId)?.state, "running");
+        }),
+      );
+    }),
+  );
+
+  it.effect(
+    "deletes a start's VM at once when its client gives it up, but not one with a thread",
+    () =>
+      Effect.gen(function* () {
+        yield* seed();
+        const fake = yield* fakeBoat;
+        yield* withService(fake, (service) =>
+          Effect.gen(function* () {
+            const unused = yield* start(service, "start-unused");
+            const used = yield* start(service, "start-used");
+            fake.sandboxes.get(unused.sandboxId)!.threads = 0;
+            fake.sandboxes.get(used.sandboxId)!.threads = 1;
+            yield* service.holdStart({ sandboxId: unused.sandboxId, release: true });
+            yield* service.holdStart({ sandboxId: used.sandboxId, release: true });
+            assert.isFalse(fake.sandboxes.has(unused.sandboxId));
+            assert.strictEqual(fake.sandboxes.get(used.sandboxId)?.state, "running");
+          }),
+        );
+      }),
+  );
+
+  it.effect("starts one VM for a request sent twice", () =>
+    Effect.gen(function* () {
+      yield* seed();
+      const fake = yield* fakeBoat;
+      const [first, second] = yield* withService(fake, (service) =>
+        Effect.all([start(service, "start-1"), start(service, "start-1")], { concurrency: 2 }),
+      );
+      assert.strictEqual(first.sandboxId, second.sandboxId);
+      assert.strictEqual(fake.sandboxes.size, 1);
+    }),
+  );
+
   it.effect(
     "deletes stopped VMs past their retention and leftovers, and never one T3 did not make",
     () =>

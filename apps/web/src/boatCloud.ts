@@ -44,8 +44,9 @@ import {
   wakingProgress,
   withHolderSteps,
 } from "./boatCloudStart.logic";
+import { type DraftStart, makeDraftStarts } from "./boatCloudDraftStarts.logic";
 import { boatCloudMachinesToPair, managedBoatCloudMachine } from "./boatCloudMachines.logic";
-import type { DraftId } from "./composerDraftStore";
+import { type DraftId, useComposerDraftStore } from "./composerDraftStore";
 import { stackedThreadToast, toastManager } from "./components/ui/toast";
 import { environmentCatalog } from "./connection/catalog";
 import { connectPairing } from "./connection/onboarding";
@@ -74,6 +75,8 @@ const PROJECT_APPEAR_TIMEOUT_MS = 60_000;
 /** The checkout and worktree run in one VM command, which the holder gives ten minutes. */
 const CHECKOUT_TIMEOUT_MS = 10 * 60_000;
 const RECONNECT_TIMEOUT_MS = 15_000;
+/** How often a draft renews its hold on its start's VM; unheld, the holder soon deletes it. */
+const HOLD_INTERVAL_MS = 60_000;
 
 /** An environment's Boat cloud status, while it is connected. */
 export function useBoatCloudStatus(environmentId: EnvironmentId | null): BoatCloudStatus | null {
@@ -173,9 +176,17 @@ export function unmarkBoatCloudStartSent(draftId: DraftId | null) {
   updateProgress(draftId, (progress) => ({ ...progress, sent: null }));
 }
 
-/** Ends the draft's start, once its thread is created or it leaves Boat cloud. */
-export function clearBoatCloudStartProgress(draftId: DraftId) {
-  prewarmed.delete(draftId);
+/** The draft's thread was made on its VM, which now keeps the VM; its start is over. */
+export function finishBoatCloudStart(draftId: DraftId) {
+  draftStarts.finish(draftId);
+  syncHolds();
+  appAtomRegistry.set(boatCloudStartProgressAtom(draftId), null);
+}
+
+/** The draft gave its start up, so the holder deletes the VM, unless a thread runs on it. */
+export function abandonBoatCloudStart(draftId: DraftId) {
+  draftStarts.abandon(draftId);
+  syncHolds();
   appAtomRegistry.set(boatCloudStartProgressAtom(draftId), null);
 }
 
@@ -250,6 +261,7 @@ export interface BoatCloudTarget {
  */
 async function prepareBoatCloudProjectNow(
   input: BoatCloudPrepareInput,
+  start: DraftStart<BoatCloudTarget>,
 ): Promise<BoatCloudTarget | null> {
   const { draftId } = input;
   const progressAtom = boatCloudStartProgressAtom(draftId);
@@ -277,7 +289,7 @@ async function prepareBoatCloudProjectNow(
     logTiming("failed");
     return null;
   };
-  let requestId = randomUUID();
+  const requestId = randomUUID();
   // The holder reports its steps under the request id, the checkout's after the acquire returns.
   let repositoryFailed: (error: string) => void = () => undefined;
   let repositoryDone: () => void = () => undefined;
@@ -289,7 +301,7 @@ async function prepareBoatCloudProjectNow(
       repositoryDone = () => resolve(true);
     }),
   });
-  let checkout = watchCheckout();
+  const checkout = watchCheckout();
   const stopWatchingHolder = appAtomRegistry.subscribe(
     serverEnvironment.boatCloudStatus({ environmentId: input.holderEnvironmentId, input: {} }),
     (result) => {
@@ -326,32 +338,44 @@ async function prepareBoatCloudProjectNow(
           reportDefect: true,
         },
       );
-    let acquired = await acquire(pairedBoatCloudEnvironments());
+    const acquired = await acquire(pairedBoatCloudEnvironments());
     if (acquired._tag === "Failure") {
       if (isAtomCommandInterrupted(acquired)) {
-        clearBoatCloudStartProgress(draftId);
+        appAtomRegistry.set(progressAtom, null);
         return null;
       }
+      if (start.abandoned()) return null;
       return fail(failureMessage(acquired));
     }
+    if (!start.handedOut(acquired.value.sandboxId)) return null;
     updateProgress(draftId, markAcquired);
     markEnded("acquire");
     let attachFailure = await attach(acquired.value);
-    if (attachFailure !== null) {
-      // The saved credential no longer works, or the VM did not answer, so start once more
-      // and pair as a new client. A VM that does not answer gets no new thread.
-      requestId = randomUUID();
-      checkout = watchCheckout();
-      acquired = await acquire([]);
-      if (acquired._tag === "Failure") {
-        if (isAtomCommandInterrupted(acquired)) {
-          clearBoatCloudStartProgress(draftId);
-          return null;
-        }
-        return fail(failureMessage(acquired), "connect");
-      }
-      attachFailure = await attach(acquired.value);
+    if (attachFailure !== null && !start.abandoned()) {
+      // The saved credential no longer works, or the pairing did not go through, so this
+      // client pairs again with the same VM rather than start another.
+      const repaired = await runAtomCommand(
+        appAtomRegistry,
+        serverEnvironment.wakeBoatCloud,
+        {
+          environmentId: input.holderEnvironmentId,
+          input: {
+            environmentId: acquired.value.environmentId,
+            httpBaseUrl: acquired.value.httpBaseUrl,
+          },
+        },
+        { label: serverEnvironment.wakeBoatCloud.label, reportFailure: false, reportDefect: true },
+      );
+      attachFailure =
+        repaired._tag === "Success"
+          ? await attach({
+              ...acquired.value,
+              httpBaseUrl: repaired.value.httpBaseUrl,
+              pairingCode: repaired.value.pairingCode,
+            })
+          : failureMessage(repaired);
     }
+    if (start.abandoned()) return null;
     if (attachFailure !== null) return fail(attachFailure, "connect");
     updateProgress(draftId, (progress) => completeStep(progress, "connect"));
     markEnded("connect");
@@ -403,7 +427,9 @@ async function prepareBoatCloudProjectNow(
             ]),
       ]),
       checkout.failure,
+      start.givenUp.then(() => null),
     ]);
+    if (arrived === null) return null;
     if (typeof arrived === "string") return fail(arrived, "repository");
     const project = findProject(appAtomRegistry.get(environmentProjects.projectsAtom));
     if (arrived.includes(false) || !project) return fail("The VM did not open the project.");
@@ -419,42 +445,67 @@ async function prepareBoatCloudProjectNow(
   }
 }
 
-/** The start each draft began when Boat cloud was picked, so its send can reuse it. */
-const prewarmed = new Map<
-  DraftId,
-  {
-    readonly repositoryUrl: string;
-    readonly machineType: BoatCloudMachineType;
-    readonly target: Promise<BoatCloudTarget | null>;
-  }
->();
+/** Each draft's start, from when Boat cloud was picked until its thread is made or it gives up. */
+const draftStarts = makeDraftStarts<BoatCloudPrepareInput, BoatCloudTarget>({
+  run: prepareBoatCloudProjectNow,
+  release: (sandboxId, input) => holdOnHolder(input.holderEnvironmentId, sandboxId, true),
+  hold: (sandboxId, input) => holdOnHolder(input.holderEnvironmentId, sandboxId, false),
+});
 
-/**
- * Starts getting a VM as soon as the draft picks Boat cloud, so it is usually
- * ready by the time the message is written. VMs stop by themselves when unused.
- */
-export function prewarmBoatCloudProject(input: BoatCloudPrepareInput) {
-  const started = prewarmed.get(input.draftId);
-  if (started?.repositoryUrl === input.repositoryUrl && started.machineType === input.machineType)
-    return;
-  prewarmed.set(input.draftId, {
-    repositoryUrl: input.repositoryUrl,
-    machineType: input.machineType,
-    target: prepareBoatCloudProjectNow(input),
-  });
+function holdOnHolder(holderEnvironmentId: EnvironmentId, sandboxId: string, release: boolean) {
+  void runAtomCommand(
+    appAtomRegistry,
+    serverEnvironment.holdBoatCloudStart,
+    { environmentId: holderEnvironmentId, input: { sandboxId, release } },
+    {
+      label: serverEnvironment.holdBoatCloudStart.label,
+      reportFailure: false,
+      reportDefect: false,
+    },
+  );
 }
 
-/** The draft's pre-warmed start when it is for this repository and did not fail, else a new one. */
-export async function prepareBoatCloudProject(
-  input: BoatCloudPrepareInput,
-): Promise<BoatCloudTarget | null> {
-  const started = prewarmed.get(input.draftId);
-  prewarmed.delete(input.draftId);
-  if (started?.repositoryUrl === input.repositoryUrl && started.machineType === input.machineType) {
-    const target = await started.target;
-    if (target !== null) return target;
+let holdTimer: ReturnType<typeof setInterval> | null = null;
+/** Holds the VMs of drafts still on Boat cloud, and gives up the starts of the rest. */
+function syncHolds() {
+  if (draftStarts.size() === 0) {
+    if (holdTimer !== null) clearInterval(holdTimer);
+    holdTimer = null;
+  } else if (holdTimer === null) {
+    holdTimer = setInterval(() => {
+      const store = useComposerDraftStore.getState();
+      draftStarts.hold((draftId) => {
+        const draft = store.getDraftSession(draftId as DraftId);
+        if (draft?.promotedTo) return "done";
+        if (draft?.environmentSelection !== "cloud") {
+          appAtomRegistry.set(boatCloudStartProgressAtom(draftId), null);
+          return "gone";
+        }
+        return "wanted";
+      });
+      syncHolds();
+    }, HOLD_INTERVAL_MS);
   }
-  return prepareBoatCloudProjectNow(input);
+}
+
+const startKey = (input: BoatCloudPrepareInput) =>
+  `${input.holderEnvironmentId} ${input.machineType} ${input.repositoryUrl}`;
+
+/**
+ * Starts getting a VM as soon as the draft picks Boat cloud, so it is usually ready by the
+ * time the message is written. The draft keeps one start: picking Boat again reuses it, and
+ * a new size or repository gives the old VM up.
+ */
+export function prewarmBoatCloudProject(input: BoatCloudPrepareInput) {
+  draftStarts.begin(input.draftId, startKey(input), input);
+  syncHolds();
+}
+
+/** The draft's start when it is for this repository and size and did not fail, else a new one. */
+export function prepareBoatCloudProject(input: BoatCloudPrepareInput) {
+  const target = draftStarts.prepare(input.draftId, startKey(input), input);
+  syncHolds();
+  return target;
 }
 
 const WAKE_CONNECT_TIMEOUT_MS = 90_000;

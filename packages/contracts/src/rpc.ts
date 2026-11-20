@@ -414,6 +414,7 @@ import {
 import { SecretRequestAnswerInput, SecretRequestError } from "./secretRequest.ts";
 import {
   BoatCloudAcquireInput,
+  BoatCloudHoldStartInput,
   BoatCloudClaudeTokenInput,
   BoatCloudConfigureEnvironmentInput,
   BoatCloudConfigureMachinesInput,
@@ -614,6 +615,7 @@ export const WS_METHODS = {
   boatCloudConfigureMachines: "boatCloud.configureMachines",
   boatCloudAcquire: "boatCloud.acquire",
   boatCloudWake: "boatCloud.wake",
+  boatCloudHoldStart: "boatCloud.holdStart",
   boatCloudStopMachine: "boatCloud.stopMachine",
   boatCloudWakeMachine: "boatCloud.wakeMachine",
   boatCloudDeleteMachine: "boatCloud.deleteMachine",
@@ -2318,6 +2320,12 @@ const WsBoatCloudWakeRpc = Rpc.make(WS_METHODS.boatCloudWake, {
   error: BoatCloudErrors,
 });
 
+const WsBoatCloudHoldStartRpc = Rpc.make(WS_METHODS.boatCloudHoldStart, {
+  payload: BoatCloudHoldStartInput,
+  success: Schema.Void,
+  error: BoatCloudErrors,
+});
+
 const WsGuestShareCreateRpc = Rpc.make(WS_METHODS.guestShareCreate, {
   payload: GuestShareCreateInput,
   success: GuestShareCreateResult,
@@ -2459,6 +2467,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsBoatCloudConfigureMachinesRpc,
   WsBoatCloudAcquireRpc,
   WsBoatCloudWakeRpc,
+  WsBoatCloudHoldStartRpc,
   WsBoatCloudStopMachineRpc,
   WsBoatCloudWakeMachineRpc,
   WsBoatCloudDeleteMachineRpc,

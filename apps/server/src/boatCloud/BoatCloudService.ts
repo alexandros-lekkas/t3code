@@ -115,6 +115,11 @@ const API_KEY_SECRET = "boat-cloud-api-key";
 const NO_VM_SIGN_INS: VmAgentSignIns = { claude: null, codex: null };
 const SKILL_DIRECTORIES = [".claude/skills", ".agents/skills", ".codex/skills"];
 const IDLE_SWEEP_INTERVAL = Duration.minutes(1);
+/**
+ * A VM a start handed out that no thread came of is deleted this long after its hand-out,
+ * its checkout or its client's last hold, whichever is latest.
+ */
+const UNUSED_START_MS = 3 * 60 * 1000;
 const START_LINGER = Duration.minutes(2);
 /**
  * This machine backs a VM up and stops it before Boat's deadline would stop it without a
@@ -297,6 +302,14 @@ export class BoatCloudService extends Context.Service<
       input: BoatCloudAcquireInput,
     ) => Effect.Effect<BoatCloudSession, BoatCloudError>;
     readonly wake: (input: BoatCloudWakeInput) => Effect.Effect<BoatCloudSession, BoatCloudError>;
+    /**
+     * Keeps a VM a start handed out while its client still means to use it, or gives it up:
+     * then it is deleted at once when no thread runs on it. Unheld, it goes after a few minutes.
+     */
+    readonly holdStart: (input: {
+      readonly sandboxId: string;
+      readonly release: boolean;
+    }) => Effect.Effect<void, BoatCloudError>;
     /** The status with what only Boat knows: the snapshot, the root environment, VM sizes and usage. */
     readonly inspect: Effect.Effect<BoatCloudInspection, BoatCloudError>;
     /** Edits the chosen Boat environment, or the one named. Secret values are never read back. */
@@ -435,6 +448,16 @@ const make = Effect.gen(function* () {
   const stats = new Map<string, BoatCloudMachineStats>();
   let subscribers = 0;
   const starts = new Map<string, Array<BoatCloudStepProgress>>();
+  /** Starts by request id, so a repeated request shares the first one's VM. */
+  const acquiring = new Map<string, Deferred.Deferred<BoatCloudSession, BoatCloudError>>();
+  /** Epoch ms each handed-out VM is held until, against deletion for want of a thread. */
+  const heldUntil = new Map<string, number>();
+  /** The hand-out at which each VM was seen serving a thread, so it is not asked again. */
+  const threadedAt = new Map<string, string>();
+  const holdFor = (sandboxId: string) =>
+    Effect.map(Clock.currentTimeMillis, (at) => {
+      heldUntil.set(sandboxId, at + UNUSED_START_MS);
+    });
   const registryLock = yield* Semaphore.make(1);
   /**
    * VMs a start or wake is handing out, counted per request, and VMs the idle sweep is backing
@@ -1040,6 +1063,8 @@ const make = Effect.gen(function* () {
             )
           : current.machines.filter((candidate) => candidate.sandboxId !== sandboxId),
       }));
+      heldUntil.delete(sandboxId);
+      threadedAt.delete(sandboxId);
       yield* Effect.logInfo("boat cloud deleted a VM it no longer needs", {
         sandboxId,
         reason,
@@ -1150,19 +1175,34 @@ const make = Effect.gen(function* () {
       if (machine.state !== "running" || machine.acquiredAt === null) continue;
       if (claims.has(machine.sandboxId)) continue;
       const handedOutSecondsAgo = (nowMillis - Date.parse(machine.acquiredAt)) / 1000;
-      if (handedOutSecondsAgo < idleStopSeconds) continue;
+      // A start's VM that no client holds any more is asked early whether a thread came of it.
+      const maybeUnused =
+        threadedAt.get(machine.sandboxId) !== machine.acquiredAt &&
+        handedOutSecondsAgo * 1000 >= UNUSED_START_MS &&
+        nowMillis >= (heldUntil.get(machine.sandboxId) ?? 0);
+      if (handedOutSecondsAgo < idleStopSeconds && !maybeUnused) continue;
       const probe = yield* exec(api, machine.sandboxId, idleScript, 30).pipe(
         Effect.map((output) => parseIdleProbe(output, handedOutSecondsAgo)),
         // A VM that cannot answer is not provably idle.
         Effect.orElseSucceed(() => null),
       );
+      if (probe !== null && probe.threads !== null && probe.threads > 0) {
+        threadedAt.set(machine.sandboxId, machine.acquiredAt);
+      }
       if (probe === null || probe.idleSeconds === null) continue;
-      // Every thread it served was deleted, so nothing on it is wanted.
+      // No thread came of its start, or every thread it served was deleted: nothing on it is wanted.
       if (probe.threads === 0) {
-        yield* reap(api, machine.sandboxId, "every thread on it was deleted", false);
+        yield* reap(
+          api,
+          machine.sandboxId,
+          threadedAt.has(machine.sandboxId)
+            ? "every thread on it was deleted"
+            : "no thread came of its start",
+          false,
+        );
         continue;
       }
-      if (probe.idleSeconds < idleStopSeconds) continue;
+      if (handedOutSecondsAgo < idleStopSeconds || probe.idleSeconds < idleStopSeconds) continue;
       yield* backupAndStop(api, machine);
     }
     const nowMs = yield* Clock.currentTimeMillis;
@@ -1344,7 +1384,28 @@ const make = Effect.gen(function* () {
           : publish;
       });
 
-  const acquire = Effect.fn("BoatCloud.acquire")(function* (input: BoatCloudAcquireInput) {
+  /** A repeated request, such as one resent on reconnect, waits for and gets the first one's VM. */
+  const acquire = (input: BoatCloudAcquireInput): Effect.Effect<BoatCloudSession, BoatCloudError> =>
+    Effect.suspend(() => {
+      const running = acquiring.get(input.requestId);
+      if (running !== undefined) return Deferred.await(running);
+      const result = Deferred.makeUnsafe<BoatCloudSession, BoatCloudError>();
+      acquiring.set(input.requestId, result);
+      const forget = Effect.sync(() => acquiring.delete(input.requestId));
+      return acquireNew(input).pipe(
+        Effect.onExit((exit) =>
+          Effect.andThen(
+            Deferred.done(result, exit),
+            // A failed start is retried by asking again; a VM handed out stays the answer a while.
+            exit._tag === "Success"
+              ? forget.pipe(Effect.delay(START_LINGER), Effect.forkIn(scope), Effect.asVoid)
+              : forget,
+          ),
+        ),
+      );
+    });
+
+  const acquireNew = Effect.fn("BoatCloud.acquire")(function* (input: BoatCloudAcquireInput) {
     const api = yield* requireApi;
     const repository = parseRepository(input.repositoryUrl);
     if (repository === null) {
@@ -1463,6 +1524,8 @@ const make = Effect.gen(function* () {
       failCloud((cause) => describe(cause) ?? "Something went wrong on Boat."),
     );
     yield* markEnded("handedOut");
+    // Held while its checkout runs, and a while after, for the client to make its thread.
+    heldUntil.set(started.sandboxId, Number.POSITIVE_INFINITY);
     // The new thread's details show the VM's load without waiting for the next sample.
     yield* whileWatched(refreshStats).pipe(Effect.forkIn(scope));
     // The start may have taken the spare, so the next one is readied while this one checks out.
@@ -1479,6 +1542,7 @@ const make = Effect.gen(function* () {
               });
         }),
       ),
+      Effect.ensuring(holdFor(started.sandboxId)),
       Effect.matchEffect({
         // The last step stays listed long enough for the client to read it: a client that
         // takes the worktree waits for it.
@@ -1577,6 +1641,28 @@ const make = Effect.gen(function* () {
       ),
       cloudError("Could not wake the Boat machine."),
     );
+  });
+
+  const holdStart = Effect.fn("BoatCloud.holdStart")(function* (input: {
+    readonly sandboxId: string;
+    readonly release: boolean;
+  }) {
+    const { sandboxId } = input;
+    const machine = findMachine(sandboxId);
+    // Only a VM this machine handed out is held here; another holder sweeps its own.
+    if (machine === undefined || machine.acquiredAt === null) return;
+    if (!input.release) {
+      if ((heldUntil.get(sandboxId) ?? 0) !== Number.POSITIVE_INFINITY) yield* holdFor(sandboxId);
+      return;
+    }
+    heldUntil.delete(sandboxId);
+    if (claims.has(sandboxId) || threadedAt.get(sandboxId) === machine.acquiredAt) return;
+    const api = yield* requireApi;
+    const probe = yield* exec(api, sandboxId, idleScript, 30).pipe(
+      Effect.map((output) => parseIdleProbe(output, 0)),
+      Effect.orElseSucceed(() => null),
+    );
+    if (probe?.threads === 0) yield* reap(api, sandboxId, "its start was given up", false);
   });
 
   const configureEnvironment = Effect.fn("BoatCloud.configureEnvironment")(function* (
@@ -2021,6 +2107,7 @@ const make = Effect.gen(function* () {
     configureMachines,
     acquire,
     wake,
+    holdStart,
     inspect,
     updateRootEnvironment,
     stopMachine,

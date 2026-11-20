@@ -462,7 +462,7 @@ export function startOnPhone(input: {
  * Turns the VM behind a paired URL back on. Its identity lives on its disk, so
  * the saved pairing reconnects without a new code. Fails when Boat deleted it.
  */
-export function wakeOnPhone(httpBaseUrl: string) {
+export function wakeOnPhone(httpBaseUrl: string, pair = false) {
   return run(
     Effect.gen(function* () {
       const api = yield* phoneApi;
@@ -475,7 +475,7 @@ export function wakeOnPhone(httpBaseUrl: string) {
           retryable: false,
         });
       }
-      return yield* wakeMachine(api, sandbox.id);
+      return yield* wakeMachine(api, sandbox.id, { pair });
     }),
   );
 }

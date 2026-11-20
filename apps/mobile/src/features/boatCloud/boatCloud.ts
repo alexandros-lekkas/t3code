@@ -255,6 +255,22 @@ function startOnMachine(input: {
   return { session, stopWatching };
 }
 
+/** A new pairing code for a VM a start handed out, so the app pairs with it rather than start another. */
+async function repair(starter: BoatCloudStarter, session: BoatCloudSession) {
+  if (starter.kind === "phone") return wakeOnPhone(session.httpBaseUrl, true);
+  const woken = await runAtomCommand(
+    appAtomRegistry,
+    serverEnvironment.wakeBoatCloud,
+    {
+      environmentId: starter.environmentId,
+      input: { environmentId: session.environmentId, httpBaseUrl: session.httpBaseUrl },
+    },
+    { label: serverEnvironment.wakeBoatCloud.label, reportFailure: false, reportDefect: true },
+  );
+  if (woken._tag === "Failure") throw squashAtomCommandFailure(woken);
+  return woken.value;
+}
+
 /**
  * Gets a VM with the repository checked out and returns its project there, so
  * a draft can move onto it, reporting every step on the way. The caller marks
@@ -324,8 +340,13 @@ export async function prepareBoatCloudProject(input: {
       await attach(session);
     } catch (error) {
       if (error !== reconnectFailed) throw error;
-      // The saved credential no longer works, so pair as a new app.
-      session = await start([]);
+      // The saved credential no longer works, so pair again with the same VM, as a new app.
+      const repaired = await repair(input.starter, session);
+      session = {
+        ...session,
+        httpBaseUrl: repaired.httpBaseUrl,
+        pairingCode: repaired.pairingCode,
+      };
       await attach(session);
     }
     set("connect", { state: "done" });

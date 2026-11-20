@@ -541,6 +541,16 @@ export const BoatCloudAcquireInput = Schema.Struct({
 });
 export type BoatCloudAcquireInput = typeof BoatCloudAcquireInput.Type;
 
+/**
+ * Keeps a VM a start handed out from being deleted for want of a thread while the client
+ * still means to use it, or gives it up so it is deleted now when no thread runs on it.
+ */
+export const BoatCloudHoldStartInput = Schema.Struct({
+  sandboxId: TrimmedNonEmptyString.check(Schema.isMaxLength(64)),
+  release: Schema.optional(Schema.Boolean),
+});
+export type BoatCloudHoldStartInput = typeof BoatCloudHoldStartInput.Type;
+
 export const BoatCloudWakeInput = Schema.Struct({
   environmentId: EnvironmentId,
   /** Finds a VM this holder did not start, such as one another holder made with the same key. */

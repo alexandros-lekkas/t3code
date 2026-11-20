@@ -105,6 +105,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.boatCloudConfigureMachines]: "boatCloud",
   [WS_METHODS.boatCloudAcquire]: "boatCloud",
   [WS_METHODS.boatCloudWake]: "boatCloud",
+  [WS_METHODS.boatCloudHoldStart]: "boatCloud",
   [WS_METHODS.boatCloudStopMachine]: "boatCloud",
   [WS_METHODS.boatCloudWakeMachine]: "boatCloud",
   [WS_METHODS.boatCloudDeleteMachine]: "boatCloud",

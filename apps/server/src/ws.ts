@@ -2357,6 +2357,8 @@ export const layerWsRpc = (
         [WS_METHODS.boatCloudConfigureMachines]: (input) => boatCloud.configureMachines(input),
         [WS_METHODS.boatCloudAcquire]: (input) => boatCloud.acquire(input),
         [WS_METHODS.boatCloudWake]: (input) => boatCloud.wake(input),
+        [WS_METHODS.boatCloudHoldStart]: (input) =>
+          boatCloud.holdStart({ sandboxId: input.sandboxId, release: input.release === true }),
         [WS_METHODS.boatCloudStopMachine]: (input) => boatCloud.stopMachine(input.sandboxId),
         [WS_METHODS.boatCloudWakeMachine]: (input) => boatCloud.wakeMachine(input.sandboxId),
         [WS_METHODS.boatCloudDeleteMachine]: (input) =>

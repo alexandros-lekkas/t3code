@@ -1,7 +1,7 @@
 import { msg } from "gt-react";
 import {
   boatCloudStartProgressAtom,
-  clearBoatCloudStartProgress,
+  abandonBoatCloudStart,
   markBoatCloudStartSent,
   unmarkBoatCloudStartSent,
 } from "../../boatCloud";
@@ -2004,7 +2004,7 @@ export function useComposerSend(input: ComposerSendInput) {
   const dismissBoatCloudSend = useStableCallback(() => {
     const held = heldBoatCloudSendRef.current;
     heldBoatCloudSendRef.current = null;
-    if (draftId !== null) clearBoatCloudStartProgress(draftId);
+    if (draftId !== null) abandonBoatCloudStart(draftId);
     unmarkBoatCloudStartSent(draftId);
     if (held !== null) releaseBoatCloudSend(held.queued);
     else if (draftId !== null) clearBoatCloudThreadPending(draftId);

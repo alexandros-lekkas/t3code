@@ -1921,6 +1921,10 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:boat-cloud:acquire",
       tag: WS_METHODS.boatCloudAcquire,
     }),
+    holdBoatCloudStart: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:boat-cloud:hold-start",
+      tag: WS_METHODS.boatCloudHoldStart,
+    }),
     // Opening a thread and reconnecting can both ask to wake the same VM.
     wakeBoatCloud: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:boat-cloud:wake",

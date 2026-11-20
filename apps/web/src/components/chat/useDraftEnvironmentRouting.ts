@@ -44,8 +44,9 @@ import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { seedDraftModelSelection } from "../../lib/seedDraftModelSelection";
 import { draftFanoutSelectionsAtom } from "./chatViewSend";
 import {
+  abandonBoatCloudStart,
   boatCloudDraftMachineTypeAtom,
-  clearBoatCloudStartProgress,
+  finishBoatCloudStart,
   prepareBoatCloudProject,
   prewarmBoatCloudProject,
   usePrimaryBoatCloudStatus,
@@ -227,8 +228,8 @@ export function useDraftEnvironmentRouting(input: DraftEnvironmentRoutingInput) 
       currentDraft.environmentId !== originalDraft.environmentId ||
       currentDraft.projectId !== originalDraft.projectId
     ) {
-      // The draft moved on while the VM started; the VM stays ready for the next send.
-      clearBoatCloudStartProgress(draftId);
+      // The draft moved on while the VM started, so the VM is not for it any more.
+      abandonBoatCloudStart(draftId);
       return false;
     }
     const { project, worktree, sandboxId } = target;
@@ -260,7 +261,7 @@ export function useDraftEnvironmentRouting(input: DraftEnvironmentRoutingInput) 
   };
   /** The send that followed a move to Boat cloud went out, so its start is over. */
   const onRoutedSendDispatched = () => {
-    if (draftId) clearBoatCloudStartProgress(draftId);
+    if (draftId) finishBoatCloudStart(draftId);
   };
   const refreshBeforeSend = () => {
     if (draftId && draftThread?.environmentSelection === "cloud" && !draftThread.promotedTo) {
@@ -378,21 +379,26 @@ export function useDraftEnvironmentRouting(input: DraftEnvironmentRoutingInput) 
       envMode: "worktree",
       worktreePath: null,
     });
-    // The VM starts while the message is written; the send reuses this start.
+    prewarm(draftId);
+  };
+  /** The VM starts while the message is written; the send reuses this start. */
+  const prewarm = (draftId: DraftId) => {
     const draft = getDraftSession(draftId);
     const start = draft ? boatCloudStart(draft) : null;
     if (start && !("title" in start)) prewarmBoatCloudProject({ draftId, ...start });
   };
   const onCloudEnvironmentStable = useStableCallback(onCloudEnvironment);
+  // Its start stays a minute, so picking Boat again reuses it; then its VM is given up.
   const onLeaveCloudEnvironment = () => {
     if (!draftId || sendInFlightRef.current) return;
-    clearBoatCloudStartProgress(draftId);
     setDraftThreadContext(draftId, { environmentSelection: "manual" });
   };
   const onLeaveCloudEnvironmentStable = useStableCallback(onLeaveCloudEnvironment);
   const onMachineTypeChange = (next: BoatCloudMachineType) => {
     if (!draftId) return;
     appAtomRegistry.set(boatCloudDraftMachineTypeAtom(draftId), next);
+    // A VM of the old size is given up for one of the new size.
+    if (getDraftSession(draftId)?.environmentSelection === "cloud") prewarm(draftId);
   };
   const onMachineTypeChangeStable = useStableCallback(onMachineTypeChange);
   const cloudSelected = draftThread?.environmentSelection === "cloud";
