@@ -2,6 +2,7 @@ import {
   BOAT_CLOUD_REQUIRED_SCOPES,
   BOAT_CLOUD_SETUP_STEPS,
   type BoatCloudEnvironmentAccess,
+  type BoatCloudLocalSignIn,
   type BoatCloudMachineType,
   type BoatCloudSetupStep,
   type BoatCloudStatus,
@@ -9,7 +10,7 @@ import {
 } from "@t3tools/contracts";
 import { msg, useGT, useMessages } from "gt-react";
 import { CheckIcon, CircleIcon, ExternalLinkIcon, XIcon } from "lucide-react";
-import { type FormEvent, useState } from "react";
+import { type FormEvent, type ReactNode, useState } from "react";
 
 import {
   boatCloudSnapshotRepositories,
@@ -28,10 +29,10 @@ import {
 import {
   BOAT_AGENTS_DASHBOARD_URL,
   BOAT_ENVIRONMENT_DASHBOARD_URL,
-  boatCloudAgentDrivers,
   boatCloudBlocker,
   boatCloudChosenEnvironment,
   boatCloudLocalDrivers,
+  boatCloudProviderDrivers,
 } from "@t3tools/shared/boatCloudVm";
 import { BoatIcon } from "../Icons";
 import { Badge } from "../ui/badge";
@@ -158,25 +159,6 @@ const AGENT_PROVIDERS = [
   { driver: "codex", label: "Codex" },
 ] as const;
 
-/** A check or a cross before each provider's name. */
-function ProviderList({ drivers }: { readonly drivers: ReadonlySet<string> }) {
-  const gt = useGT();
-  return (
-    <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
-      {AGENT_PROVIDERS.map(({ driver, label }) => (
-        <span key={driver} className="flex items-center gap-1">
-          {drivers.has(driver) ? (
-            <CheckIcon aria-label={gt("Signed in")} className="size-3.5 text-success-foreground" />
-          ) : (
-            <XIcon aria-label={gt("No sign-in")} className="size-3.5 text-muted-foreground" />
-          )}
-          {label}
-        </span>
-      ))}
-    </span>
-  );
-}
-
 function ExternalLinkButton({
   href,
   children,
@@ -207,18 +189,19 @@ function StatusTitle({
   );
 }
 
+/** A switch and the buttons beside it, in one row's control slot. */
+function Controls({ children }: { readonly children: ReactNode }) {
+  return <span className="flex items-center gap-2">{children}</span>;
+}
+
 /**
- * The Boat environment new VMs start on, and whether a thread can start on it. Agent sign-ins
- * and GitHub are requirements, not choices. Every key holder gets the same choice.
+ * The chosen Boat environment and a way to change it or what it passes to VMs. Every key holder
+ * gets the same choice.
  */
-function EnvironmentRows({
-  status,
-  holders,
-}: {
-  readonly status: BoatCloudStatus;
-  readonly holders: ReadonlyArray<EnvironmentPresentation>;
-}) {
-  const gt = useGT();
+function useBoatEnvironment(
+  status: BoatCloudStatus,
+  holders: ReadonlyArray<EnvironmentPresentation>,
+) {
   const configure = useAtomCommand(serverEnvironment.configureBoatCloudEnvironment);
   const [busy, setBusy] = useState(false);
   const selected = boatCloudChosenEnvironment(status);
@@ -247,282 +230,13 @@ function EnvironmentRows({
     );
     setBusy(false);
   };
-  if (status.environmentsError !== null) {
-    return <SettingsRow title={gt("Boat environment")} description={status.environmentsError} />;
-  }
-  const blocker = boatCloudBlocker(status);
-  const localDrivers = boatCloudLocalDrivers(status);
-  // Boat's own sign-ins may be unknown; this computer's still count.
-  const drivers = boatCloudAgentDrivers(status) ?? (localDrivers.size > 0 ? localDrivers : null);
-  const turnOn = (access: Partial<BoatCloudEnvironmentAccess>) => (
-    <Button
-      variant="outline"
-      size="xs"
-      disabled={busy}
-      onClick={() => void apply(selected!.id, access)}
-    >
-      {gt("Turn on")}
-    </Button>
-  );
-  const github =
-    selected === undefined || status.githubConnected === null
-      ? null
-      : selected.passGithub && status.githubConnected;
-  return (
-    <>
-      <SettingsRow
-        title={gt("Boat environment")}
-        description={
-          blocker === null
-            ? gt("Ready to start.")
-            : blocker === "no-snapshot"
-              ? gt("Not ready: the snapshot is still being built.")
-              : gt("Not ready: add an agent sign-in.")
-        }
-        control={
-          <Select
-            value={selected?.id ?? null}
-            onValueChange={(value) => {
-              if (typeof value === "string" && value !== selected?.id) void apply(value);
-            }}
-          >
-            <SelectTrigger size="sm" aria-label={gt("Boat environment")} disabled={busy}>
-              <SelectValue>{selected?.name ?? gt("Choose")}</SelectValue>
-            </SelectTrigger>
-            <SelectPopup align="end" alignItemWithTrigger={false}>
-              {status.environments.map((environment) => (
-                <SelectItem key={environment.id} value={environment.id}>
-                  {environment.isDefault
-                    ? gt("{name} (default)", { name: environment.name })
-                    : environment.name}
-                </SelectItem>
-              ))}
-            </SelectPopup>
-          </Select>
-        }
-      />
-      {selected ? (
-        <>
-          <SettingsRow
-            title={
-              <StatusTitle
-                state={drivers === null ? "pending" : drivers.size > 0 ? "done" : "failed"}
-              >
-                {gt("Agents")}
-              </StatusTitle>
-            }
-            description={
-              drivers !== null && drivers.size > 0 ? (
-                <ProviderList drivers={drivers} />
-              ) : !selected.passAgentsCredentials ? (
-                gt("This Boat environment withholds agent sign-ins.")
-              ) : drivers === null ? (
-                gt("Boat did not say which sign-ins it has.")
-              ) : (
-                gt(
-                  "Sign in to Claude Code or Codex here, or add a sign-in to this Boat environment.",
-                )
-              )
-            }
-            control={
-              !selected.passAgentsCredentials && localDrivers.size === 0 ? (
-                turnOn({ passAgentsCredentials: true })
-              ) : (
-                <ExternalLinkButton href={BOAT_AGENTS_DASHBOARD_URL}>
-                  {drivers?.size === 0 ? gt("Add sign-in") : gt("Manage")}
-                </ExternalLinkButton>
-              )
-            }
-          />
-          <LocalSignInRows status={status} />
-          <SettingsRow
-            title={
-              <StatusTitle state={github === null ? "pending" : github ? "done" : "failed"}>
-                {gt("GitHub")}
-              </StatusTitle>
-            }
-            description={github ? gt("Connected.") : gt("Private repositories and pushes need it.")}
-            control={
-              !selected.passGithub ? (
-                turnOn({ passGithub: true })
-              ) : status.githubConnected === false ? (
-                <ExternalLinkButton href={BOAT_ENVIRONMENT_DASHBOARD_URL}>
-                  {gt("Connect")}
-                </ExternalLinkButton>
-              ) : null
-            }
-          />
-          <SettingsRow
-            title={gt("Secrets")}
-            description={gt("Gives VMs this environment's variables and secret files.")}
-            control={
-              <Switch
-                aria-label={gt("Secrets")}
-                checked={selected.passSecrets}
-                disabled={busy}
-                onCheckedChange={(checked) =>
-                  void apply(selected.id, { passSecrets: Boolean(checked) })
-                }
-              />
-            }
-          />
-          <SettingsRow
-            title={gt("Boat key on VMs")}
-            description={gt(
-              "Lets agents on a VM start, stop and delete VMs billed to your account. T3 Code does not need it.",
-            )}
-            control={
-              <Switch
-                aria-label={gt("Boat key on VMs")}
-                checked={selected.passSandboxCredentials}
-                disabled={busy}
-                onCheckedChange={(checked) =>
-                  void apply(selected.id, { passSandboxCredentials: Boolean(checked) })
-                }
-              />
-            }
-          />
-        </>
-      ) : null}
-    </>
-  );
-}
-
-/**
- * This computer's own Claude and Codex sign-ins, which its VMs get where the Boat environment
- * has none. Per machine: each holder passes what it is signed in to.
- */
-function LocalSignInRows({ status }: { readonly status: BoatCloudStatus }) {
-  const gt = useGT();
-  const { holderEnvironmentId } = usePrimaryBoatCloudStatus();
-  const configure = useAtomCommand(serverEnvironment.configureBoatCloudMachines);
-  const claudeToken = useAtomCommand(serverEnvironment.boatCloudClaudeToken);
-  const [code, setCode] = useState("");
-  const [busy, setBusy] = useState(false);
-  if (holderEnvironmentId === null) return null;
-  const local = status.localSignIns;
-  const run = async (input: Parameters<typeof claudeToken>[0]["input"]) => {
-    setBusy(true);
-    await claudeToken({ environmentId: holderEnvironmentId, input });
-    setBusy(false);
+  const setAccess = (access: Partial<BoatCloudEnvironmentAccess>) => {
+    if (selected) void apply(selected.id, access);
   };
-  const claudeLogin = local.available.find(
-    (signIn) => signIn.driver === "claudeAgent" && signIn.source === "login",
-  );
-  const flow = local.claudeTokenFlow;
-  return (
-    <>
-      <SettingsRow
-        title={gt("Use this computer's sign-ins")}
-        description={
-          local.available.length === 0 ? (
-            gt("Sign in to Claude Code or Codex on this computer.")
-          ) : (
-            <ProviderList drivers={new Set(local.available.map((signIn) => signIn.driver))} />
-          )
-        }
-        control={
-          <Switch
-            aria-label={gt("Use this computer's sign-ins")}
-            checked={local.enabled}
-            onCheckedChange={(checked) =>
-              void configure({
-                environmentId: holderEnvironmentId,
-                input: { useLocalSignIns: Boolean(checked) },
-              })
-            }
-          />
-        }
-      />
-      {local.enabled ? (
-        <SettingsRow
-          title={gt("Claude token")}
-          description={
-            flow?.state === "running" ? (
-              <span className="flex flex-col gap-2">
-                {gt("Finish signing in to Claude in the browser.")}
-                {flow.url ? (
-                  <form
-                    className="flex w-full min-w-0 gap-2 sm:w-80"
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      const value = code.trim();
-                      if (value === "") return;
-                      setCode("");
-                      void run({ action: "code", code: value });
-                    }}
-                  >
-                    <Input
-                      size="sm"
-                      aria-label={gt("Code from the sign-in page")}
-                      placeholder={gt("Code from the sign-in page")}
-                      value={code}
-                      onChange={(event) => setCode(event.target.value)}
-                    />
-                    <Button type="submit" size="sm" variant="outline" disabled={busy}>
-                      {gt("Submit")}
-                    </Button>
-                  </form>
-                ) : null}
-              </span>
-            ) : flow?.state === "failed" ? (
-              (flow.error ?? gt("Could not create the token."))
-            ) : local.claudeTokenStored ? (
-              gt("VMs use a long-lived token.")
-            ) : claudeLogin?.expiresAt ? (
-              gt("VMs get your Claude login until {time}. A token lasts a year.", {
-                time: new Date(claudeLogin.expiresAt).toLocaleTimeString([], {
-                  hour: "numeric",
-                  minute: "2-digit",
-                }),
-              })
-            ) : (
-              gt("A token lasts a year.")
-            )
-          }
-          control={
-            flow?.state === "running" ? (
-              <span className="flex gap-2">
-                {flow.url ? (
-                  <ExternalLinkButton href={flow.url}>{gt("Open sign-in page")}</ExternalLinkButton>
-                ) : null}
-                <Button
-                  variant="outline"
-                  size="xs"
-                  disabled={busy}
-                  onClick={() => void run({ action: "cancel" })}
-                >
-                  {gt("Cancel")}
-                </Button>
-              </span>
-            ) : local.claudeTokenStored ? (
-              <Button
-                variant="destructive-outline"
-                size="xs"
-                disabled={busy}
-                onClick={() => void run({ action: "remove" })}
-              >
-                {gt("Remove")}
-              </Button>
-            ) : (
-              <Button
-                variant="outline"
-                size="xs"
-                disabled={busy}
-                onClick={() => void run({ action: "create" })}
-              >
-                {gt("Create token")}
-              </Button>
-            )
-          }
-        />
-      ) : null}
-    </>
-  );
+  return { selected, busy, apply, setAccess };
 }
 
-/** How new cloud threads get VMs. Every key holder gets the same choice. */
-function MachineRows({
+function EnvironmentRow({
   status,
   holders,
 }: {
@@ -530,8 +244,318 @@ function MachineRows({
   readonly holders: ReadonlyArray<EnvironmentPresentation>;
 }) {
   const gt = useGT();
+  const { selected, busy, apply } = useBoatEnvironment(status, holders);
+  if (status.environmentsError !== null) {
+    return <SettingsRow title={gt("Boat environment")} description={status.environmentsError} />;
+  }
+  return (
+    <SettingsRow
+      title={gt("Boat environment")}
+      description={gt("Machines start with its secrets, sign-ins and GitHub access.")}
+      control={
+        <Select
+          value={selected?.id ?? null}
+          onValueChange={(value) => {
+            if (typeof value === "string" && value !== selected?.id) void apply(value);
+          }}
+        >
+          <SelectTrigger size="sm" aria-label={gt("Boat environment")} disabled={busy}>
+            <SelectValue>{selected?.name ?? gt("Choose")}</SelectValue>
+          </SelectTrigger>
+          <SelectPopup align="end" alignItemWithTrigger={false}>
+            {status.environments.map((environment) => (
+              <SelectItem key={environment.id} value={environment.id}>
+                {environment.isDefault
+                  ? gt("{name} (default)", { name: environment.name })
+                  : environment.name}
+              </SelectItem>
+            ))}
+          </SelectPopup>
+        </Select>
+      }
+    />
+  );
+}
+
+/**
+ * Where VMs get each agent's sign-in: this computer (its login, an API key, or a long-lived
+ * Claude token) and the Boat environment. One row per agent says which apply, then one switch per
+ * source.
+ */
+function SignInRows({
+  status,
+  holders,
+}: {
+  readonly status: BoatCloudStatus;
+  readonly holders: ReadonlyArray<EnvironmentPresentation>;
+}) {
+  const gt = useGT();
+  const { holderEnvironmentId } = usePrimaryBoatCloudStatus();
+  const configureMachines = useAtomCommand(serverEnvironment.configureBoatCloudMachines);
+  const claudeToken = useAtomCommand(serverEnvironment.boatCloudClaudeToken);
+  const { selected, busy: environmentBusy, setAccess } = useBoatEnvironment(status, holders);
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const local = status.localSignIns;
+  const localDrivers = boatCloudLocalDrivers(status);
+  // Null when Boat did not say which sign-ins the environment holds.
+  const boatDrivers =
+    selected?.agentCredentials == null ? null : boatCloudProviderDrivers(selected.agentCredentials);
+  const runToken = async (input: Parameters<typeof claudeToken>[0]["input"]) => {
+    if (holderEnvironmentId === null) return;
+    setBusy(true);
+    await claudeToken({ environmentId: holderEnvironmentId, input });
+    setBusy(false);
+  };
+  const flow = local.claudeTokenFlow;
+  const localSource = (signIn: BoatCloudLocalSignIn) =>
+    signIn.source === "token"
+      ? gt("Long-lived token on this computer")
+      : signIn.source === "environment"
+        ? gt("API key on this computer")
+        : signIn.expiresAt
+          ? gt("This computer's login, until {time}", {
+              time: new Date(signIn.expiresAt).toLocaleTimeString([], {
+                hour: "numeric",
+                minute: "2-digit",
+              }),
+            })
+          : gt("This computer's login");
+
+  const tokenControl =
+    holderEnvironmentId === null || !local.enabled ? null : flow?.state === "running" ? (
+      <Controls>
+        {flow.url ? (
+          <ExternalLinkButton href={flow.url}>{gt("Open sign-in page")}</ExternalLinkButton>
+        ) : null}
+        <Button
+          variant="outline"
+          size="xs"
+          disabled={busy}
+          onClick={() => void runToken({ action: "cancel" })}
+        >
+          {gt("Cancel")}
+        </Button>
+      </Controls>
+    ) : local.claudeTokenStored ? (
+      <Button
+        variant="destructive-outline"
+        size="xs"
+        disabled={busy}
+        onClick={() => void runToken({ action: "remove" })}
+      >
+        {gt("Remove token")}
+      </Button>
+    ) : (
+      <Button
+        variant="outline"
+        size="xs"
+        disabled={busy}
+        onClick={() => void runToken({ action: "create" })}
+      >
+        {gt("Create token")}
+      </Button>
+    );
+
+  const tokenFlowDetail =
+    flow?.state === "running" ? (
+      <span className="flex flex-col gap-2">
+        {gt("Finish signing in to Claude in the browser.")}
+        {flow.url ? (
+          <form
+            className="flex w-full min-w-0 gap-2 sm:w-80"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const value = code.trim();
+              if (value === "") return;
+              setCode("");
+              void runToken({ action: "code", code: value });
+            }}
+          >
+            <Input
+              size="sm"
+              aria-label={gt("Code from the sign-in page")}
+              placeholder={gt("Code from the sign-in page")}
+              value={code}
+              onChange={(event) => setCode(event.target.value)}
+            />
+            <Button type="submit" size="sm" variant="outline" disabled={busy}>
+              {gt("Submit")}
+            </Button>
+          </form>
+        ) : null}
+      </span>
+    ) : flow?.state === "failed" ? (
+      (flow.error ?? gt("Could not create the token."))
+    ) : null;
+
+  return (
+    <>
+      {AGENT_PROVIDERS.map(({ driver, label }) => {
+        const localSignIn = localDrivers.has(driver)
+          ? local.available.find((signIn) => signIn.driver === driver)
+          : undefined;
+        const fromBoat = boatDrivers?.has(driver) === true;
+        const sources = [
+          ...(localSignIn ? [localSource(localSignIn)] : []),
+          ...(fromBoat ? [gt("Boat environment")] : []),
+        ];
+        const state: StepState =
+          sources.length > 0 ? "done" : boatDrivers === null ? "pending" : "failed";
+        const isClaude = driver === "claudeAgent";
+        return (
+          <SettingsRow
+            key={driver}
+            title={<StatusTitle state={state}>{label}</StatusTitle>}
+            description={
+              isClaude && tokenFlowDetail !== null
+                ? tokenFlowDetail
+                : sources.length > 0
+                  ? sources.join(" · ")
+                  : boatDrivers === null
+                    ? gt("Boat did not say whether it has a sign-in.")
+                    : gt("No sign-in")
+            }
+            control={isClaude ? tokenControl : null}
+          />
+        );
+      })}
+      {holderEnvironmentId !== null ? (
+        <SettingsRow
+          title={gt("From this computer")}
+          description={
+            local.available.length === 0
+              ? gt("Sign in to Claude Code or Codex on this computer first.")
+              : gt("Machines get this computer's Claude and Codex sign-ins.")
+          }
+          control={
+            <Switch
+              aria-label={gt("From this computer")}
+              checked={local.enabled}
+              onCheckedChange={(checked) =>
+                void configureMachines({
+                  environmentId: holderEnvironmentId,
+                  input: { useLocalSignIns: Boolean(checked) },
+                })
+              }
+            />
+          }
+        />
+      ) : null}
+      {selected ? (
+        <SettingsRow
+          title={gt("From Boat")}
+          description={gt("Machines get the sign-ins saved in this Boat environment.")}
+          control={
+            <Controls>
+              <ExternalLinkButton href={BOAT_AGENTS_DASHBOARD_URL}>
+                {boatDrivers?.size === 0 ? gt("Add") : gt("Manage")}
+              </ExternalLinkButton>
+              <Switch
+                aria-label={gt("From Boat")}
+                checked={selected.passAgentsCredentials}
+                disabled={environmentBusy}
+                onCheckedChange={(checked) =>
+                  setAccess({ passAgentsCredentials: Boolean(checked) })
+                }
+              />
+            </Controls>
+          }
+        />
+      ) : null}
+    </>
+  );
+}
+
+/** What else the Boat environment hands each VM. */
+function AccessRows({
+  status,
+  holders,
+}: {
+  readonly status: BoatCloudStatus;
+  readonly holders: ReadonlyArray<EnvironmentPresentation>;
+}) {
+  const gt = useGT();
+  const { selected, busy, setAccess } = useBoatEnvironment(status, holders);
+  if (!selected) return null;
+  const github =
+    status.githubConnected === null ? null : selected.passGithub && status.githubConnected;
+  return (
+    <>
+      <SettingsRow
+        title={
+          <StatusTitle state={github === null ? "pending" : github ? "done" : "failed"}>
+            {gt("GitHub")}
+          </StatusTitle>
+        }
+        description={
+          !selected.passGithub
+            ? gt("Off. Machines can clone public repositories only.")
+            : status.githubConnected === false
+              ? gt("Connect Boat's GitHub app to clone private repositories and push.")
+              : gt("Machines can clone private repositories and push.")
+        }
+        control={
+          <Controls>
+            {selected.passGithub && status.githubConnected === false ? (
+              <ExternalLinkButton href={BOAT_ENVIRONMENT_DASHBOARD_URL}>
+                {gt("Connect")}
+              </ExternalLinkButton>
+            ) : null}
+            <Switch
+              aria-label={gt("GitHub")}
+              checked={selected.passGithub}
+              disabled={busy}
+              onCheckedChange={(checked) => setAccess({ passGithub: Boolean(checked) })}
+            />
+          </Controls>
+        }
+      />
+      <SettingsRow
+        title={gt("Secrets")}
+        description={gt("Machines get this environment's variables and secret files.")}
+        control={
+          <Switch
+            aria-label={gt("Secrets")}
+            checked={selected.passSecrets}
+            disabled={busy}
+            onCheckedChange={(checked) => setAccess({ passSecrets: Boolean(checked) })}
+          />
+        }
+      />
+      <SettingsRow
+        title={gt("Boat API key")}
+        description={gt(
+          "Agents on a machine can start, stop and delete machines on your bill. T3 Code does not need it.",
+        )}
+        control={
+          <Switch
+            aria-label={gt("Boat API key on machines")}
+            checked={selected.passSandboxCredentials}
+            disabled={busy}
+            onCheckedChange={(checked) => setAccess({ passSandboxCredentials: Boolean(checked) })}
+          />
+        }
+      />
+    </>
+  );
+}
+
+/** How new cloud threads get VMs, and the snapshot they start from. */
+function NewMachineRows({
+  status,
+  holders,
+  holderEnvironmentId,
+}: {
+  readonly status: BoatCloudStatus;
+  readonly holders: ReadonlyArray<EnvironmentPresentation>;
+  readonly holderEnvironmentId: EnvironmentId;
+}) {
+  const gt = useGT();
+  const m = useMessages();
   const label = useBoatCloudMachineTypeLabel();
   const configure = useAtomCommand(serverEnvironment.configureBoatCloudMachines);
+  const runSetup = useAtomCommand(serverEnvironment.runBoatCloudSetup);
   const [busy, setBusy] = useState(false);
   const apply = async (input: {
     readonly shareMachines?: boolean;
@@ -551,12 +575,19 @@ function MachineRows({
     : (sizes[0]?.id ?? status.defaultMachineType);
   const defaultOption = sizes.find((option) => option.id === defaultSize);
   const sparePrice = defaultOption ? formatHourlyPrice(defaultOption) : null;
+  const setup = status.setup;
+  const setupStepIndex = setup.step ? BOAT_CLOUD_SETUP_STEPS.indexOf(setup.step) : -1;
+  const rebuild = () =>
+    void runSetup({
+      environmentId: holderEnvironmentId,
+      input: { repositories: boatCloudSnapshotRepositories() },
+    });
   return (
     <>
       {sizes.length > 0 ? (
         <SettingsRow
           title={gt("Default size")}
-          description={gt("New Boat threads start on it unless they pick another.")}
+          description={gt("New threads start on it unless they pick another.")}
           control={
             <Select
               value={defaultSize}
@@ -584,7 +615,7 @@ function MachineRows({
       <SettingsRow
         title={gt("Share machines")}
         description={gt(
-          "Lets a new thread join a running VM that has room. Off, each thread gets a VM of its own.",
+          "A new thread joins a running machine that has room. Off, each thread gets its own.",
         )}
         control={
           <Switch
@@ -599,8 +630,8 @@ function MachineRows({
         title={gt("Keep a ready machine")}
         description={
           sparePrice === null
-            ? gt("Faster starts. An idle VM stays on and is billed.")
-            : gt("Faster starts. An idle VM stays on at {price}.", { price: sparePrice })
+            ? gt("Faster starts. An idle machine stays on and is billed.")
+            : gt("Faster starts. An idle machine stays on at {price}.", { price: sparePrice })
         }
         control={
           <Switch
@@ -611,13 +642,55 @@ function MachineRows({
           />
         }
       />
+      <SettingsRow
+        title={
+          <StatusTitle
+            state={
+              setup.status === "ready"
+                ? "done"
+                : setup.status === "failed"
+                  ? "failed"
+                  : setup.status === "running"
+                    ? "active"
+                    : "pending"
+            }
+          >
+            {gt("Snapshot")}
+          </StatusTitle>
+        }
+        description={
+          setup.status === "ready"
+            ? gt("New machines start from it.")
+            : setup.status === "failed"
+              ? (setup.error ?? gt("Setup failed."))
+              : setup.status === "running" && setup.step !== null
+                ? gt("Step {step} of {total}: {label}", {
+                    step: setupStepIndex + 1,
+                    total: BOAT_CLOUD_SETUP_STEPS.length,
+                    label: m(STEP_LABELS[setup.step]),
+                  })
+                : gt("The image new machines start from.")
+        }
+        control={
+          setup.status === "running" ? (
+            <span className="text-xs text-muted-foreground">{gt("Building")}</span>
+          ) : (
+            <Button variant="outline" size="xs" onClick={rebuild}>
+              {setup.status === "ready"
+                ? gt("Rebuild")
+                : setup.status === "failed"
+                  ? gt("Retry")
+                  : gt("Build")}
+            </Button>
+          )
+        }
+      />
     </>
   );
 }
 
 export function BoatCloudSettings() {
   const gt = useGT();
-  const m = useMessages();
   const searchableSetting = useSearchableSetting();
   const { holderEnvironmentId, status } = usePrimaryBoatCloudStatus();
   const vmEnvironmentIds = new Set(
@@ -636,20 +709,11 @@ export function BoatCloudSettings() {
     const state = holderStates.get(holder.environmentId);
     return typeof state === "object" && state?.connected === false;
   });
-  const runSetup = useAtomCommand(serverEnvironment.runBoatCloudSetup);
   const disconnect = useAtomCommand(serverEnvironment.disconnectBoatCloud);
-  const connected = status?.connected === true;
-  const setup = status?.setup;
-  const rebuild = () => {
-    if (holderEnvironmentId === null) return;
-    void runSetup({
-      environmentId: holderEnvironmentId,
-      input: { repositories: boatCloudSnapshotRepositories() },
-    });
-  };
-  const setupStepIndex = setup?.step ? BOAT_CLOUD_SETUP_STEPS.indexOf(setup.step) : -1;
   // Hidden while this machine's status loads, and on a T3 Code without Boat cloud.
   if (status === null) return null;
+  const connected = status.connected;
+  const blocker = boatCloudBlocker(status);
 
   return (
     <>
@@ -666,11 +730,15 @@ export function BoatCloudSettings() {
             )
           }
           description={
-            connected
-              ? gt("Connected")
-              : gt("Run threads on boat.dev VMs. The key needs these scopes: {scopes}.", {
+            !connected
+              ? gt("Run threads on boat.dev VMs. The key needs these scopes: {scopes}.", {
                   scopes: BOAT_CLOUD_REQUIRED_SCOPES.join(", "),
                 })
+              : blocker === null
+                ? gt("Connected. Ready for new threads.")
+                : blocker === "no-snapshot"
+                  ? gt("Connected. Not ready: the snapshot is still building.")
+                  : gt("Connected. Not ready: no agent has a sign-in.")
           }
           control={
             connected && holderEnvironmentId !== null ? (
@@ -690,54 +758,7 @@ export function BoatCloudSettings() {
             )
           }
         />
-        {connected && setup ? (
-          <SettingsRow
-            title={
-              <span className="flex items-center gap-2">
-                <StepIcon
-                  state={
-                    setup.status === "ready"
-                      ? "done"
-                      : setup.status === "failed"
-                        ? "failed"
-                        : setup.status === "running"
-                          ? "active"
-                          : "pending"
-                  }
-                />
-                {gt("Snapshot")}
-              </span>
-            }
-            description={
-              setup.status === "ready"
-                ? gt("New VMs start from it.")
-                : setup.status === "failed"
-                  ? (setup.error ?? gt("Setup failed."))
-                  : setup.status === "running" && setup.step !== null
-                    ? gt("Step {step} of {total}: {label}", {
-                        step: setupStepIndex + 1,
-                        total: BOAT_CLOUD_SETUP_STEPS.length,
-                        label: m(STEP_LABELS[setup.step]),
-                      })
-                    : gt("Builds the image new VMs start from.")
-            }
-            control={
-              setup.status === "running" ? (
-                <span className="text-xs text-muted-foreground">{gt("Setting up")}</span>
-              ) : (
-                <Button variant="outline" size="xs" onClick={rebuild}>
-                  {setup.status === "ready"
-                    ? gt("Rebuild snapshot")
-                    : setup.status === "failed"
-                      ? gt("Retry")
-                      : gt("Set up")}
-                </Button>
-              )
-            }
-          />
-        ) : null}
-        {connected ? <EnvironmentRows status={status} holders={holders} /> : null}
-        {connected ? <MachineRows status={status} holders={holders} /> : null}
+        {connected ? <EnvironmentRow status={status} holders={holders} /> : null}
         {connected && machines.length > 1
           ? machines.map((machine) => (
               <KeyHolderRow
@@ -755,7 +776,24 @@ export function BoatCloudSettings() {
         ) : null}
       </SettingsSection>
       {connected && holderEnvironmentId !== null ? (
-        <BoatCloudMachinesSection status={status} holderEnvironmentId={holderEnvironmentId} />
+        <>
+          <BoatCloudMachinesSection status={status} holderEnvironmentId={holderEnvironmentId} />
+          <SettingsSection id="boat-cloud-new-machines" title={gt("New machines")}>
+            <NewMachineRows
+              status={status}
+              holders={holders}
+              holderEnvironmentId={holderEnvironmentId}
+            />
+          </SettingsSection>
+          <SettingsSection id="boat-cloud-sign-ins" title={gt("Agent sign-ins")}>
+            <SignInRows status={status} holders={holders} />
+          </SettingsSection>
+          {boatCloudChosenEnvironment(status) ? (
+            <SettingsSection id="boat-cloud-access" title={gt("Machine access")}>
+              <AccessRows status={status} holders={holders} />
+            </SettingsSection>
+          ) : null}
+        </>
       ) : null}
     </>
   );
