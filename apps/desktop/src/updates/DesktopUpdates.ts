@@ -432,7 +432,7 @@ export const make = Effect.gen(function* () {
     Option.Option<{ version: string; url: string; zip: MacUpdateZip } | { blocker: string }>
   >(Option.none());
   const preparedMacUpdateRef = yield* Ref.make(Option.none<PreparedMacUpdate>());
-  // A version whose boot check failed is never offered again by this run.
+  // A version whose boot check failed, or whose install did not apply, is not offered again.
   const bootCheckFailedVersionRef = yield* Ref.make(Option.none<string>());
   const electronApp = yield* Effect.serviceOption(ElectronApp.ElectronApp);
 
@@ -1497,6 +1497,9 @@ export const make = Effect.gen(function* () {
 
       const notAppliedVersion = yield* readNotAppliedInstallVersion;
       yield* Ref.set(notAppliedVersionRef, notAppliedVersion);
+      // Fork: an unsigned install that did not apply was rolled back by the swap helper (or never
+      // swapped). Offering the same build again would only repeat the failed restart.
+      if (unsignedMacInstall) yield* Ref.set(bootCheckFailedVersionRef, notAppliedVersion);
       if (Option.isSome(notAppliedVersion)) {
         yield* logUpdaterWarning("the last update install did not apply", {
           version: environment.appVersion,

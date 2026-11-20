@@ -783,6 +783,25 @@ describe("DesktopUpdates", () => {
     ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
   });
 
+  it.effect("does not offer again an unsigned macOS update that did not apply", () => {
+    const harness = makeHarness({
+      unsignedMacUpdates: true,
+      installRecord: JSON.stringify({ fromVersion: "1.2.3", targetVersion: "1.2.4" }),
+    });
+
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const updates = yield* DesktopUpdates.DesktopUpdates;
+        yield* updates.configure;
+        harness.emit("update-available", { version: "1.2.4" });
+        yield* flushCallbacks;
+        const state = yield* updates.getState;
+        assert.equal(state.availableVersion, null);
+        assert.equal(state.notAppliedVersion, "1.2.4");
+      }),
+    ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+  });
+
   // regression: #19291 an install that did apply was still flagged as not applied
   it.effect("does not flag an install that applied", () => {
     const harness = makeHarness({

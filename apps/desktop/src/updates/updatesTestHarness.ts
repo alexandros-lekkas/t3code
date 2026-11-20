@@ -38,6 +38,8 @@ export interface UpdatesHarnessOptions {
   readonly platform?: NodeJS.Platform;
   readonly packageType?: string | undefined;
   readonly installRecord?: string | undefined;
+  /** Stages a fork build's package.json, which installs unsigned macOS updates itself. */
+  readonly unsignedMacUpdates?: boolean;
   readonly policy?: DesktopUpdatePolicy.UpdatePolicy;
   readonly appVersion?: string;
   /** Starts from in-memory settings with this track saved, as after a restart. */
@@ -255,6 +257,9 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
         ? (installRecords.get(path) ?? previousInstallRecord)
         : undefined;
       if (installRecord !== undefined) return Effect.succeed(installRecord);
+      if (path === "/repo/package.json" && options.unsignedMacUpdates) {
+        return Effect.succeed(JSON.stringify({ t3codeUnsignedUpdates: true }));
+      }
       return path === "/missing/resources/package-type" && options.packageType !== undefined
         ? Effect.succeed(options.packageType)
         : Effect.fail(
