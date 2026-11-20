@@ -45,6 +45,8 @@ vi.mock("react-native", () => ({
     },
   },
 }));
+// Boat's thread list pulls Expo in at import; these shells never run on Boat cloud.
+vi.mock("../features/boatCloud/boatCloudThreads", () => ({ boatCloudThreadList: {} }));
 vi.mock("../connection/runtime", async () => {
   const { Atom } = await import("effect/reactivity");
   const Layer = await import("effect/Layer");
