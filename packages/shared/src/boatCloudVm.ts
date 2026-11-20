@@ -154,6 +154,13 @@ ExecStart=/bin/bash -lc ${HOST_PATH}
 [Install]
 WantedBy=t3code.service`;
 
+/**
+ * `systemctl --user` finds the VM's user manager through XDG_RUNTIME_DIR, which a Boat command
+ * does not always carry (right after a VM boots from a snapshot it can be missing). Without it
+ * every call fails with "Failed to connect to bus", so the scripts set it themselves.
+ */
+const USER_BUS = 'export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"';
+
 const INSTRUCTIONS_MARKER = "t3-boat-cloud";
 const AGENT_INSTRUCTIONS = `This is a Boat cloud VM. When you finish a task, commit your changes with a clear message and push the branch to origin. Do not open a pull request unless the user asks for one.`;
 
@@ -162,6 +169,7 @@ const AGENT_INSTRUCTIONS = `This is a Boat cloud VM. When you finish a task, com
  * push. Idempotent, so it also brings VMs from an older snapshot up to date.
  */
 const prepareVmScript = `set -e
+${USER_BUS}
 changed=""
 put() { [ "$(cat "$1" 2>/dev/null)" = "$2" ] || { printf '%s\\n' "$2" > "$1"; changed=1; }; }
 mkdir -p ${UNIT_DIRECTORY}
@@ -376,15 +384,17 @@ export const BOAT_CLOUD_BLOCKER_MESSAGES: Record<BoatCloudBlocker, string> = {
  * The stamp lives in the runtime dir, which a reboot clears along with the imported values.
  * Already a few milliseconds when nothing changed, so every start runs it.
  */
-const syncCredentialsScript = `names=${q(SERVER_CREDENTIALS)}
+const syncCredentialsScript = `${USER_BUS}
+names=${q(SERVER_CREDENTIALS)}
 set_names=""
 for n in $names; do eval "[ -n \\"\\\${$n-}\\" ]" && set_names="$set_names $n"; done
 stamp="$(for n in $set_names; do eval "printf '%s=%s\\n' $n \\"\\\${$n}\\""; done | sha256sum | cut -c1-64)"
 if [ "$stamp" != "$(cat ${CREDENTIALS_STAMP} 2>/dev/null)" ] && [ "$( { ${ACTIVE_RUNS_QUERY.replaceAll("\n", "; ")} ; } 2>/dev/null )" = 0 ]; then
-  systemctl --user unset-environment $names
-  [ -z "$set_names" ] || systemctl --user import-environment $set_names
-  printf '%s' "$stamp" > ${CREDENTIALS_STAMP}
-  systemctl --user try-restart t3code.service >/dev/null 2>&1 || true
+  # The stamp is written only once the server's manager holds the values, so a failed import is retried.
+  systemctl --user unset-environment $names &&
+    { [ -z "$set_names" ] || systemctl --user import-environment $set_names; } &&
+    printf '%s' "$stamp" > ${CREDENTIALS_STAMP} &&
+    { systemctl --user try-restart t3code.service >/dev/null 2>&1 || true; }
 fi`;
 
 /** Brings a running VM's sign-ins up to date, restarting its server only when no turn runs. */
@@ -681,6 +691,7 @@ const BACKUP_PATHS = [
  * secrets stay on the VM; a restored one makes new ones and its client pairs again.
  */
 export const backupScript = `set -e
+${USER_BUS}
 cd ${VM_HOME}
 systemctl --user stop t3code.service || true
 paths=""
@@ -689,6 +700,7 @@ umask 077
 tar -czf ${VM_BACKUP_ARCHIVE} --exclude=node_modules --exclude=.t3/userdata/logs --exclude=.t3/userdata/secrets $paths`;
 
 export const restoreScript = `set -e
+${USER_BUS}
 systemctl --user stop t3code.service
 find ${VM_HOME}/.t3/userdata -mindepth 1 -maxdepth 1 ! -name logs -exec rm -rf {} +
 tar -xzf ${VM_BACKUP_ARCHIVE} -C ${VM_HOME}

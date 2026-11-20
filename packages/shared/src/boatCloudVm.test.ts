@@ -28,6 +28,7 @@ import {
   prepareWorktreeScript,
   subdomainOfHttpBaseUrl,
   syncCheckoutScript,
+  syncSignInsScript,
 } from "./boatCloudVm.ts";
 
 describe("parseRepository", () => {
@@ -436,6 +437,61 @@ describe("syncCheckoutScript", () => {
     assert.strictEqual(sync("feat/later").status, 0);
     assert.strictEqual(sync(null).status, 0);
     assert.notStrictEqual(sync("feat/never").status, 0);
+  });
+});
+
+describe("syncSignInsScript", () => {
+  const signIns = { claude: { CLAUDE_CODE_OAUTH_TOKEN: "dummy-claude-token" }, codex: null };
+  const withStubs = (systemctl: string) => {
+    const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "boat-sync-sign-ins-"));
+    const stub = (name: string, body: string) =>
+      NodeFS.writeFileSync(NodePath.join(root, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+    stub("systemctl", systemctl);
+    stub("sha256sum", "echo 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
+    stub("grep", "exit 1");
+    return {
+      root,
+      run: (env: Record<string, string>) =>
+        NodeChildProcess.spawnSync("sh", ["-c", syncSignInsScript(signIns)], {
+          env: { PATH: `${root}:${process.env.PATH ?? ""}`, ...env },
+          encoding: "utf8",
+        }),
+      [Symbol.dispose]: () => NodeFS.rmSync(root, { recursive: true, force: true }),
+    };
+  };
+
+  it("reaches the user manager when the command carries no XDG_RUNTIME_DIR", () => {
+    using stubs = withStubs(
+      `echo "$XDG_RUNTIME_DIR $*" >> "${"$"}{0%/*}/calls"; [ -n "$XDG_RUNTIME_DIR" ] || { echo "Failed to connect to bus: No medium found" >&2; exit 1; }; exit 1`,
+    );
+    stubs.run({});
+    const calls = NodeFS.readFileSync(NodePath.join(stubs.root, "calls"), "utf8");
+    assert.match(
+      calls,
+      new RegExp(`^/run/user/${process.getuid?.() ?? ""} --user unset-environment`),
+    );
+  });
+
+  it("imports the token for the server, and retries a failed import on the next sync", () => {
+    using stubs = withStubs(
+      `[ -e "${"$"}{0%/*}/fail" ] && exit 1; [ "$2" = import-environment ] && printf '%s' "$CLAUDE_CODE_OAUTH_TOKEN" > "${"$"}{0%/*}/imported"; exit 0`,
+    );
+    const runtime = NodePath.join(stubs.root, "runtime");
+    NodeFS.mkdirSync(runtime);
+    const stamp = NodePath.join(runtime, "t3-boat-credentials");
+
+    NodeFS.writeFileSync(NodePath.join(stubs.root, "fail"), "");
+    stubs.run({ XDG_RUNTIME_DIR: runtime });
+    // The manager never took the values, so nothing marks them as delivered.
+    assert.isFalse(NodeFS.existsSync(stamp));
+
+    NodeFS.rmSync(NodePath.join(stubs.root, "fail"));
+    stubs.run({ XDG_RUNTIME_DIR: runtime });
+    assert.strictEqual(
+      NodeFS.readFileSync(NodePath.join(stubs.root, "imported"), "utf8"),
+      "dummy-claude-token",
+    );
+    assert.isTrue(NodeFS.existsSync(stamp));
   });
 });
 
