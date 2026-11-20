@@ -9,10 +9,6 @@ on:
         description: Branch, tag or commit to check
         required: false
         default: boat
-      base:
-        description: Upstream tag to compare with (default the newest stable tag the ref contains)
-        required: false
-        default: ""
 
 permissions:
   contents: read
@@ -33,16 +29,15 @@ jobs:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
 
-      - name: Fetch upstream release tags
-        run: git fetch --quiet https://github.com/pingdotgg/t3code.git "+refs/tags/v*:refs/tags/v*"
+      - name: Fetch upstream main
+        run: git fetch --quiet --no-tags https://github.com/pingdotgg/t3code.git "+main:refs/remotes/upstream/main"
 
       - uses: ./.github/actions/fork-checks-setup
 
       - name: Run checks
         env:
           FORK_CHECKS_LOG_DIR: ${{ runner.temp }}/fork-checks
-          BASE: ${{ inputs.base }}
-        run: bash .github/scripts/fork-checks.sh $BASE
+        run: bash .github/scripts/fork-checks.sh
 
       - name: Upload check logs
         if: always()

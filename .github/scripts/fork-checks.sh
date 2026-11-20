@@ -2,21 +2,21 @@
 # Fork (alexandros-lekkas/t3code): the checks a boat commit must pass, on a GitHub-hosted
 # ubuntu runner. Used by fork-checks.yml and by fork-sync.yml after merging an upstream release.
 #
-#   fork-checks.sh <upstream tag>
+#   fork-checks.sh            (needs upstream main fetched as refs/remotes/upstream/main)
 #
-# Upstream tested its own release, so only what differs from that tag is tested: the Boat
-# features and any conflict fixes (`check:changed` runs the tests beside and importing changed
-# files). Typecheck, lint and i18n stay repo-wide; they are fast. Without an argument the base is
-# the newest stable upstream tag boat contains.
-# Each step logs to $FORK_CHECKS_LOG_DIR/<step>.log; failed step names go to failed.txt.
+# Upstream tested its own code, so only what boat changes is tested: the Boat features and any
+# conflict fixes, i.e. the diff from the newest upstream commit boat contains (`check:changed`
+# runs the tests beside and importing changed files). Typecheck, lint and i18n stay repo-wide;
+# they are fast. Each step logs to $FORK_CHECKS_LOG_DIR/<step>.log; failed step names go to
+# failed.txt.
 set -uo pipefail
 
-base="${1:-$(git tag --merged HEAD --list 'v*' | grep -Ev -- '-' | sort -V | tail -1)}"
+base="$(git merge-base HEAD refs/remotes/upstream/main 2>/dev/null)"
 if [[ -z "$base" ]]; then
-  echo "::error::No upstream release tag to compare with; fetch upstream's tags first."
+  echo "::error::Fetch upstream main first: git fetch https://github.com/pingdotgg/t3code.git main:refs/remotes/upstream/main"
   exit 1
 fi
-echo "Comparing with upstream $base"
+echo "Testing what boat changes since upstream $(git log -1 --format='%h %s' "$base")"
 
 log_dir="${FORK_CHECKS_LOG_DIR:-${RUNNER_TEMP:-/tmp}/fork-checks}"
 rm -rf "$log_dir"
