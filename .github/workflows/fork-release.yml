@@ -64,6 +64,11 @@ jobs:
       # The feed baked into the build: this fork's releases, never upstream's.
       T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
       VERSION: ${{ needs.version.outputs.version }}
+      # SHA-1 of the self-signed "T3 Code Lekkas Self-Signed" certificate in the
+      # MAC_SELF_SIGN_P12_* secrets. Every build signs with it (scripts/mac-self-sign-after-pack.ts),
+      # so the designated requirement never changes and macOS keeps Screen Recording and
+      # Accessibility across updates. A new certificate resets those grants once.
+      T3CODE_MAC_SELF_SIGN_IDENTITY: C4C59B06AFAE00A64600B0992E5B342F6BDB4F2C
     steps:
       # Plain git, not actions/checkout: with persist-credentials false its auth cleanup runs
       # `git submodule foreach`, which dies on upstream's gitlinks that have no .gitmodules. The
@@ -85,6 +90,29 @@ jobs:
         with:
           toolchain: stable
           targets: aarch64-apple-darwin
+
+      # A throwaway keychain in the search list: codesign finds no identity outside it, even with
+      # --keychain. The certificate is self-signed, so it is never trusted and needs no trust.
+      - name: Import the signing identity
+        env:
+          P12_BASE64: ${{ secrets.MAC_SELF_SIGN_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.MAC_SELF_SIGN_P12_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/fork-signing.keychain-db"
+          echo "T3CODE_MAC_SELF_SIGN_KEYCHAIN=$keychain" >>"$GITHUB_ENV"
+          keychain_password="$(openssl rand -hex 24)"
+          p12="$RUNNER_TEMP/fork-signing.p12"
+          printf '%s' "$P12_BASE64" | base64 --decode >"$p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 7200 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign -f pkcs12 >/dev/null
+          rm -f "$p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" >/dev/null
+          read -r -a existing <<<"$(security list-keychains -d user | tr -d '"' | xargs)"
+          security list-keychains -d user -s "$keychain" "${existing[@]}"
+          security find-identity -p codesigning "$keychain" | grep "$T3CODE_MAC_SELF_SIGN_IDENTITY" >/dev/null \
+            || { echo "::error::The MAC_SELF_SIGN_P12_* secrets do not hold certificate $T3CODE_MAC_SELF_SIGN_IDENTITY"; exit 1; }
 
       - name: Build the app
         env:
@@ -115,6 +143,21 @@ jobs:
           grep -q "repo: ${GITHUB_REPOSITORY##*/}" "$app/Contents/Resources/app-update.yml"
           npx --yes @electron/asar@3.4.1 extract-file "$app/Contents/Resources/app.asar" package.json
           jq -e '.t3codeUnsignedUpdates == true' package.json
+          # Signed with the fork's certificate, never ad-hoc, so TCC grants survive the update.
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -dv --verbose=2 "$app" 2>&1 | grep -x "Authority=T3 Code Lekkas Self-Signed"
+          requirement="$(codesign -d -r- "$app" 2>&1 | grep '^designated => ')"
+          echo "$requirement"
+          leaf="$(tr '[:upper:]' '[:lower:]' <<<"$T3CODE_MAC_SELF_SIGN_IDENTITY")"
+          [[ "$requirement" == "designated => identifier \"com.t3tools.t3code\" and certificate leaf = H\"$leaf\"" ]] \
+            || { echo "::error::unexpected designated requirement: $requirement"; exit 1; }
+          unsigned=0
+          while IFS= read -r -d '' file; do
+            [[ "$(file -b "$file")" == *Mach-O* ]] || continue
+            codesign -dv --verbose=2 "$file" 2>&1 | grep -x "Authority=T3 Code Lekkas Self-Signed" >/dev/null \
+              || { echo "::error::not signed with the fork's certificate: $file"; unsigned=1; }
+          done < <(find "$app" -type f -print0)
+          [[ "$unsigned" == 0 ]]
           echo "zip=$zip" >>"$GITHUB_OUTPUT"
 
       - name: Upload the release files
@@ -266,7 +309,7 @@ jobs:
             git push origin "refs/tags/$tag"
           fi
           cd release
-          notes="$(printf 'Boat fork build of T3 Code from %s (%s).\n\nUnsigned macOS arm64 build, plus t3 server archives for macOS arm64 and Linux x64/arm64. Installed fork builds update themselves from this feed; to install by hand, unzip and move the app into /Applications.' "${GITHUB_SHA:0:10}" "$GITHUB_REF_NAME")"
+          notes="$(printf 'Boat fork build of T3 Code from %s (%s).\n\nSelf-signed (not notarized) macOS arm64 build, plus t3 server archives for macOS arm64 and Linux x64/arm64. Installed fork builds update themselves from this feed; to install by hand, unzip and move the app into /Applications.' "${GITHUB_SHA:0:10}" "$GITHUB_REF_NAME")"
           gh release create "$tag" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \

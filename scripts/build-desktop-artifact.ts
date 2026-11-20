@@ -2908,6 +2908,13 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
           }
         : {}),
     };
+    // Fork: release builds sign themselves with one self-signed identity, so updates keep TCC grants.
+    const selfSignIdentity = yield* Config.String("T3CODE_MAC_SELF_SIGN_IDENTITY").pipe(
+      Config.option,
+    );
+    if (!signed && Option.isSome(selfSignIdentity) && selfSignIdentity.value !== "") {
+      buildConfig.afterPack = path.join(repoRoot, "scripts/mac-self-sign-after-pack.ts");
+    }
   }
 
   if (platform === "mac" && target === "dmg") {

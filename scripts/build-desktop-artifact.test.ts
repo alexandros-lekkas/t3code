@@ -572,6 +572,23 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     }),
   );
 
+  it.effect("self-signs unsigned macOS builds only when given an identity", () =>
+    Effect.gen(function* () {
+      const afterPack = (signed: boolean, env: Record<string, string>) =>
+        createBuildConfig("mac", "zip", "0.1.11-boat.1", signed, false, undefined, undefined).pipe(
+          Effect.map((config) => String(config.afterPack)),
+          Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env }))),
+        );
+      const identity = {
+        T3CODE_MAC_SELF_SIGN_IDENTITY: "C4C59B06AFAE00A64600B0992E5B342F6BDB4F2C",
+      };
+
+      assert.match(yield* afterPack(false, identity), /mac-self-sign-after-pack\.ts$/);
+      assert.match(yield* afterPack(false, {}), /prepare-server-compile-cache\.cjs$/);
+      assert.match(yield* afterPack(true, identity), /prepare-server-compile-cache\.cjs$/);
+    }),
+  );
+
   it.effect("names updatable AppImages without a version and apart per channel", () =>
     Effect.gen(function* () {
       const appImageName = (version: string) =>
