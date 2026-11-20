@@ -967,6 +967,7 @@ interface StagePackageJson {
   readonly version: string;
   readonly buildVersion: string;
   readonly t3codeCommitHash: string;
+  readonly t3codeUnsignedUpdates?: true;
   readonly t3codeWebAuthn?: MacWebAuthnEntitlements;
   readonly private: true;
   readonly packageManager: string;
@@ -2726,16 +2727,29 @@ export function resolveDesktopUpdateChannel(version: string): "latest" | "nightl
   return /-nightly\.\d{8}\.\d+$/.test(version) ? "nightly" : "latest";
 }
 
+/** Fork builds (`x.y.z-boat.N`, alexandros-lekkas/t3code) publish on the stable feed of the fork. */
+export function isBoatForkDesktopVersion(version: string): boolean {
+  return /-boat\.\d+$/.test(version);
+}
+
+/**
+ * The branding a build carries. Fork builds keep the Nightly name, icon and app identity of the
+ * nightly builds they replace, so the keychain item and sign-ins carry over.
+ */
+export function resolveDesktopBrandChannel(version: string): "latest" | "nightly" {
+  return isBoatForkDesktopVersion(version) ? "nightly" : resolveDesktopUpdateChannel(version);
+}
+
 export function isDesktopPreviewVersion(version: string): boolean {
   return /-pr\./.test(version) || /-preview\.\d{8}\.\d+$/.test(version);
 }
 
 export function resolveDesktopWebAssetBrand(version: string): WebAssetBrand {
-  return resolveWebAssetBrandForChannel(resolveDesktopUpdateChannel(version));
+  return resolveWebAssetBrandForChannel(resolveDesktopBrandChannel(version));
 }
 
 export function resolveDesktopBuildIconAssets(version: string): DesktopBuildIconAssets {
-  if (resolveDesktopUpdateChannel(version) === "nightly") {
+  if (resolveDesktopBrandChannel(version) === "nightly") {
     return {
       macIconPng: BRAND_ASSET_PATHS.nightlyMacIconPng,
       linuxIconPng: BRAND_ASSET_PATHS.nightlyLinuxIconPng,
@@ -2766,7 +2780,7 @@ export function resolvePackageManagerUserAgent(packageManager: string): string {
 }
 
 export function resolveDesktopProductName(version: string): string {
-  return resolveDesktopUpdateChannel(version) === "nightly"
+  return resolveDesktopBrandChannel(version) === "nightly"
     ? "T3 Code (Nightly)"
     : (desktopPackageJson.productName ?? "T3 Code");
 }
@@ -2879,7 +2893,8 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
           role: "Viewer",
         },
       ],
-      ...(signed ? { sign: path.join(repoRoot, "scripts/sign-macos.ts") } : {}),
+      // Unsigned builds keep the linker's ad-hoc signatures (fork releases install updates themselves).
+      ...(signed ? { sign: path.join(repoRoot, "scripts/sign-macos.ts") } : { identity: null }),
       ...(macPasskeySigning
         ? {
             entitlements: macPasskeySigning.entitlementsPath,
@@ -2893,7 +2908,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     buildConfig.dmg = {
       // Finder caches DMG backgrounds by volume name; give each installer its own.
       title: `${resolveDesktopProductName(version)} ${version} Installer`,
-      background: `dmg/dmg-background-${updateChannel}.png`,
+      background: `dmg/dmg-background-${resolveDesktopBrandChannel(version)}.png`,
       window: {
         width: 640,
         // DMG bounds include Finder's 32px title bar; keep that artwork strip clear.
@@ -3809,7 +3824,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
   if (options.platform === "mac" && options.target === "dmg") {
     yield* stageDesktopDmgBackground(
       stageResourcesDir,
-      resolveDesktopUpdateChannel(appVersion),
+      resolveDesktopBrandChannel(appVersion),
       options.verbose,
     );
   }
@@ -3913,11 +3928,31 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     options.platform === "win"
       ? path.join(stageAppDir, WINDOWS_SERVER_RESOURCE_SOURCE_DIR, WINDOWS_SERVER_ASAR_RESOURCE)
       : undefined;
+  const stageBuildConfig = yield* createBuildConfig(
+    options.platform,
+    options.target,
+    appVersion,
+    options.signed,
+    options.mockUpdates,
+    options.mockUpdateServerPort,
+    macPasskeySigning && macEntitlementsPath
+      ? {
+          entitlementsPath: macEntitlementsPath,
+          provisioningProfilePath: macPasskeySigning.provisioningProfilePath,
+        }
+      : undefined,
+    bundlesWslRuntime({ platform: options.platform, runtimeArchivePath: options.wslRuntime }),
+    options.arch,
+  );
   const stagePackageJson: StagePackageJson = {
     name: "t3code",
     version: appVersion,
     buildVersion: appVersion,
     t3codeCommitHash: commitHash,
+    // Fork: an unsigned macOS build with a feed installs updates itself (unsignedMacUpdate.ts).
+    ...(options.platform === "mac" && !options.signed && stageBuildConfig.publish
+      ? { t3codeUnsignedUpdates: true as const }
+      : {}),
     // Read by apps/desktop/src/preview/Passkeys.ts; must match the signed entitlements.
     ...(macWebAuthn ? { t3codeWebAuthn: macWebAuthn } : {}),
     private: true,
@@ -3928,22 +3963,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     homepage: "https://t3.codes",
     author: "T3 Tools",
     main: "apps/desktop/dist-electron/boot.cjs",
-    build: yield* createBuildConfig(
-      options.platform,
-      options.target,
-      appVersion,
-      options.signed,
-      options.mockUpdates,
-      options.mockUpdateServerPort,
-      macPasskeySigning && macEntitlementsPath
-        ? {
-            entitlementsPath: macEntitlementsPath,
-            provisioningProfilePath: macPasskeySigning.provisioningProfilePath,
-          }
-        : undefined,
-      bundlesWslRuntime({ platform: options.platform, runtimeArchivePath: options.wslRuntime }),
-      options.arch,
-    ),
+    build: stageBuildConfig,
     dependencies: stageDependencies,
     devDependencies: {
       electron: electronVersion,

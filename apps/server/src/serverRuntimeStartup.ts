@@ -14,6 +14,7 @@ import { formatHostForUrl, isWildcardHost } from "@t3tools/shared/hostClassifica
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as Cause from "effect/Cause";
 import * as Console from "effect/Console";
+import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
@@ -380,6 +381,11 @@ export const maybeOpenBrowser = Effect.fn("serverRuntimeStartup.maybeOpenBrowser
   );
 });
 
+const bootCheck = Config.Boolean("T3CODE_BOOT_CHECK").pipe(
+  Config.withDefault(false),
+  Effect.orElseSucceed(() => false),
+);
+
 const runStartupPhase = <A, E, R>(phase: string, effect: Effect.Effect<A, E, R>) =>
   effect.pipe(
     // Use span attributes; annotations would follow long-lived forked fibers for the server's lifetime.
@@ -667,7 +673,9 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
       }),
     );
 
-    yield* options?.activate ?? Effect.void;
+    // Fork: a desktop update's boot check runs this server on a copy of the user's state. Parked
+    // work (the effect worker, schedules, tunnels) would act on the real world, so it stays parked.
+    if (!(yield* bootCheck)) yield* options?.activate ?? Effect.void;
     yield* Effect.logDebug("Accepting commands");
     yield* commandGate.signalCommandReady;
     yield* Effect.logDebug("startup phase: publishing ready event");

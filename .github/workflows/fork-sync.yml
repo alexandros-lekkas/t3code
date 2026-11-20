@@ -1,0 +1,346 @@
+# Fork (alexandros-lekkas/t3code): pulls the latest stable T3 Code release into boat, at most once
+# a week. Releases published in between fold into the next weekly merge.
+#
+#   1. Find the latest stable release of pingdotgg/t3code (nightlies are ignored). Stop if boat
+#      already has it, or if a sync merge landed on boat in the last 7 days (unless `force`).
+#   2. Merge the release tag into boat. Run .github/scripts/fork-checks.sh.
+#   3. On a conflict or a failing check, Claude Code (claude-opus-5-5) resolves it, keeping both
+#      upstream's changes and the Boat features, and the checks run again.
+#   4. All green: fast-forward main to the release (or upstream main) and push main and boat
+#      together. Still red: open an issue with the details and push nothing.
+#
+# Pushing commits that change .github/workflows needs a token with the Workflows permission, which
+# GITHUB_TOKEN never has. Set the FORK_SYNC_TOKEN secret: a fine-grained personal access token for
+# alexandros-lekkas/t3code with Contents, Workflows and Issues read/write.
+name: Fork sync
+
+on:
+  schedule:
+    # Mondays 09:00 UTC.
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Merge even if a sync landed in the last 7 days
+        type: boolean
+        default: false
+      dry_run:
+        description: Merge and check, but push nothing and open no issue
+        type: boolean
+        default: false
+      upstream_ref:
+        description: Upstream tag or commit to merge instead of the latest stable release (testing)
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+  issues: write
+  actions: write
+
+concurrency:
+  group: fork-sync
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: pingdotgg/t3code
+  CLAUDE_MODEL: claude-opus-5-5
+  GIT_AUTHOR_NAME: github-actions[bot]
+  GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+  GIT_COMMITTER_NAME: github-actions[bot]
+  GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+
+jobs:
+  sync:
+    name: Sync upstream release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      HAS_SYNC_TOKEN: ${{ secrets.FORK_SYNC_TOKEN != '' }}
+      DRY_RUN: ${{ inputs.dry_run == true }}
+      LOG_DIR: ${{ runner.temp }}/fork-sync
+    steps:
+      - name: Checkout boat
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: boat
+          fetch-depth: 0
+          token: ${{ secrets.FORK_SYNC_TOKEN || github.token }}
+
+      - name: Find the upstream release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force == true }}
+          UPSTREAM_REF: ${{ inputs.upstream_ref }}
+        run: |
+          mkdir -p "$LOG_DIR"
+          git remote add upstream "https://github.com/$UPSTREAM_REPO.git"
+          git fetch --quiet --no-tags upstream main
+          git fetch --quiet origin main
+          if [[ -n "$UPSTREAM_REF" ]]; then
+            ref="$UPSTREAM_REF"
+            git fetch --quiet upstream "+refs/tags/*:refs/tags/*" || true
+          else
+            # `gh release view` with no tag is the latest non-prerelease, non-draft release.
+            ref="$(gh release view --repo "$UPSTREAM_REPO" --json tagName --jq .tagName)"
+            git fetch --quiet upstream "refs/tags/$ref:refs/tags/$ref"
+          fi
+          sha="$(git rev-parse --verify "$ref^{commit}")"
+          echo "Upstream $ref is $sha"
+          echo "ref=$ref" >>"$GITHUB_OUTPUT"
+          echo "sha=$sha" >>"$GITHUB_OUTPUT"
+
+          if git merge-base --is-ancestor "$sha" HEAD; then
+            echo "::notice::boat already contains $ref. Nothing to do."
+            echo "skip=true" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          recent="$(git log --since='7 days ago' --format='%h %cs %s' --grep='^Fork-Sync: ' -1 HEAD)"
+          if [[ -n "$recent" && "$FORCE" != "true" ]]; then
+            echo "::notice::A sync merge landed in the last 7 days ($recent). Skipping until next week; dispatch with force to override."
+            echo "skip=true" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # main mirrors upstream: fast-forward it to the release, or to upstream main when the
+          # release is not on main's line.
+          if git merge-base --is-ancestor "$sha" origin/main; then
+            main_target=""
+          elif git merge-base --is-ancestor origin/main "$sha"; then
+            main_target="$sha"
+          elif git merge-base --is-ancestor origin/main upstream/main; then
+            main_target="$(git rev-parse upstream/main)"
+          else
+            echo "::error::origin/main has diverged from upstream; fix it by hand."
+            exit 1
+          fi
+          echo "main_target=$main_target" >>"$GITHUB_OUTPUT"
+          echo "skip=false" >>"$GITHUB_OUTPUT"
+
+      - name: Merge the release into boat
+        id: merge
+        if: steps.release.outputs.skip == 'false'
+        env:
+          REF: ${{ steps.release.outputs.ref }}
+          SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          echo "base=$(git rev-parse HEAD)" >>"$GITHUB_OUTPUT"
+          message="Merge upstream $REF into boat"
+          if git merge --no-ff --no-edit -m "$message" -m "Fork-Sync: $REF" "$SHA"; then
+            echo "conflicted=false" >>"$GITHUB_OUTPUT"
+          else
+            git diff --name-only --diff-filter=U | tee "$LOG_DIR/conflicts.txt"
+            echo "conflicted=true" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up the toolchain
+        if: steps.release.outputs.skip == 'false'
+        uses: ./.github/actions/fork-checks-setup
+
+      - name: Run checks
+        id: checks
+        if: steps.release.outputs.skip == 'false' && steps.merge.outputs.conflicted == 'false'
+        continue-on-error: true
+        env:
+          FORK_CHECKS_LOG_DIR: ${{ runner.temp }}/fork-sync/checks-1
+        run: bash .github/scripts/fork-checks.sh
+
+      - name: Ask Claude to resolve conflicts and fix checks
+        id: claude
+        if: >-
+          steps.release.outputs.skip == 'false' &&
+          (steps.merge.outputs.conflicted == 'true' || steps.checks.outcome == 'failure')
+        continue-on-error: true
+        timeout-minutes: 150
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          REF: ${{ steps.release.outputs.ref }}
+          CONFLICTED: ${{ steps.merge.outputs.conflicted }}
+        run: |
+          npm install --global --silent @anthropic-ai/claude-code
+          if [[ "$CONFLICTED" == "true" ]]; then
+            situation="Merging upstream $REF into boat stopped with conflicts in these files:
+          $(cat "$LOG_DIR/conflicts.txt")
+          Resolve every conflict, then make the checks pass."
+          else
+            situation="Upstream $REF merged into boat cleanly, but these checks fail: $(tr '\n' ' ' <"$LOG_DIR/checks-1/failed.txt").
+          Their logs are in $LOG_DIR/checks-1/. Make the checks pass."
+          fi
+          cat >"$LOG_DIR/prompt.md" <<EOF
+          You are in a checkout of alexandros-lekkas/t3code, a fork of pingdotgg/t3code. Branch boat is
+          upstream plus the fork's Boat features (Boat cloud VMs, sign-ins, the fork's release pipeline
+          and in-app updater). Read the fork section at the top of AGENTS.md first.
+
+          $situation
+
+          Rules:
+          - Keep both sides. Upstream's change stays, and every Boat feature keeps working. When
+            upstream renamed or reshaped an API that Boat code calls, move the Boat code to the new
+            API; never revert upstream to fit Boat.
+          - Fix real failures. Skip or loosen a test only when it also fails on upstream's own code
+            and say so in a comment next to the skip.
+          - Run \`bash .github/scripts/fork-checks.sh\` to verify (it takes a while; you can run single
+            steps such as \`vp run typecheck\` or \`vp run --filter t3 test -- <file>\` while iterating).
+          - Do not commit, push, create branches or touch .github/workflows. Leave the result in the
+            working tree and index. A merge in progress must stay in progress (do not abort it).
+          - Finish with a short summary of what you changed and why.
+          EOF
+          set -o pipefail
+          claude -p "$(cat "$LOG_DIR/prompt.md")" \
+            --model "$CLAUDE_MODEL" \
+            --dangerously-skip-permissions \
+            --max-turns 400 \
+            --output-format text 2>&1 | tee "$LOG_DIR/claude.log"
+
+      - name: Commit Claude's changes
+        id: commit
+        if: steps.claude.outcome != 'skipped'
+        env:
+          REF: ${{ steps.release.outputs.ref }}
+        run: |
+          if [[ -n "$(git diff --name-only --diff-filter=U)" ]] ||
+            git grep -n -I -E '^(<<<<<<<|>>>>>>>) ' -- . ':!*.md' >"$LOG_DIR/markers.txt"; then
+            echo "::error::Conflicts remain after Claude."
+            cat "$LOG_DIR/markers.txt" || true
+            echo "ok=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git add -A
+          if [[ -f .git/MERGE_HEAD ]]; then
+            git commit --no-edit --quiet \
+              -m "Merge upstream $REF into boat" \
+              -m "Conflicts resolved by Claude Code ($CLAUDE_MODEL)." \
+              -m "Fork-Sync: $REF" \
+              -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+          elif ! git diff --cached --quiet; then
+            git commit --quiet \
+              -m "fix: boat passes its checks after merging upstream $REF" \
+              -m "Fixed by Claude Code ($CLAUDE_MODEL) in the weekly fork sync." \
+              -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+          fi
+          echo "ok=true" >>"$GITHUB_OUTPUT"
+
+      - name: Re-run checks
+        id: recheck
+        if: steps.commit.outputs.ok == 'true'
+        continue-on-error: true
+        env:
+          FORK_CHECKS_LOG_DIR: ${{ runner.temp }}/fork-sync/checks-2
+        run: |
+          vp install
+          bash .github/scripts/fork-checks.sh
+
+      - name: Decide
+        id: decide
+        if: steps.release.outputs.skip == 'false'
+        env:
+          CHECKS: ${{ steps.checks.outcome }}
+          RECHECK: ${{ steps.recheck.outcome }}
+          BASE: ${{ steps.merge.outputs.base }}
+          MAIN_TARGET: ${{ steps.release.outputs.main_target }}
+        run: |
+          if [[ "$CHECKS" == "success" || "$RECHECK" == "success" ]]; then
+            echo "green=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "green=false" >>"$GITHUB_OUTPUT"
+          fi
+          # GITHUB_TOKEN cannot push commits that change workflow files.
+          changed_workflows="$(
+            { git diff --name-only "$BASE" HEAD -- .github/workflows
+              [[ -n "$MAIN_TARGET" ]] && git diff --name-only origin/main "$MAIN_TARGET" -- .github/workflows
+            } | sort -u
+          )"
+          if [[ -n "$changed_workflows" && "$HAS_SYNC_TOKEN" != "true" ]]; then
+            printf 'This sync changes workflow files, which GITHUB_TOKEN cannot push:\n%s\n' "$changed_workflows" >"$LOG_DIR/token.txt"
+            echo "needs_token=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "needs_token=false" >>"$GITHUB_OUTPUT"
+          fi
+          git log --oneline "$BASE"..HEAD --first-parent | head -20
+
+      - name: Push main and boat
+        if: steps.decide.outputs.green == 'true' && steps.decide.outputs.needs_token == 'false' && env.DRY_RUN != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAIN_TARGET: ${{ steps.release.outputs.main_target }}
+          REF: ${{ steps.release.outputs.ref }}
+        run: |
+          refs=("HEAD:refs/heads/boat")
+          [[ -n "$MAIN_TARGET" ]] && refs+=("$MAIN_TARGET:refs/heads/main")
+          # Fast-forward only: the rulesets on both branches refuse anything else anyway.
+          git push --atomic origin "${refs[@]}"
+          echo "::notice::Merged upstream $REF into boat."
+          # A push with GITHUB_TOKEN starts no workflows, so start the release build explicitly.
+          if [[ "$HAS_SYNC_TOKEN" != "true" ]]; then
+            gh workflow run fork-release.yml --repo "$GITHUB_REPOSITORY" --ref boat
+          fi
+
+      - name: Disable new upstream workflows
+        if: steps.decide.outputs.green == 'true' && steps.decide.outputs.needs_token == 'false' && env.DRY_RUN != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Only the fork's own workflows (fork-*.yml) run here; upstream's wait forever for
+          # Blacksmith runners. Disabling keeps their files, so upstream merges stay clean.
+          gh workflow list --repo "$GITHUB_REPOSITORY" --all --json path,state \
+            --jq '.[] | select(.state == "active") | .path' |
+            while read -r path; do
+              case "$path" in
+                .github/workflows/fork-*) ;;
+                *) gh workflow disable "$(basename "$path")" --repo "$GITHUB_REPOSITORY" && echo "disabled $path" ;;
+              esac
+            done
+
+      - name: Open an issue
+        if: >-
+          steps.release.outputs.skip == 'false' && env.DRY_RUN != 'true' &&
+          (steps.decide.outputs.green != 'true' || steps.decide.outputs.needs_token == 'true')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ steps.release.outputs.ref }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Fork sync: merging upstream $REF needs a hand"
+          {
+            echo "The weekly sync could not merge upstream \`$REF\` into \`boat\`. Nothing was pushed."
+            echo
+            echo "Run: $RUN_URL (logs are in the \`fork-sync-logs\` artifact)."
+            echo
+            if [[ -s "$LOG_DIR/token.txt" ]]; then
+              echo '### Token needed'
+              echo '```'; cat "$LOG_DIR/token.txt"; echo '```'
+              echo 'Add a `FORK_SYNC_TOKEN` secret (fine-grained PAT for this repo with Contents, Workflows and Issues read/write) and dispatch the workflow again.'
+              echo
+            fi
+            for attempt in checks-1 checks-2; do
+              if [[ -s "$LOG_DIR/$attempt/failed.txt" ]]; then
+                echo "### Failing checks ($attempt)"
+                echo '```'; cat "$LOG_DIR/$attempt/failed.txt"; echo '```'
+              fi
+            done
+            if [[ -s "$LOG_DIR/conflicts.txt" ]]; then
+              echo '### Conflicted files'
+              echo '```'; cat "$LOG_DIR/conflicts.txt"; echo '```'
+            fi
+            if [[ -s "$LOG_DIR/claude.log" ]]; then
+              echo "### Claude's summary"
+              echo '```'; tail -c 6000 "$LOG_DIR/claude.log"; echo '```'
+            fi
+          } >"$LOG_DIR/issue.md"
+          existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title \"$title\"" --json number --jq '.[0].number // empty')"
+          if [[ -n "$existing" ]]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body-file "$LOG_DIR/issue.md"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body-file "$LOG_DIR/issue.md"
+          fi
+          exit 1
+
+      - name: Upload logs
+        if: always() && steps.release.outputs.skip == 'false'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fork-sync-logs
+          path: ${{ runner.temp }}/fork-sync
+          retention-days: 30
+          include-hidden-files: true

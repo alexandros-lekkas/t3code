@@ -1,0 +1,110 @@
+# Fork (alexandros-lekkas/t3code): builds the macOS arm64 app from boat and publishes it as a
+# GitHub release of this fork. Installed fork builds read this repository's feed (baked into
+# app-update.yml) and install updates themselves; see apps/desktop/src/updates/unsignedMacUpdate.ts.
+#
+# Version: <next patch after upstream's version>-boat.<run number>, e.g. 0.1.11-boat.7 on top of
+# upstream 0.1.10, so it sorts above the official release it is based on.
+name: Fork release
+
+on:
+  push:
+    branches: [boat]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - ".github/ISSUE_TEMPLATE/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fork-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish macOS arm64
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      # The public identifiers from .env.example, as official builds use.
+      T3CODE_CLERK_PUBLISHABLE_KEY: pk_live_Y2xlcmsudDMuY29kZXMk
+      T3CODE_CLERK_JWT_TEMPLATE: t3-relay
+      T3CODE_CLERK_CLI_OAUTH_CLIENT_ID: hzxSgY2cH10sDU2r
+      T3CODE_RELAY_URL: https://relay.t3.codes
+      # The feed baked into the build: this fork's releases, never upstream's.
+      T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 1
+
+      - name: Resolve version
+        id: version
+        run: |
+          upstream="$(jq -r .version apps/desktop/package.json)"
+          base="${upstream%%-*}"
+          IFS=. read -r major minor patch <<<"$base"
+          version="$major.$minor.$((patch + 1))-boat.$GITHUB_RUN_NUMBER"
+          echo "Upstream $upstream -> $version"
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+
+      - name: Setup dependencies
+        uses: ./.github/actions/setup-ci-deps
+        with:
+          install-args: --filter=@t3tools/desktop... --filter=t3... --filter=@t3tools/scripts...
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin
+
+      - name: Build the app
+        env:
+          T3CODE_DESKTOP_VERSION: ${{ steps.version.outputs.version }}
+        run: node scripts/build-desktop-artifact.ts --platform mac --target zip --arch arm64 --verbose
+
+      - name: Check the artifacts
+        id: artifacts
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          cd release
+          ls -la
+          zip="T3-Code-$VERSION-arm64.zip"
+          test -f "$zip" && test -f "$zip.blockmap" && test -f latest-mac.yml
+          cat latest-mac.yml
+          grep -q "^version: $VERSION$" latest-mac.yml
+          expected="$(awk '/^sha512:/ {print $2; exit}' latest-mac.yml)"
+          actual="$(openssl dgst -sha512 -binary "$zip" | base64)"
+          [[ "$expected" == "$actual" ]] || { echo "latest-mac.yml sha512 does not match $zip"; exit 1; }
+          # The bundle must carry this fork's feed and the self-update flag.
+          tmp="$(mktemp -d)"
+          ditto -x -k "$zip" "$tmp"
+          app="$(find "$tmp" -maxdepth 1 -name '*.app' -print -quit)"
+          cat "$app/Contents/Resources/app-update.yml"
+          grep -q "owner: ${GITHUB_REPOSITORY%%/*}" "$app/Contents/Resources/app-update.yml"
+          grep -q "repo: ${GITHUB_REPOSITORY##*/}" "$app/Contents/Resources/app-update.yml"
+          npx --yes @electron/asar@3.4.1 extract-file "$app/Contents/Resources/app.asar" package.json
+          jq -e '.t3codeUnsignedUpdates == true' package.json
+          echo "zip=$zip" >>"$GITHUB_OUTPUT"
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          ZIP: ${{ steps.artifacts.outputs.zip }}
+        run: |
+          cd release
+          notes="$(printf 'Boat fork build of T3 Code from %s (%s).\n\nUnsigned macOS arm64 build. Installed fork builds update themselves from this feed; to install by hand, unzip and move the app into /Applications.' "${GITHUB_SHA:0:10}" "$GITHUB_REF_NAME")"
+          gh release create "v$VERSION" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "T3 Code (Boat) $VERSION" \
+            --notes "$notes" \
+            --latest \
+            "$ZIP" "$ZIP.blockmap" latest-mac.yml
+          echo "::notice::Published https://github.com/$GITHUB_REPOSITORY/releases/tag/v$VERSION"

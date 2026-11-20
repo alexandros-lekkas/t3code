@@ -1,0 +1,26 @@
+name: Fork checks setup
+description: Fork (alexandros-lekkas/t3code) - prepares a GitHub-hosted ubuntu runner for .github/scripts/fork-checks.sh.
+runs:
+  using: composite
+  steps:
+    - name: Install browser secret helper build libraries
+      shell: bash
+      run: sudo apt-get update -qq && sudo apt-get install -y -qq libsecret-1-dev pkg-config
+
+    - name: Setup Vite+
+      uses: ./.github/actions/setup-ci-deps
+
+    - name: Cache Electron download
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cache/electron
+        key: electron-${{ runner.os }}-${{ hashFiles('apps/desktop/package.json') }}
+
+    - name: Install Chromium for web browser tests
+      shell: bash
+      run: |
+        node apps/web/node_modules/playwright/cli.js install --only-shell chromium
+        browser=$(find "$HOME/.cache/ms-playwright" -name chrome-headless-shell -type f -print -quit)
+        if ldd "$browser" | grep -q '=> not found'; then
+          node apps/web/node_modules/playwright/cli.js install-deps chromium
+        fi
