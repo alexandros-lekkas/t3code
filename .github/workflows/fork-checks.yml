@@ -25,7 +25,8 @@ on:
       - "docs/**"
       - ".github/ISSUE_TEMPLATE/**"
   schedule:
-    - cron: "23 * * * *"
+    # Weekly, 30 minutes before the Monday sync, so the sync finds the release workflow on.
+    - cron: "30 8 * * 1"
 
 permissions:
   contents: read
