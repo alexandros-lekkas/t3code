@@ -77,7 +77,7 @@ const SnapShotIcon = createLucideIcon("snap-shot", [
 ]);
 
 function BoatNavIcon({ className }: { className?: string }) {
-  return <BoatIcon mono aria-hidden className={className} />;
+  return <BoatIcon aria-hidden className={className} />;
 }
 
 const T3ConnectSidebarSignIn = lazy(() =>

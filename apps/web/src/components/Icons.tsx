@@ -543,12 +543,12 @@ export const OnePasswordIcon: Icon = (props) => (
   </svg>
 );
 
-// The one Boat mark in the app: Boat's app icon, white sails on its blue tile, in every theme.
-// `mono` draws only the sails, in the current colour, to sit among monochrome icons.
+// The one Boat mark in the app: the sails alone, in the current colour, like the other icons.
+// `mono={false}` draws Boat's app icon instead: white sails on its blue tile.
 export function BoatIcon({
   size,
   className,
-  mono = false,
+  mono = true,
   ...props
 }: SVGProps<SVGSVGElement> & { readonly size?: number; readonly mono?: boolean }) {
   return (
