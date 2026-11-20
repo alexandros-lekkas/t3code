@@ -13,6 +13,11 @@ on:
       - "**/*.md"
       - "docs/**"
       - ".github/ISSUE_TEMPLATE/**"
+      # The sync and its checks do not change the app.
+      - ".github/workflows/fork-sync.yml"
+      - ".github/workflows/fork-checks.yml"
+      - ".github/scripts/fork-checks.sh"
+      - ".github/actions/fork-checks-setup/**"
   workflow_dispatch:
 
 permissions:
