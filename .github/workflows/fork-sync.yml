@@ -63,15 +63,16 @@ jobs:
       HAS_SYNC_TOKEN: ${{ secrets.FORK_SYNC_TOKEN != '' }}
       DRY_RUN: ${{ inputs.dry_run == true }}
     steps:
+      # Plain git, not actions/checkout: with persist-credentials false its auth cleanup runs
+      # `git submodule foreach`, which dies on upstream's gitlinks that have no .gitmodules. The
+      # repository is public, so no token is written to disk while
+      # upstream's code and Claude run here; only the push step gets credentials.
       - name: Checkout boat
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          ref: boat
-          fetch-depth: 0
-          # No token in .git/config: upstream's code (install scripts, tests) and Claude run in this
-          # checkout. Only the push step gets credentials; the repository is public, so fetches
-          # need none.
-          persist-credentials: false
+        run: |
+          git init --quiet .
+          git remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
+          git fetch --quiet --no-tags origin "+refs/heads/boat:refs/remotes/origin/boat"
+          git checkout --quiet -B boat origin/boat
 
       - name: Find the upstream release
         id: release

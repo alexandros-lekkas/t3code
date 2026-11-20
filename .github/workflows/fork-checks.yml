@@ -23,12 +23,18 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
+      # Plain git, not actions/checkout: with persist-credentials false its auth cleanup runs
+      # `git submodule foreach`, which dies on upstream's gitlinks that have no .gitmodules. The
+      # repository is public, so no token is ever written to disk.
       - name: Checkout
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          ref: ${{ inputs.ref }}
-          fetch-depth: 0
-          persist-credentials: false
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          git init --quiet .
+          git remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
+          # A branch, tag or full commit SHA, with its whole history.
+          git fetch --quiet --no-tags origin "$REF"
+          git checkout --quiet --detach FETCH_HEAD
 
       - name: Fetch upstream main
         run: git fetch --quiet --no-tags https://github.com/pingdotgg/t3code.git "+main:refs/remotes/upstream/main"
