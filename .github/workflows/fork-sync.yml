@@ -285,11 +285,19 @@ jobs:
           # Only the fork's own workflows (fork-*.yml) run here; upstream's wait forever for
           # Blacksmith runners. Disabling keeps their files, so upstream merges stay clean.
           gh workflow list --repo "$GITHUB_REPOSITORY" --all --json path,state \
-            --jq '.[] | select(.state == "active") | .path' |
-            while read -r path; do
-              case "$path" in
-                .github/workflows/fork-*) ;;
-                *) gh workflow disable "$(basename "$path")" --repo "$GITHUB_REPOSITORY" && echo "disabled $path" ;;
+            --jq '.[] | "\(.state) \(.path)"' |
+            while read -r state path; do
+              name="$(basename "$path")"
+              case "$name" in
+                fork-*.yml)
+                  # The fork's own workflows must stay on.
+                  if [[ "$state" != "active" ]]; then gh workflow enable "$name" --repo "$GITHUB_REPOSITORY"; fi
+                  ;;
+                *)
+                  if [[ "$state" == "active" ]]; then
+                    gh workflow disable "$name" --repo "$GITHUB_REPOSITORY" && echo "disabled $path"
+                  fi
+                  ;;
               esac
             done
 
