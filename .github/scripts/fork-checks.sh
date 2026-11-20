@@ -48,6 +48,8 @@ step electron vp run --filter @t3tools/desktop ensure:electron
 step typecheck vp run typecheck
 step lint vp check
 step i18n vp run i18n:check
+# A merge that takes upstream's icons would ship the official mark in the Boat build.
+step icons vp run icons:check
 step changed vp run check:changed "$base"
 
 if [[ -s "$log_dir/failed.txt" ]]; then

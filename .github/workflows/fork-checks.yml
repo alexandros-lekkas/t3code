@@ -28,6 +28,7 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Fetch upstream main
         run: git fetch --quiet --no-tags https://github.com/pingdotgg/t3code.git "+main:refs/remotes/upstream/main"

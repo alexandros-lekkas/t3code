@@ -20,8 +20,9 @@ on:
       - ".github/actions/fork-checks-setup/**"
   workflow_dispatch:
 
+# The build runs the whole dependency tree's install scripts, so only the publish job can write.
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: fork-release
@@ -45,6 +46,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 1
+          persist-credentials: false
 
       - name: Resolve version
         id: version
@@ -115,6 +117,8 @@ jobs:
     name: Publish the release
     needs: release
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     timeout-minutes: 15
     steps:
       - name: Checkout
