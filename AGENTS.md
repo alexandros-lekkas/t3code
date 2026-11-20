@@ -1,5 +1,14 @@
 # T3 Code
 
+## This fork (alexandros-lekkas/t3code)
+
+- `boat` is the branch we build and deploy from. It is upstream plus the Boat cloud features. GitHub blocks deleting or force-pushing it.
+- `main` mirrors `pingdotgg/t3code` main. Never commit to it. Only the sync fast-forwards it.
+- New work goes on a short-lived branch, merged into `boat`. Delete the branch once merged.
+- Syncing upstream: fast-forward `main` with `git push origin upstream/main:main`, then merge `main` into `boat`. Resolve conflicts so both upstream's changes and the Boat features stay. Run `vp i`, `vp run typecheck` and `vp run check:changed upstream/main`, then push `boat` (fast-forward only).
+- Building the app: `T3CODE_DESKTOP_VERSION=<x.y.z-nightly.YYYYMMDD.N> node scripts/build-desktop-artifact.ts --platform mac --target dir --arch arm64`, with the `T3CODE_*` values from `.env.example` exported. The app lands in `release/mac-arm64/`. It has no update feed.
+- Installing it: `~/Applications-backup/swap-on-quit.sh "<path to the .app>"` swaps it in the next time T3 Code quits. Only one watcher waits at a time.
+
 T3 Code is a minimal GUI for coding agents. A Node WebSocket server wraps provider CLIs and agents (Codex, Claude Code, Cursor, Grok, OpenCode, Antigravity, Kiro, Pi, Muse Code, fx) and serves web, desktop, and mobile clients.
 
 You can think of T3 Code as an open source "bring-your-own-subscription" alternative to apps like Claude Desktop, Codex App, Cursor Glass and Conductor.
