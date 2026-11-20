@@ -179,7 +179,7 @@ export function useDraftEnvironmentRouting(input: DraftEnvironmentRoutingInput) 
     if (boatCloud.holderEnvironmentId === null || boatCloudBlocker(boatCloud.status) !== null) {
       return {
         title: gt("Boat is not ready"),
-        description: gt("Fix it in Settings, Environments, Boat."),
+        description: gt("Fix it in Settings, Boat."),
       };
     }
     const project = allProjects.find(

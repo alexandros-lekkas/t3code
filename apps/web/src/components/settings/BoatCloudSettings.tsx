@@ -34,7 +34,6 @@ import {
   boatCloudLocalDrivers,
   boatCloudProviderDrivers,
 } from "@t3tools/shared/boatCloudVm";
-import { BoatIcon } from "../Icons";
 import { Badge } from "../ui/badge";
 import { Input } from "../ui/input";
 import { Button } from "../ui/button";
@@ -717,10 +716,7 @@ export function BoatCloudSettings() {
 
   return (
     <>
-      <SettingsSection
-        {...searchableSetting("boat-cloud")}
-        icon={<BoatIcon aria-hidden className="size-5" />}
-      >
+      <SettingsSection {...searchableSetting("boat-cloud")} title={gt("Account")}>
         <SettingsRow
           title={
             connected ? (

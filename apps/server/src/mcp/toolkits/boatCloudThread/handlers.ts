@@ -117,12 +117,12 @@ const launch = Effect.fn("mcp.boatCloud.launchThread")(function* (
   if (status === undefined || !status.connected)
     return yield* failure(
       "capability_denied",
-      "Boat is not connected on this machine. The user connects a Boat API key in Settings → Environments → Boat.",
+      "Boat is not connected on this machine. The user connects a Boat API key in Settings → Boat.",
     );
   if (!status.snapshotReady && status.setup.status === "running")
     return yield* failure(
       "orchestration_error",
-      "Boat setup is still building its snapshot. Try again once Settings → Environments → Boat shows it ready.",
+      "Boat setup is still building its snapshot. Try again once Settings → Boat shows it ready.",
     );
   if (boatCloudBlocker(status) === "no-agents")
     return yield* failure("capability_denied", BOAT_CLOUD_BLOCKER_MESSAGES["no-agents"]);

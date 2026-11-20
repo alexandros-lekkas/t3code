@@ -119,7 +119,7 @@ export function useBoatCloudStartBanner(
       title: gt("Boat cannot start yet"),
       description: m(BLOCKER_LABELS[blocker]),
       actions: (
-        <Button size="xs" variant="ghost" render={<Link to="/settings/connections" />}>
+        <Button size="xs" variant="ghost" render={<Link to="/settings/boat" />}>
           {gt("Fix in Settings")}
         </Button>
       ),

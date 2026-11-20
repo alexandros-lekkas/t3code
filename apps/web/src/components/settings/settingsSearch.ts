@@ -35,6 +35,7 @@ export type SettingsPath =
   | "/settings/source-control"
   | "/settings/worktrees"
   | "/settings/connections"
+  | "/settings/boat"
   | "/settings/access"
   | "/settings/secrets"
   | "/settings/maintenance"
@@ -110,6 +111,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/source-control": msg("Source control & issues"),
   "/settings/worktrees": msg("Worktrees"),
   "/settings/connections": msg("Environments"),
+  "/settings/boat": msg("Boat"),
   "/settings/access": msg("Sharing & access"),
   "/settings/secrets": msg("Secrets"),
   "/settings/maintenance": msg("Maintenance"),
@@ -165,6 +167,7 @@ export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
     heading: msg("Connections"),
     paths: [
       "/settings/connections",
+      "/settings/boat",
       "/settings/access",
       ...(isSecretsFeatureEnabled ? (["/settings/secrets"] as const) : []),
     ],
@@ -1418,8 +1421,32 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "boat-cloud",
     title: msg("Boat"),
-    to: "/settings/connections",
-    searchTerms: [msg("cloud remote vm sandbox boat.dev api key snapshot")],
+    to: "/settings/boat",
+    searchTerms: [msg("cloud remote vm sandbox boat.dev api key account environment")],
+  },
+  {
+    id: "boat-cloud-machines",
+    title: msg("Boat machines"),
+    to: "/settings/boat",
+    searchTerms: [msg("cloud vm sandbox cost usage stop wake delete")],
+  },
+  {
+    id: "boat-cloud-new-machines",
+    title: msg("New Boat machines"),
+    to: "/settings/boat",
+    searchTerms: [msg("cloud vm default size share ready spare snapshot rebuild")],
+  },
+  {
+    id: "boat-cloud-sign-ins",
+    title: msg("Boat agent sign-ins"),
+    to: "/settings/boat",
+    searchTerms: [msg("cloud vm claude codex token login credentials")],
+  },
+  {
+    id: "boat-cloud-access",
+    title: msg("Boat machine access"),
+    to: "/settings/boat",
+    searchTerms: [msg("cloud vm github secrets variables api key")],
   },
   {
     id: "load-balancing",
@@ -1483,6 +1510,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/source-control": "environment-defaults",
   "/settings/worktrees": "project-defaults",
   "/settings/connections": "connections",
+  "/settings/boat": null,
   "/settings/access": "connections",
   "/settings/secrets": null,
   "/settings/scheduled-tasks": null,

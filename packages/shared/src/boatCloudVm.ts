@@ -373,8 +373,8 @@ export function boatCloudBlocker(status: BoatCloudStatus | null): BoatCloudBlock
 /** The blocker as the server and agents read it. Clients show their own translated text. */
 export const BOAT_CLOUD_BLOCKER_MESSAGES: Record<BoatCloudBlocker, string> = {
   "not-connected":
-    "Boat is not connected. Connect a Boat API key in Settings → Environments → Boat.",
-  "no-snapshot": "Boat is still setting up. Finish setup in Settings → Environments → Boat.",
+    "Boat is not connected. Connect a Boat API key in Settings → Boat.",
+  "no-snapshot": "Boat is still setting up. Finish setup in Settings → Boat.",
   "no-agents": `Neither the Boat environment nor this machine has a Claude or ChatGPT sign-in, so no agent can run on its VMs. Sign in to Claude Code or Codex here, or add a sign-in at ${BOAT_AGENTS_DASHBOARD_URL}.`,
 };
 

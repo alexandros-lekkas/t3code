@@ -38,6 +38,7 @@ import { useLocation, useNavigate } from "@tanstack/react-router";
 import { T, useGT, useMessages } from "gt-react";
 
 import { cn } from "../../lib/utils";
+import { BoatIcon } from "../Icons";
 import { Button } from "../ui/button";
 import { Kbd } from "../ui/kbd";
 import {
@@ -75,6 +76,10 @@ const SnapShotIcon = createLucideIcon("snap-shot", [
   ["circle", { cx: "12", cy: "12", r: "1.5", key: "lens" }],
 ]);
 
+function BoatNavIcon({ className }: { className?: string }) {
+  return <BoatIcon mono aria-hidden className={className} />;
+}
+
 const T3ConnectSidebarSignIn = lazy(() =>
   import("../clerk/T3ConnectSidebarSignIn").then((module) => ({
     default: module.T3ConnectSidebarSignIn,
@@ -106,6 +111,7 @@ const SETTINGS_SECTION_ICONS: Readonly<
   "/settings/source-control": GitBranchIcon,
   "/settings/worktrees": FolderTreeIcon,
   "/settings/connections": ServerIcon,
+  "/settings/boat": BoatNavIcon,
   "/settings/access": ShieldCheckIcon,
   "/settings/secrets": KeyRoundIcon,
   "/settings/maintenance": WrenchIcon,

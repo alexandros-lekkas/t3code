@@ -11,29 +11,29 @@ and you can follow it from any client.
    `ssh`, `snapshot.read`, `snapshot.write`, `account.read`, `account.admin`, `environment.read`,
    `environment.write`. `account.admin` lets T3 Code see which agent sign-ins you added, never
    their values.
-2. Open **Settings → Environments**, paste the key in the **Boat** section, and choose
-   **Connect**. The key is saved on every connected machine.
+2. Open **Settings → Boat**, paste the key under **Account**, and choose **Connect**. The key is
+   saved on every connected machine.
 3. Setup starts on its own: T3 Code creates a VM, installs the T3 Code server so it starts on
    boot, clones your most worked repositories, copies your machine's skills, and saves a Boat
-   snapshot named `t3-code`. Every cloud VM starts from it. Choose **Rebuild snapshot** after you
-   change your skills or update T3 Code.
-4. Under **Boat environment**, choose the Boat environment new VMs start on. It starts on Boat's
-   default, and the row says whether threads can start on it. Below it:
-   - **Agents** shows which providers VMs can sign in: the environment's sign-ins and this
-     computer's. A thread cannot start without at least one: sign in to Claude Code or Codex here,
-     or choose **Add sign-in** to add a Claude or ChatGPT sign-in on Boat's
-     [Agents & Proxying](https://boat.dev/dashboard?tab=agents) page.
-   - **Use this computer's sign-ins** (on by default) gives VMs this computer's Claude Code and
-     Codex sign-ins for any provider the Boat environment does not sign in. Your Claude login
-     reaches VMs for a few hours at a time; choose **Create token** once to sign in to Claude in
-     the browser and make a token that lasts a year. A Codex login reaches VMs for several days.
-     VMs get them each time they start or wake.
-   - **GitHub** shows whether Boat's GitHub app is connected. Private repositories and pushes need
-     it. If you signed in to Boat with Google or email, choose **Connect** to open Boat's
-     [Environment](https://boat.dev/dashboard?tab=environment) page.
+   snapshot named `t3-code`. Every cloud VM starts from it. Choose **Rebuild** next to
+   **Snapshot**, under **New machines**, after you change your skills or update T3 Code.
+4. Under **Account**, the account row says whether threads can start, and **Boat environment**
+   chooses the Boat environment new VMs start on. It starts on Boat's default.
+5. **Agent sign-ins** has a row for Claude and one for Codex saying where VMs get each sign-in. A
+   thread cannot start without at least one.
+   - **From this computer** (on by default) gives VMs this computer's Claude Code and Codex
+     sign-ins. Your Claude login reaches VMs for a few hours at a time; choose **Create token** on
+     the Claude row once to sign in to Claude in the browser and make a token that lasts a year. A
+     Codex login reaches VMs for several days. VMs get them each time they start or wake.
+   - **From Boat** gives VMs the sign-ins saved in the Boat environment. Choose **Add** or
+     **Manage** to open Boat's [Agents & Proxying](https://boat.dev/dashboard?tab=agents) page.
+6. **Machine access** sets what else the Boat environment gives each VM:
+   - **GitHub** lets VMs clone private repositories and push. If Boat's GitHub app is not
+     connected, for example because you signed in to Boat with Google or email, choose **Connect**
+     to open Boat's [Environment](https://boat.dev/dashboard?tab=environment) page.
    - **Secrets** gives VMs the environment's variables and secret files.
-   - **Boat key on VMs** puts a Boat key for your account on each VM, so agents there can start,
-     stop and delete VMs billed to you. T3 Code does not need it; leave it off unless an agent must
+   - **Boat API key** puts a Boat key for your account on each VM, so agents there can start, stop
+     and delete VMs billed to you. T3 Code does not need it; leave it off unless an agent must
      manage VMs itself.
 
    A VM keeps the environment it started on, even after it stops, so a change only applies to new
@@ -53,7 +53,7 @@ snapshot. A VM from the snapshot is usually ready in under 10 seconds.
 
 Next to the machine picker, choose the VM size: Small, Medium, Large or Extra large. Each size lists its vCPUs, memory and hourly price;
 a size your Boat plan cannot start is shown with the reason. New threads use the **Default size**
-from the Boat section unless you pick another. With **Share machines** off, each cloud thread
+under **Settings → Boat → New machines** unless you pick another. With **Share machines** off, each cloud thread
 gets a VM of its own; turn it on to let threads join a running VM that has room. **Keep a ready
 machine** keeps an idle VM at the default size running while you use T3 Code, so a start skips the
 boot. That VM is billed at its hourly price; it is off by default, and turning it off deletes the
@@ -73,7 +73,7 @@ A VM turns off once none of its threads has run a turn for 10 minutes. A connect
 the key stops it a minute early and first saves a copy of the VM's threads, provider sessions, and
 checkouts. A thread on a stopped VM shows it as sleeping. Your next message turns the same VM back
 on and the thread continues. If Boat deleted the VM, a new one starts from the saved copy.
-**Machines**, under the **Boat** section of **Settings → Environments**, lists each VM by its
+**Machines**, in **Settings → Boat**, lists each VM by its
 threads, with its size and cost, and lets you stop, wake or delete it. VMs are not listed with your
 other environments.
 
