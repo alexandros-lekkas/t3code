@@ -107,6 +107,9 @@ jobs:
           tmp="$(mktemp -d)"
           ditto -x -k "$zip" "$tmp"
           app="$(find "$tmp" -maxdepth 1 -name '*.app' -print -quit)"
+          # Installed builds update in place only to the same bundle id; the name is the fork's.
+          [[ "$(basename "$app")" == "T3 Code (Lekkas).app" ]] || { echo "unexpected bundle name: $app"; exit 1; }
+          [[ "$(plutil -extract CFBundleIdentifier raw "$app/Contents/Info.plist")" == "com.t3tools.t3code" ]] || { echo "unexpected bundle id"; exit 1; }
           cat "$app/Contents/Resources/app-update.yml"
           grep -q "owner: ${GITHUB_REPOSITORY%%/*}" "$app/Contents/Resources/app-update.yml"
           grep -q "repo: ${GITHUB_REPOSITORY##*/}" "$app/Contents/Resources/app-update.yml"
@@ -190,7 +193,7 @@ jobs:
       - name: Install patchelf and libatomic
         run: sudo apt-get update && sudo apt-get install -y patchelf libatomic1
 
-      # -boat versions use the Nightly brand, as the desktop build does (resolveDesktopBrandChannel).
+      # -boat versions use the Nightly web assets (the Boat mark), as the desktop build does (resolveDesktopBrandChannel).
       - name: Build the CLI archive
         env:
           APP_VERSION: ${{ needs.version.outputs.version }}
@@ -267,7 +270,7 @@ jobs:
           gh release create "$tag" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
-            --title "T3 Code (Boat) $VERSION" \
+            --title "T3 Code (Lekkas) $VERSION" \
             --notes "$notes" \
             --latest \
             "$ZIP" "$ZIP.blockmap" latest-mac.yml SHA256SUMS t3-"$VERSION"-*.tar.gz

@@ -44,6 +44,8 @@ import {
   resolveMacPasskeySigningConfiguration,
   resolveMergedStageDependencies,
   resolveBuildOptions,
+  resolveDesktopBuildIconAssets,
+  resolveDesktopProductName,
   stageWslRuntimeArchive,
   ancestorNodeModulesPaths,
   copyDirectoryPreservingSymlinks,
@@ -1865,6 +1867,15 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.equal(resolved.verbose, false);
       assert.equal(resolved.mockUpdates, false);
     }),
+  );
+});
+
+it("names fork builds T3 Code (Lekkas) and keeps the Nightly icons and app id", () => {
+  assert.equal(resolveDesktopProductName("0.1.11-boat.9"), "T3 Code (Lekkas)");
+  assert.equal(resolveDesktopProductName("0.1.11-nightly.20261117.4851"), "T3 Code (Nightly)");
+  assert.deepEqual(
+    resolveDesktopBuildIconAssets("0.1.11-boat.9"),
+    resolveDesktopBuildIconAssets("0.1.11-nightly.20261117.4851"),
   );
 });
 

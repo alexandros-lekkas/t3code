@@ -60,6 +60,23 @@ describe("DesktopEnvironment", () => {
     }),
   );
 
+  it("names fork builds T3 Code (Lekkas) while keeping the Nightly stage", () => {
+    assert.deepEqual(
+      DesktopEnvironment.resolveDesktopAppBranding({
+        isDevelopment: false,
+        appVersion: "0.1.11-boat.9",
+      }),
+      { baseName: "T3 Code", stageLabel: "Nightly", displayName: "T3 Code (Lekkas)" },
+    );
+    assert.equal(
+      DesktopEnvironment.resolveDesktopAppBranding({
+        isDevelopment: false,
+        appVersion: "0.1.11-nightly.20261117.4851",
+      }).displayName,
+      "T3 Code (Nightly)",
+    );
+  });
+
   it.effect("keeps implicit development state separate from production state", () =>
     Effect.gen(function* () {
       const development = yield* makeEnvironment(

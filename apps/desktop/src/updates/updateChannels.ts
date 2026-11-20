@@ -5,7 +5,7 @@ export function isNightlyDesktopVersion(version: string): boolean {
   return PRERELEASE_VERSION_PATTERN.test(version);
 }
 
-/** Fork builds (alexandros-lekkas/t3code) carry the Nightly name of the builds they replace. */
+/** Fork builds (alexandros-lekkas/t3code) are named "T3 Code (Lekkas)" but keep the Nightly stage and app identity. */
 export function isBoatForkDesktopVersion(version: string): boolean {
   return /^[^-+]+-boat\.\d+$/.test(version);
 }

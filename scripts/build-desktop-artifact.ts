@@ -2733,8 +2733,10 @@ export function isBoatForkDesktopVersion(version: string): boolean {
 }
 
 /**
- * The branding a build carries. Fork builds keep the Nightly name, icon and app identity of the
- * nightly builds they replace, so the keychain item and sign-ins carry over.
+ * The branding a build carries. Fork builds keep the Nightly icon assets (the Boat mark) and the
+ * app identity of the nightly builds they replace, but carry their own name
+ * (resolveDesktopProductName). The keychain item is named after package.json's `name` ("t3code"),
+ * so it carries over either way.
  */
 export function resolveDesktopBrandChannel(version: string): "latest" | "nightly" {
   return isBoatForkDesktopVersion(version) ? "nightly" : resolveDesktopUpdateChannel(version);
@@ -2779,7 +2781,11 @@ export function resolvePackageManagerUserAgent(packageManager: string): string {
   return `${trimmed.slice(0, versionSeparator)}/${trimmed.slice(versionSeparator + 1)}`;
 }
 
+/** Must match BOAT_FORK_DISPLAY_NAME in apps/desktop/src/app/DesktopEnvironment.ts. */
+const BOAT_FORK_PRODUCT_NAME = "T3 Code (Lekkas)";
+
 export function resolveDesktopProductName(version: string): string {
+  if (isBoatForkDesktopVersion(version)) return BOAT_FORK_PRODUCT_NAME;
   return resolveDesktopBrandChannel(version) === "nightly"
     ? "T3 Code (Nightly)"
     : (desktopPackageJson.productName ?? "T3 Code");
