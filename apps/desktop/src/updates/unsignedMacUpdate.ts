@@ -329,10 +329,12 @@ export const prepareUnsignedMacUpdate = Effect.fn("desktop.updates.unsignedMac.p
     );
     const zipPath = NodePath.join(input.workDir, "update.zip");
     const extractDir = NodePath.join(input.workDir, "extracted");
-    yield* fsStep("download", "could not prepare the update folder", async () => {
-      await NodeFSP.rm(input.workDir, { recursive: true, force: true });
-      await NodeFSP.mkdir(extractDir, { recursive: true });
-    });
+    // Electron's fs treats `app.asar` as a directory it cannot empty, so a leftover
+    // extracted bundle makes `fs.rm` fail with ENOTEMPTY. `rm` sees a plain file.
+    yield* run("/bin/rm", ["-rf", input.workDir], "download");
+    yield* fsStep("download", "could not prepare the update folder", () =>
+      NodeFSP.mkdir(extractDir, { recursive: true }),
+    );
     yield* downloadZip({
       url: input.url,
       zip: input.zip,
