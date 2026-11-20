@@ -82,6 +82,8 @@ const readyStatus: BoatCloudStatus = {
   githubConnected: true,
   shareMachines: false,
   keepReadyMachine: false,
+  idleStopMinutes: 15,
+  deleteStoppedAfterDays: 7,
   defaultMachineType: "small",
   machineTypes,
   environmentUsage: [],

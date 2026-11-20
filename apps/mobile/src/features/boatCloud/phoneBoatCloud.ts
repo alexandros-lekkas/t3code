@@ -7,6 +7,8 @@ import {
   BoatCloudMachineType,
   type BoatCloudSession,
   type BoatCloudStatus,
+  BOAT_CLOUD_DELETE_STOPPED_DAYS,
+  BOAT_CLOUD_IDLE_STOP_MINUTES,
   BOAT_CLOUD_NO_LOCAL_SIGN_INS,
 } from "@t3tools/contracts";
 import {
@@ -31,7 +33,7 @@ import {
 } from "@t3tools/shared/boatCloudStart";
 import {
   MACHINE_LABEL_FILTER,
-  SPARE_NAME,
+  isSpare,
   VM_T3_PORT,
   machineLabelOf,
   machineStateOf,
@@ -83,6 +85,8 @@ const DISCONNECTED: BoatCloudStatus = {
   shareMachines: false,
   // The phone keeps no ready machine: it is opt-in, and only a machine holder offers it.
   keepReadyMachine: false,
+  idleStopMinutes: BOAT_CLOUD_IDLE_STOP_MINUTES.default,
+  deleteStoppedAfterDays: BOAT_CLOUD_DELETE_STOPPED_DAYS.default,
   defaultMachineType: "small",
   machineTypes: machineTypeOptions(null),
   environmentUsage: [],
@@ -179,7 +183,7 @@ export function refreshPhoneBoatCloud(): Promise<void> {
         snapshotReady: ready,
         // The spare is no one's machine until a start takes it.
         machines: sandboxes
-          .filter((sandbox) => sandbox.name !== SPARE_NAME)
+          .filter((sandbox) => !isSpare(sandbox))
           .map((sandbox) => ({
             sandboxId: sandbox.id,
             environmentId: null,

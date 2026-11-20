@@ -265,6 +265,27 @@ export const BOAT_CLOUD_NO_LOCAL_SIGN_INS: BoatCloudLocalSignIns = {
   claudeTokenFlow: null,
 };
 
+/**
+ * A VM's lease on Boat: Boat stops it this many minutes after its deadline last moved, even
+ * when no holder is alive. The VM renews it while a turn runs or a terminal is busy.
+ */
+export const BOAT_CLOUD_IDLE_STOP_MINUTES = { default: 15, min: 5, max: 120 } as const;
+/** Days after a stop that a holder deletes a VM it handed out, once it holds a backup of it. */
+export const BOAT_CLOUD_DELETE_STOPPED_DAYS = { default: 7, min: 1, max: 14 } as const;
+
+const IdleStopMinutes = Schema.Int.check(
+  Schema.isBetween({
+    minimum: BOAT_CLOUD_IDLE_STOP_MINUTES.min,
+    maximum: BOAT_CLOUD_IDLE_STOP_MINUTES.max,
+  }),
+);
+const DeleteStoppedDays = Schema.Int.check(
+  Schema.isBetween({
+    minimum: BOAT_CLOUD_DELETE_STOPPED_DAYS.min,
+    maximum: BOAT_CLOUD_DELETE_STOPPED_DAYS.max,
+  }),
+);
+
 export const BoatCloudStatus = Schema.Struct({
   connected: Schema.Boolean,
   /** The Boat account the key belongs to. */
@@ -296,6 +317,12 @@ export const BoatCloudStatus = Schema.Struct({
   /** The size a new cloud thread starts on when its start names none. */
   defaultMachineType: BoatCloudMachineType.pipe(
     Schema.withDecodingDefault(Effect.succeed("small" as const)),
+  ),
+  idleStopMinutes: Schema.Number.pipe(
+    Schema.withDecodingDefault(Effect.succeed(BOAT_CLOUD_IDLE_STOP_MINUTES.default)),
+  ),
+  deleteStoppedAfterDays: Schema.Number.pipe(
+    Schema.withDecodingDefault(Effect.succeed(BOAT_CLOUD_DELETE_STOPPED_DAYS.default)),
   ),
   /** Every size, with its price and whether the plan allows it. */
   machineTypes: Schema.Array(BoatCloudMachineTypeOption).pipe(
@@ -409,6 +436,8 @@ export const BoatCloudConfigureMachinesInput = Schema.Struct({
   keepReadyMachine: Schema.optional(Schema.Boolean),
   /** Passes this holder's own Claude and Codex sign-ins to its VMs. */
   useLocalSignIns: Schema.optional(Schema.Boolean),
+  idleStopMinutes: Schema.optional(IdleStopMinutes),
+  deleteStoppedAfterDays: Schema.optional(DeleteStoppedDays),
 });
 export type BoatCloudConfigureMachinesInput = typeof BoatCloudConfigureMachinesInput.Type;
 

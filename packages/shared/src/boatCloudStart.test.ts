@@ -21,6 +21,7 @@ import {
   NOT_HOSTED_MARKER,
   PAIRING_MARKER,
   SNAPSHOT_LABEL,
+  ROLE_LABEL,
   SPARE_NAME,
   parseRepository,
 } from "./boatCloudVm.ts";
@@ -50,7 +51,8 @@ const runningVm = (
 ) => {
   const calls: Array<string> = [];
   const commands: Array<string> = [];
-  const names = new Map([["vm-1", vm.spare ? SPARE_NAME : "Boat cloud"]]);
+  const names = new Map([["vm-1", vm.spare ? SPARE_NAME : "T3 · me/app"]]);
+  const roles = new Map([["vm-1", vm.spare ? "spare" : "thread"]]);
   const environments = new Map([["vm-1", "base"]]);
   const states = new Map<string, string>();
   /** The size each resume asked for, null when it kept the VM's own. */
@@ -61,7 +63,7 @@ const runningVm = (
     subdomain: id === "vm-1" ? SUBDOMAIN : `box-${id}`,
     environment: environments.get(id) ?? "base",
     name: names.get(id),
-    labels: { [SNAPSHOT_LABEL]: SNAPSHOT },
+    labels: { [SNAPSHOT_LABEL]: SNAPSHOT, [ROLE_LABEL]: roles.get(id) ?? "thread" },
   });
   const http = HttpClient.make((request) =>
     Effect.sync(() => {
@@ -81,6 +83,7 @@ const runningVm = (
       }
       if (path === "/sandboxes" && request.method === "POST") {
         names.set("vm-2", String(body.name));
+        roles.set("vm-2", (body.labels as Record<string, string>)[ROLE_LABEL] ?? "");
         environments.set("vm-2", String(body.environment ?? "base"));
         return reply({ sandbox: listed("vm-2") });
       }
@@ -94,6 +97,8 @@ const runningVm = (
           );
         }
         names.set(id, body.name);
+        const labels = body.labels as Record<string, string> | undefined;
+        if (labels !== undefined) roles.set(id, labels[ROLE_LABEL] ?? "");
       }
       if (request.method === "DELETE") {
         names.delete(id);
@@ -190,7 +195,7 @@ describe("startMachine on a running VM", () => {
     Effect.gen(function* () {
       const vm = runningVm("env-1", { spare: true, hostsItself: false });
       assert.strictEqual((yield* start(vm, null)).httpBaseUrl, VM_URL);
-      assert.include(vm.calls, "PATCH /sandboxes/vm-1 name");
+      assert.include(vm.calls, "PATCH /sandboxes/vm-1 name,labels");
       const hosts = vm.calls.flatMap((call, index) =>
         call === "POST /sandboxes/vm-1/host" ? [index] : [],
       );
@@ -297,7 +302,7 @@ describe("the ready spare", () => {
         );
         yield* started.checkout;
         assert.includeMembers(vm.calls, [
-          "PATCH /sandboxes/vm-1 name",
+          "PATCH /sandboxes/vm-1 name,labels",
           "PATCH /sandboxes/vm-1 ttlSeconds",
         ]);
         assert.notInclude(vm.calls, "GET /sandboxes");
@@ -332,7 +337,7 @@ describe("the ready spare", () => {
         yield* TestClock.adjust(Duration.minutes(1));
         yield* Fiber.join(checkout);
         assert.strictEqual(
-          vm.calls.filter((call) => call === "PATCH /sandboxes/vm-1 name").length,
+          vm.calls.filter((call) => call === "PATCH /sandboxes/vm-1 name,labels").length,
           5,
         );
 
@@ -379,7 +384,7 @@ describe("the ready spare", () => {
       const vm = runningVm("env-1", { spare: true });
       const keeper = makeSpareKeeper();
       yield* keep(vm, keeper);
-      yield* vm.api.rename("vm-1", "Boat cloud");
+      yield* vm.api.update("vm-1", { name: "T3 · me/app", labels: { [ROLE_LABEL]: "thread" } });
       keeper.reconcile(yield* vm.api.listSandboxes("t3code=cloud"));
       assert.isNull(yield* keeper.take(SNAPSHOT, "base"));
     }),

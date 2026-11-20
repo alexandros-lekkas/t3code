@@ -6,6 +6,7 @@ import * as NodePath from "node:path";
 
 import { assert, describe, it } from "@effect/vitest";
 import { BOAT_CLOUD_NO_LOCAL_SIGN_INS, type BoatCloudStatus } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 
 import {
   ADD_PROJECT_SCRIPT,
@@ -16,8 +17,9 @@ import {
   boatCloudBlocker,
   boatCloudProviderDrivers,
   cloneRepositoriesScript,
-  idleSecondsOf,
+  idleScript,
   parkCheckoutFunction,
+  parseIdleProbe,
   parseMeasure,
   parseStats,
   parseRepository,
@@ -228,13 +230,72 @@ describe("pickMachine", () => {
   });
 });
 
-describe("idleSecondsOf", () => {
-  it("counts from the later of the last turn and the hand-out, and never while a turn runs", () => {
-    assert.strictEqual(idleSecondsOf("0 700\n", 900), 700);
-    assert.strictEqual(idleSecondsOf("0 700", 120), 120);
-    assert.strictEqual(idleSecondsOf("0 \n", 300), 300);
-    assert.isNull(idleSecondsOf("2 0", 900));
-    assert.isNull(idleSecondsOf("", 900));
+describe("parseIdleProbe", () => {
+  it("counts from the later of the last activity and the hand-out, and never while busy", () => {
+    assert.deepStrictEqual(parseIdleProbe("0 2 700\n", 900), { idleSeconds: 700, threads: 2 });
+    assert.deepStrictEqual(parseIdleProbe("0 2 700", 120), { idleSeconds: 120, threads: 2 });
+    assert.deepStrictEqual(parseIdleProbe("0 - \n", 300), { idleSeconds: 300, threads: null });
+    assert.deepStrictEqual(parseIdleProbe("1 0 0", 900), { idleSeconds: null, threads: 0 });
+    assert.isNull(parseIdleProbe("", 900));
+    assert.isNull(parseIdleProbe("2 0", 900));
+  });
+});
+
+const hasSqlite = NodeChildProcess.spawnSync("sqlite3", ["-version"]).status === 0;
+
+describe.skipIf(!hasSqlite)("idleScript", () => {
+  const runIdle = (setup: (home: string, db: string) => void) => {
+    const home = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-idle-"));
+    const db = NodePath.join(home, ".t3/userdata/statev2.sqlite");
+    NodeFS.mkdirSync(NodePath.dirname(db), { recursive: true });
+    const sql = (statement: string) =>
+      NodeChildProcess.spawnSync("sqlite3", [db, statement], { encoding: "utf8" });
+    sql(
+      "CREATE TABLE orchestration_v2_projection_runs (run_id TEXT, status TEXT, requested_at TEXT); CREATE TABLE orchestration_v2_projection_threads (thread_id TEXT, deleted_at TEXT)",
+    );
+    setup(home, db);
+    const result = NodeChildProcess.spawnSync(
+      "bash",
+      ["-c", idleScript.replaceAll("/home/user", home)],
+      { encoding: "utf8" },
+    );
+    NodeFS.rmSync(home, { recursive: true, force: true });
+    return result.stdout.trim();
+  };
+  const at = (secondsAgo: number) =>
+    DateTime.formatIso(DateTime.subtract(DateTime.nowUnsafe(), { seconds: secondsAgo }));
+  const insert = (db: string, statement: string) =>
+    NodeChildProcess.spawnSync("sqlite3", [db, statement]);
+
+  it("is busy while a turn someone asked for lately runs, and counts live threads", () => {
+    const output = runIdle((_home, db) =>
+      insert(
+        db,
+        `INSERT INTO orchestration_v2_projection_runs VALUES ('r1', 'running', '${at(60)}'); INSERT INTO orchestration_v2_projection_threads VALUES ('t1', NULL), ('t2', '${at(10)}')`,
+      ),
+    );
+    assert.match(output, /^1 1 \d+$/u);
+  });
+
+  it("stops renewing a turn no one asked for within the unattended cap", () => {
+    const output = runIdle((_home, db) =>
+      insert(
+        db,
+        `INSERT INTO orchestration_v2_projection_runs VALUES ('r1', 'running', '${at(7 * 3600)}')`,
+      ),
+    );
+    assert.strictEqual(output, "0 0");
+  });
+
+  it("counts a terminal that just wrote, and knows no threads without the table", () => {
+    const output = runIdle((home, db) => {
+      insert(db, "DROP TABLE orchestration_v2_projection_threads");
+      NodeFS.writeFileSync(NodePath.join(home, ".t3-boat-handed-out"), "");
+      const terminals = NodePath.join(home, ".t3/userdata/logs/terminals");
+      NodeFS.mkdirSync(terminals, { recursive: true });
+      NodeFS.writeFileSync(NodePath.join(terminals, "thread-1.log"), "$ npm run dev");
+    });
+    assert.match(output, /^1 - \d+$/u);
   });
 });
 
@@ -273,6 +334,8 @@ describe("boatCloudBlocker", () => {
     githubConnected: false,
     shareMachines: false,
     keepReadyMachine: false,
+    idleStopMinutes: 15,
+    deleteStoppedAfterDays: 7,
     defaultMachineType: "small",
     machineTypes: [],
     environmentUsage: [],

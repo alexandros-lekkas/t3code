@@ -1,4 +1,6 @@
 import {
+  BOAT_CLOUD_DELETE_STOPPED_DAYS,
+  BOAT_CLOUD_IDLE_STOP_MINUTES,
   BOAT_CLOUD_START_STEPS,
   type BoatCloudAcquireInput,
   type BoatCloudClaudeTokenInput,
@@ -55,19 +57,23 @@ import {
 } from "@t3tools/shared/boatCloudStart";
 import {
   BOAT_CLOUD_BLOCKER_MESSAGES,
+  BOAT_STOPPED_DATA_DAYS,
   boatCloudBlocker,
-  IDLE_TTL_SECONDS,
   MACHINE_LABEL_FILTER,
   MACHINE_LABELS,
-  SPARE_NAME,
+  SETUP_LABEL_FILTER,
+  ROLE_LABEL,
+  SNAPSHOT_LABEL,
+  isSpare,
+  machineNameOf,
   VM_BACKUP_ARCHIVE,
   VM_SKILLS_ARCHIVE,
   backupScript,
   extractSkillsScript,
   idleScript,
-  idleSecondsOf,
   machineLabelOf,
   machineStateOf,
+  parseIdleProbe,
   parseRepository,
   parseStats,
   restoreScript,
@@ -106,11 +112,22 @@ const SKILL_DIRECTORIES = [".claude/skills", ".agents/skills", ".codex/skills"];
 const IDLE_SWEEP_INTERVAL = Duration.minutes(1);
 const START_LINGER = Duration.minutes(2);
 /**
- * This machine backs a VM up and stops it a minute before the VM's own deadline
- * would stop it without a backup. Idle time counts from the last turn on any of
- * its threads, or from when it was handed out, whichever is later.
+ * This machine backs a VM up and stops it before Boat's deadline would stop it without a
+ * backup. The VM renews the deadline at most every two minutes and the sweep runs each
+ * minute, so idle time (since the last activity or hand-out) stops it three minutes early.
  */
-const IDLE_STOP_SECONDS = IDLE_TTL_SECONDS - 60;
+const idleStopSecondsOf = (ttlSeconds: number) => ttlSeconds - 180;
+/**
+ * How often VMs T3 made and no longer needs are looked for: stopped ones past their
+ * retention, leftovers of a setup or a start that never finished, and stopped spares.
+ * The first pass runs with the first idle sweep, a minute after the server starts.
+ */
+const REAP_INTERVAL_MS = 15 * 60 * 1000;
+/** A spare, setup or start VM older than this is no longer being worked on by any holder. */
+const LEFTOVER_SECONDS = 2 * 60 * 60;
+/** A backup taken this long before Boat recorded the stop still counts as the VM's last state. */
+const BACKUP_STOP_SLACK_MS = 15 * 60 * 1000;
+const DAY_SECONDS = 24 * 60 * 60;
 /**
  * While a client watches the status, Boat's billed usage is read this often, and each
  * running VM measures its load this often. Nothing is read while no client watches.
@@ -169,6 +186,12 @@ const StoredState = Schema.Struct({
   ),
   retired: Schema.Array(RetiredMachine).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   useLocalSignIns: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  idleStopMinutes: Schema.Number.pipe(
+    Schema.withDecodingDefault(Effect.succeed(BOAT_CLOUD_IDLE_STOP_MINUTES.default as number)),
+  ),
+  deleteStoppedAfterDays: Schema.Number.pipe(
+    Schema.withDecodingDefault(Effect.succeed(BOAT_CLOUD_DELETE_STOPPED_DAYS.default as number)),
+  ),
 });
 type StoredState = typeof StoredState.Type;
 const decodeStoredState = Schema.decodeUnknownOption(Schema.fromJsonString(StoredState));
@@ -378,7 +401,11 @@ const make = Effect.gen(function* () {
     defaultMachineType: "small",
     retired: [],
     useLocalSignIns: true,
+    idleStopMinutes: BOAT_CLOUD_IDLE_STOP_MINUTES.default,
+    deleteStoppedAfterDays: BOAT_CLOUD_DELETE_STOPPED_DAYS.default,
   };
+  /** The lease every VM gets on Boat, from the user's setting. */
+  const idleTtlSeconds = () => state.idleStopMinutes * 60;
   let setup: BoatCloudSetup = { status: "idle", step: null, error: null };
   /** The saved snapshot new VMs start from, or null before setup. */
   let snapshotName: string | null = null;
@@ -446,6 +473,8 @@ const make = Effect.gen(function* () {
     shareMachines: state.shareMachines,
     keepReadyMachine: state.keepReadyMachine,
     defaultMachineType: state.defaultMachineType,
+    idleStopMinutes: state.idleStopMinutes,
+    deleteStoppedAfterDays: state.deleteStoppedAfterDays,
     machineTypes: machineTypeOptions(null, observedMultipliers),
     environmentUsage: [],
     localSignIns: {
@@ -478,6 +507,8 @@ const make = Effect.gen(function* () {
       shareMachines: state.shareMachines,
       keepReadyMachine: state.keepReadyMachine,
       defaultMachineType: state.defaultMachineType,
+      idleStopMinutes: state.idleStopMinutes,
+      deleteStoppedAfterDays: state.deleteStoppedAfterDays,
       machineTypes: machineTypeOptions(connected ? limits : null, observedMultipliers),
       environmentUsage: connected ? environmentUsageOf(state.machines, state.retired, stats) : [],
       localSignIns: { enabled: state.useLocalSignIns, ...local },
@@ -691,7 +722,7 @@ const make = Effect.gen(function* () {
       // VMs another holder made with the same key are shared, but only swept there. The spare
       // joins once a start takes it.
       for (const sandbox of byId.values()) {
-        if (known.has(sandbox.id) || sandbox.name === SPARE_NAME) continue;
+        if (known.has(sandbox.id) || isSpare(sandbox)) continue;
         machines.push({
           sandboxId: sandbox.id,
           environmentId: null,
@@ -721,14 +752,16 @@ const make = Effect.gen(function* () {
     if (snapshotName === null) yield* refreshSnapshot(api);
     if (snapshotName === null) return yield* vmFailure("Boat has no T3 Code snapshot.");
     const created = yield* api.createSandbox({
-      name: "Boat cloud",
+      name: machineNameOf(
+        parseRepository(`https://${machine.repositories[0] ?? ""}`)?.name ?? "restored thread",
+      ),
       type:
         machine.machineType !== null && isMachineType(machine.machineType)
           ? machine.machineType
           : "default",
-      labels: MACHINE_LABELS,
+      labels: { ...MACHINE_LABELS, [SNAPSHOT_LABEL]: snapshotName, [ROLE_LABEL]: "thread" },
       from: snapshotName,
-      ttlSeconds: IDLE_TTL_SECONDS,
+      ttlSeconds: idleTtlSeconds(),
       // The rebuilt VM keeps the environment the deleted one had.
       ...(machine.environment === null ? {} : { environment: machine.environment }),
     });
@@ -816,7 +849,7 @@ const make = Effect.gen(function* () {
     yield* Effect.gen(function* () {
       if (machine.environmentId !== null) {
         // The VM's own deadline is a minute away; the backup must not be cut off by it.
-        yield* api.extend(machine.sandboxId, IDLE_TTL_SECONDS).pipe(Effect.ignore);
+        yield* api.extend(machine.sandboxId, idleTtlSeconds()).pipe(Effect.ignore);
         yield* backup(api, machine.sandboxId, machine.environmentId).pipe(
           Effect.catchCause((cause) =>
             Effect.logWarning("boat cloud could not back up a VM before stopping it", {
@@ -951,25 +984,173 @@ const make = Effect.gen(function* () {
     ),
   );
 
+  const hasBackup = (environmentId: string | null) =>
+    environmentId === null
+      ? Effect.succeed(false)
+      : fs.exists(backupPathOf(environmentId)).pipe(Effect.orElseSucceed(() => false));
+
+  /**
+   * Deletes a VM T3 made that nothing needs any more, unless a start, wake or stop holds it.
+   * `keepBackup` leaves its thread restorable from this machine's backup; without it the
+   * entry and its backup go too.
+   */
+  const reap = Effect.fn("BoatCloud.reap")(function* (
+    api: BoatApi,
+    sandboxId: string,
+    reason: string,
+    keepBackup: boolean,
+  ) {
+    const deleted = Deferred.makeUnsafe<void>();
+    const began = yield* Effect.sync(() => {
+      if (claims.has(sandboxId) || stopping.has(sandboxId)) return false;
+      stopping.set(sandboxId, deleted);
+      return true;
+    });
+    if (!began) return;
+    yield* Effect.gen(function* () {
+      yield* api.delete(sandboxId);
+      const machine = findMachine(sandboxId);
+      const restorable = keepBackup && (yield* hasBackup(machine?.environmentId ?? null));
+      if (!keepBackup && machine?.environmentId) {
+        yield* fs.remove(backupPathOf(machine.environmentId), { force: true }).pipe(Effect.ignore);
+      }
+      yield* commit((current) => ({
+        ...current,
+        machines: restorable
+          ? current.machines.map((candidate) =>
+              candidate.sandboxId === sandboxId ? { ...candidate, state: "gone" } : candidate,
+            )
+          : current.machines.filter((candidate) => candidate.sandboxId !== sandboxId),
+      }));
+      yield* Effect.logInfo("boat cloud deleted a VM it no longer needs", {
+        sandboxId,
+        reason,
+        restorable,
+      });
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("boat cloud could not delete a VM it no longer needs", {
+          sandboxId,
+          reason,
+          cause,
+        }),
+      ),
+      Effect.ensuring(
+        Effect.suspend(() => {
+          stopping.delete(sandboxId);
+          return Deferred.succeed(deleted, undefined);
+        }),
+      ),
+    );
+  });
+
+  /**
+   * Finds VMs T3 made that no thread needs and deletes them. Only VMs carrying T3's labels are
+   * looked at, so sandboxes made any other way are never touched; and of those, only ones
+   * no holder can still be using, or that this holder made itself.
+   */
+  const reapOrphans = Effect.fn("BoatCloud.reapOrphans")(function* (
+    api: BoatApi,
+    sandboxes: ReadonlyArray<BoatSandbox>,
+  ) {
+    const nowMillis = yield* Clock.currentTimeMillis;
+    const ageOf = (at: string | null | undefined) => {
+      const parsed = at ? Date.parse(at) : Number.NaN;
+      return Number.isNaN(parsed) ? null : (nowMillis - parsed) / 1000;
+    };
+    const olderThan = (at: string | null | undefined, seconds: number) => {
+      const age = ageOf(at);
+      return age !== null && age > seconds;
+    };
+    // A setup removes its own VM, and Boat stops it within the hour, so an older one is left over.
+    if (setup.status !== "running") {
+      const setupVms = yield* api.listSandboxes(SETUP_LABEL_FILTER);
+      for (const sandbox of setupVms) {
+        if (olderThan(sandbox.createdAt, LEFTOVER_SECONDS)) {
+          yield* reap(api, sandbox.id, "a setup VM left over", false);
+        }
+      }
+    }
+    const keepStoppedSeconds = state.deleteStoppedAfterDays * DAY_SECONDS;
+    for (const sandbox of sandboxes) {
+      const stopped = machineStateOf(sandbox.state) === "stopped";
+      const machine = findMachine(sandbox.id);
+      if (isSpare(sandbox)) {
+        // A spare holds nothing; a stopped one went its whole lease without a start taking it.
+        if (stopped && olderThan(sandbox.stoppedAt, LEFTOVER_SECONDS)) {
+          yield* reap(api, sandbox.id, "a stopped spare", false);
+        }
+        continue;
+      }
+      // Its data is gone, so no holder can use it again.
+      if (stopped && sandbox.dataExpiredAt) {
+        yield* reap(api, sandbox.id, "Boat dropped its data", true);
+        continue;
+      }
+      // Another holder's VM, or one from before hand-outs were counted, is left to it.
+      if (machine === undefined || machine.handOuts === null) continue;
+      if (!stopped) {
+        if (
+          machine.acquiredAt === null &&
+          machine.environmentId === null &&
+          olderThan(sandbox.createdAt, LEFTOVER_SECONDS)
+        ) {
+          yield* reap(api, sandbox.id, "a start that never finished", false);
+        }
+        continue;
+      }
+      if (machine.environmentId === null) {
+        if (olderThan(sandbox.stoppedAt, LEFTOVER_SECONDS)) {
+          yield* reap(api, sandbox.id, "never served a thread", false);
+        }
+        continue;
+      }
+      const stoppedAt = sandbox.stoppedAt ? Date.parse(sandbox.stoppedAt) : Number.NaN;
+      const backedUpAfterStop =
+        machine.backedUpAt !== null &&
+        !Number.isNaN(stoppedAt) &&
+        Date.parse(machine.backedUpAt) >= stoppedAt - BACKUP_STOP_SLACK_MS &&
+        (yield* hasBackup(machine.environmentId));
+      if (backedUpAfterStop && olderThan(sandbox.stoppedAt, keepStoppedSeconds)) {
+        yield* reap(api, sandbox.id, "stopped past its retention, backed up here", true);
+      } else if (olderThan(sandbox.stoppedAt, BOAT_STOPPED_DATA_DAYS * DAY_SECONDS)) {
+        yield* reap(api, sandbox.id, "stopped past Boat's data retention", true);
+      }
+    }
+  });
+
+  let reapedAt: number | null = null;
   const sweepIdle = Effect.gen(function* () {
     const key = yield* readKey;
     if (Option.isNone(key)) return;
     const api = makeBoatApi(http, key.value);
-    yield* reconcile(api);
+    const listed = yield* reconcile(api);
     const nowMillis = DateTime.toEpochMillis(yield* DateTime.now);
+    const idleStopSeconds = idleStopSecondsOf(idleTtlSeconds());
     for (const machine of state.machines) {
       // A VM this machine never handed out belongs to the holder that did.
       if (machine.state !== "running" || machine.acquiredAt === null) continue;
       if (claims.has(machine.sandboxId)) continue;
       const handedOutSecondsAgo = (nowMillis - Date.parse(machine.acquiredAt)) / 1000;
-      if (handedOutSecondsAgo < IDLE_STOP_SECONDS) continue;
-      const idleSeconds = yield* exec(api, machine.sandboxId, idleScript, 30).pipe(
-        Effect.map((output) => idleSecondsOf(output, handedOutSecondsAgo)),
+      if (handedOutSecondsAgo < idleStopSeconds) continue;
+      const probe = yield* exec(api, machine.sandboxId, idleScript, 30).pipe(
+        Effect.map((output) => parseIdleProbe(output, handedOutSecondsAgo)),
         // A VM that cannot answer is not provably idle.
         Effect.orElseSucceed(() => null),
       );
-      if (idleSeconds === null || idleSeconds < IDLE_STOP_SECONDS) continue;
+      if (probe === null || probe.idleSeconds === null) continue;
+      // Every thread it served was deleted, so nothing on it is wanted.
+      if (probe.threads === 0) {
+        yield* reap(api, machine.sandboxId, "every thread on it was deleted", false);
+        continue;
+      }
+      if (probe.idleSeconds < idleStopSeconds) continue;
       yield* backupAndStop(api, machine);
+    }
+    const nowMs = yield* Clock.currentTimeMillis;
+    if (reapedAt === null || nowMs - reapedAt >= REAP_INTERVAL_MS) {
+      reapedAt = nowMs;
+      yield* reapOrphans(api, listed);
     }
   }).pipe(
     Effect.catchCause((cause) => Effect.logWarning("boat cloud idle sweep failed", { cause })),
@@ -1225,6 +1406,7 @@ const make = Effect.gen(function* () {
         paired: input.paired ?? [],
         signIns,
         report: reportStep(input.requestId, markEnded),
+        idleTtlSeconds: idleTtlSeconds(),
         onAdded: addMachine,
         // Without this the sweep sees a resumed VM's old hand-out and stops it once unclaimed.
         onReused: (sandboxId) =>
@@ -1345,6 +1527,7 @@ const make = Effect.gen(function* () {
             const woken = yield* wakeMachine(api, sandboxId, {
               pair,
               signIns: yield* vmSignIns,
+              idleTtlSeconds: idleTtlSeconds(),
               ...(report === undefined ? {} : { report }),
             });
             yield* updateMachine(sandboxId, {
@@ -1407,6 +1590,10 @@ const make = Effect.gen(function* () {
       ...(input.shareMachines === undefined ? {} : { shareMachines: input.shareMachines }),
       ...(input.keepReadyMachine === undefined ? {} : { keepReadyMachine: input.keepReadyMachine }),
       ...(input.useLocalSignIns === undefined ? {} : { useLocalSignIns: input.useLocalSignIns }),
+      ...(input.idleStopMinutes === undefined ? {} : { idleStopMinutes: input.idleStopMinutes }),
+      ...(input.deleteStoppedAfterDays === undefined
+        ? {}
+        : { deleteStoppedAfterDays: input.deleteStoppedAfterDays }),
       ...(input.defaultMachineType === undefined
         ? {}
         : { defaultMachineType: input.defaultMachineType }),
@@ -1581,6 +1768,7 @@ const make = Effect.gen(function* () {
           const woken = yield* wakeMachine(api, sandboxId, {
             pair: false,
             signIns: yield* vmSignIns,
+            idleTtlSeconds: idleTtlSeconds(),
           });
           yield* updateMachine(sandboxId, {
             environmentId: woken.environmentId,
@@ -1706,10 +1894,10 @@ const make = Effect.gen(function* () {
       yield* publish;
     }),
   );
+  // The delay comes once: inside the repeat it would double the interval.
   yield* forkParked(
-    sweepIdle.pipe(
-      Effect.delay(IDLE_SWEEP_INTERVAL),
-      Effect.repeat(Schedule.spaced(IDLE_SWEEP_INTERVAL)),
+    Effect.sleep(IDLE_SWEEP_INTERVAL).pipe(
+      Effect.andThen(sweepIdle.pipe(Effect.repeat(Schedule.spaced(IDLE_SWEEP_INTERVAL)))),
     ),
   );
 

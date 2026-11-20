@@ -16,7 +16,7 @@ import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
-import { SPARE_NAME as SPARE } from "@t3tools/shared/boatCloudVm";
+import { ROLE_LABEL, SPARE_NAME as SPARE } from "@t3tools/shared/boatCloudVm";
 import * as BoatCloud from "./BoatCloudService.ts";
 import * as BoatLocalSignIns from "./BoatLocalSignIns.ts";
 
@@ -62,7 +62,12 @@ const fakeBoat = (
 ) => {
   const calls: Array<string> = [];
   const bodies: Array<unknown> = [];
-  const listed = (id: string) => ({ id, subdomain: `box-${id}`, ...sandboxes[id]! });
+  const listed = (id: string) => ({
+    id,
+    subdomain: `box-${id}`,
+    labels: { t3code: "cloud", [ROLE_LABEL]: sandboxes[id]!.name === SPARE ? "spare" : "thread" },
+    ...sandboxes[id]!,
+  });
   const http = HttpClient.make((request) =>
     Effect.gen(function* () {
       const url = new URL(request.url);
@@ -228,7 +233,7 @@ it.layer(dependencies)("BoatCloudService", (it) => {
             );
           }
           // Both VMs are idle, so the sweep stops each one no start holds.
-          if (script.includes("${active:-0}")) return Effect.succeed("0\n");
+          if (script.includes("deleted_at IS NULL")) return Effect.succeed("0 1\n");
           return Effect.succeed("");
         },
         (call) =>

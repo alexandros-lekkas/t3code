@@ -2,7 +2,11 @@
  * What runs on Boat cloud VMs, and how a holder picks one. Boat VMs are Ubuntu
  * with systemd user services, git, Node and sqlite3, and the agent CLIs.
  */
-import type { BoatCloudEnvironment, BoatCloudStatus } from "@t3tools/contracts";
+import {
+  BOAT_CLOUD_IDLE_STOP_MINUTES,
+  type BoatCloudEnvironment,
+  type BoatCloudStatus,
+} from "@t3tools/contracts";
 
 const VM_HOME = "/home/user";
 const USERDATA_DB = `${VM_HOME}/.t3/userdata/statev2.sqlite`;
@@ -14,18 +18,50 @@ export const MACHINE_LABEL_FILTER = "t3code=cloud";
 export const SETUP_LABELS = { t3code: "setup" } as const;
 export const SETUP_LABEL_FILTER = "t3code=setup";
 /**
- * Boat stops a VM this long after its deadline was last moved. The VM moves it
- * itself while any of its threads runs a turn, so a quiet VM stops with no holder online.
+ * The lease every VM T3 makes carries on Boat's side: Boat stops the VM this long after its
+ * deadline was last moved, whether or not any holder is still alive. The VM moves the
+ * deadline itself while a turn runs or a terminal is busy, so a quiet VM stops on its own.
+ * The default; holders let the user pick between the bounds.
  */
-export const IDLE_TTL_SECONDS = 10 * 60;
+export const IDLE_TTL_SECONDS = BOAT_CLOUD_IDLE_STOP_MINUTES.default * 60;
+const MAX_IDLE_TTL_SECONDS = BOAT_CLOUD_IDLE_STOP_MINUTES.max * 60;
+/**
+ * However busy, a VM stops renewing its lease once no one asked anything of it for this
+ * long: no message started a turn and no holder handed it out or woke it. A hung turn, or
+ * a dev server printing to a terminal, then cannot keep it on forever.
+ */
+const MAX_UNATTENDED_SECONDS = 6 * 60 * 60;
+/** Boat keeps a stopped VM's data this long (`boat stop --help`); a holder deletes it after. */
+export const BOAT_STOPPED_DATA_DAYS = 14;
 
-/** Every thread VM's name. Labels are fixed at create, so a spare is told apart by its name. */
-export const MACHINE_NAME = "Boat cloud";
+/**
+ * What a T3 VM is for. Identity lives in labels, which Boat lets a holder change; the name
+ * is only for people reading the Boat dashboard. A spare taken by a start becomes a thread VM.
+ */
+export const ROLE_LABEL = "t3code-role";
+/** Boat's limit on a sandbox name. */
+const MAX_NAME_LENGTH = 120;
+/** A display name for the Boat dashboard: `T3 · <what>`, on one line and within Boat's limit. */
+export const machineNameOf = (what: string) => {
+  const cleaned = what
+    .replaceAll(/[\p{Cc}\p{Cf}]+/gu, " ")
+    .replaceAll(/\s+/gu, " ")
+    .trim();
+  const name = `T3 · ${cleaned === "" ? "thread" : cleaned}`;
+  const chars = [...name];
+  return chars.length <= MAX_NAME_LENGTH ? name : `${chars.slice(0, MAX_NAME_LENGTH - 1).join("")}…`;
+};
 /**
  * One running VM, the smallest size, kept ready from the snapshot with its server up so a
- * start skips the boot. A start takes it by renaming it; it grows on its first resume.
+ * start skips the boot. A start takes it by relabelling it; it grows on its first resume.
  */
-export const SPARE_NAME = "Boat cloud spare";
+export const SPARE_NAME = machineNameOf("spare");
+/** Spares made before the role label, which only their name marks. */
+const LEGACY_SPARE_NAME = "Boat cloud spare";
+export const isSpare = (sandbox: {
+  readonly name?: string | null | undefined;
+  readonly labels?: Readonly<Record<string, string>> | null | undefined;
+}) => sandbox.labels?.[ROLE_LABEL] === "spare" || sandbox.name === LEGACY_SPARE_NAME;
 /** Boat stops a spare no client has asked for in this long; its disk stays for the next resume. */
 export const SPARE_TTL_SECONDS = 30 * 60;
 /** Names the snapshot a VM started from, so a spare from an older one is replaced. */
@@ -95,27 +131,73 @@ tar -xzf ${VM_SKILLS_ARCHIVE} -C ${VM_HOME}
 rm -f ${VM_SKILLS_ARCHIVE}`;
 
 const ACTIVE_RUN_STATUSES = "'preparing','queued','starting','running','waiting'";
-const ACTIVE_RUNS_QUERY = `db=${USERDATA_DB}
-[ -f "$db" ] || { echo 0; exit 0; }
-sqlite3 -readonly "$db" "SELECT count(*) FROM orchestration_v2_projection_runs WHERE status IN (${ACTIVE_RUN_STATUSES})"`;
+const RUNS = "orchestration_v2_projection_runs";
+const ACTIVE_RUNS_QUERY = `SELECT count(*) FROM ${RUNS} WHERE status IN (${ACTIVE_RUN_STATUSES})`;
+/** `<active runs> <runs asked for within the unattended cap>` on one line. */
+const RUNS_QUERY = `SELECT (${ACTIVE_RUNS_QUERY}) || ' ' || (SELECT count(*) FROM ${RUNS} WHERE requested_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-${MAX_UNATTENDED_SECONDS} seconds'))`;
+const TERMINAL_LOGS = `${VM_HOME}/.t3/userdata/logs/terminals`;
 
-/** Epoch seconds of the last time the VM saw a running turn. */
+/** Epoch seconds of the last time the VM saw a running turn, a busy terminal or a hand-out. */
 const LAST_ACTIVE_PATH = `${VM_HOME}/.t3-boat-last-active`;
-const READ_ACTIVE = `active="$( { ${ACTIVE_RUNS_QUERY.replaceAll("\n", "; ")} ; } 2>/dev/null )"
-[ "\${active:-0}" -gt 0 ] 2>/dev/null && date +%s > ${LAST_ACTIVE_PATH}`;
+/** Touched on every hand-out and wake, which count as someone asking for the VM. */
+const HANDED_OUT_PATH = `${VM_HOME}/.t3-boat-handed-out`;
+/**
+ * Sets `active` to 1 while a turn runs or a terminal wrote in the last two minutes, and
+ * someone asked for the VM within the unattended cap; 0 otherwise.
+ */
+const READ_ACTIVE = `db=${USERDATA_DB}
+read -r running recent <<T3_RUNS
+$(sqlite3 -readonly "$db" "${RUNS_QUERY}" 2>/dev/null)
+T3_RUNS
+attended=""
+[ "\${recent:-0}" -gt 0 ] 2>/dev/null && attended=1
+[ -n "$(find ${HANDED_OUT_PATH} -mmin -${MAX_UNATTENDED_SECONDS / 60} 2>/dev/null)" ] && attended=1
+busy=""
+[ "\${running:-0}" -gt 0 ] 2>/dev/null && busy=1
+[ -n "$(find ${TERMINAL_LOGS} -type f -mmin -2 2>/dev/null | head -n1)" ] && busy=1
+active=0
+[ -n "$attended" ] && [ -n "$busy" ] && active=1 && date +%s > ${LAST_ACTIVE_PATH}`;
 
 /**
- * Prints `<active runs> <seconds since a turn last ran>`, the second empty when
- * no turn ever ran. The VM's own clock measures it, so holder clock skew does not matter.
+ * Prints `<active> <live threads> <seconds since last active>`, each unknown one as `-`.
+ * Live threads are those not deleted; no table (an older T3) reads as unknown. The VM's
+ * own clock measures the idle time, so holder clock skew does not matter.
  */
 export const idleScript = `${READ_ACTIVE}
+threads="$(sqlite3 -readonly "$db" "SELECT count(*) FROM orchestration_v2_projection_threads WHERE deleted_at IS NULL" 2>/dev/null)"
 last="$(cat ${LAST_ACTIVE_PATH} 2>/dev/null)"
-printf '%s %s\\n' "\${active:-0}" "\${last:+$(( $(date +%s) - last ))}"`;
+printf '%s %s %s\\n' "$active" "\${threads:--}" "\${last:+$(( $(date +%s) - last ))}"`;
 
 const KEEPALIVE_PATH = `${VM_HOME}/.t3-boat-keepalive.sh`;
 const UNIT_DIRECTORY = `${VM_HOME}/.config/systemd/user`;
-const KEEPALIVE_SCRIPT = `#!/bin/sh
-${READ_ACTIVE} && boat extend "$BOAT_ID" --ttl ${IDLE_TTL_SECONDS} >/dev/null 2>&1
+const EXTENDED_PATH = `${VM_HOME}/.t3-boat-extended`;
+const NAMED_PATH = `${VM_HOME}/.t3-boat-named`;
+/**
+ * Names the VM in the Boat dashboard after the thread on it that changed last, once its
+ * title changes; the holder names it after the repository until then.
+ */
+const RENAME_SCRIPT = `title="$(sqlite3 -readonly "$db" "SELECT title FROM orchestration_v2_projection_threads WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1" 2>/dev/null | tr '[:cntrl:]' ' ' | tr -s ' ' | sed 's/^ *//; s/ *$//')"
+if [ -n "$title" ]; then
+  name="$(LC_ALL=C.UTF-8 bash -c 'n="T3 · $1"; [ \${#n} -le ${MAX_NAME_LENGTH} ] || n="\${n:0:${MAX_NAME_LENGTH - 1}}…"; printf "%s" "$n"' _ "$title")"
+  [ "$name" = "$(cat ${NAMED_PATH} 2>/dev/null)" ] || { boat rename "$BOAT_ID" "$name" >/dev/null 2>&1 && printf '%s' "$name" > ${NAMED_PATH}; }
+fi`;
+const RENEW_EVERY_SECONDS = 120;
+/**
+ * Renews the lease by the VM's own Boat TTL, which the holder set, at most every two
+ * minutes, so the deadline stays within two minutes of a full TTL away while the VM is
+ * busy. Any failure leaves the deadline where it was, and the VM stops at it.
+ */
+const KEEPALIVE_SCRIPT = `#!/bin/bash
+${READ_ACTIVE}
+${RENAME_SCRIPT}
+[ "$active" = 1 ] || exit 0
+ttl="$(boat info "$BOAT_ID" --json 2>/dev/null | grep -o '"ttlSeconds": *[0-9]*' | head -n1 | grep -o '[0-9]*$')"
+[ "\${ttl:-0}" -ge 60 ] 2>/dev/null || exit 0
+[ "$ttl" -le ${MAX_IDLE_TTL_SECONDS} ] || ttl=${MAX_IDLE_TTL_SECONDS}
+now="$(date +%s)"
+last="$(cat ${EXTENDED_PATH} 2>/dev/null)"
+[ -n "$last" ] && [ $(( now - last )) -lt ${RENEW_EVERY_SECONDS} ] 2>/dev/null && exit 0
+boat extend "$BOAT_ID" --ttl "$ttl" >/dev/null 2>&1 && echo "$now" > ${EXTENDED_PATH}
 exit 0`;
 const KEEPALIVE_SERVICE = `[Unit]
 Description=Keep this Boat VM on while T3 Code runs a turn
@@ -389,7 +471,7 @@ names=${q(SERVER_CREDENTIALS)}
 set_names=""
 for n in $names; do eval "[ -n \\"\\\${$n-}\\" ]" && set_names="$set_names $n"; done
 stamp="$(for n in $set_names; do eval "printf '%s=%s\\n' $n \\"\\\${$n}\\""; done | sha256sum | cut -c1-64)"
-if [ "$stamp" != "$(cat ${CREDENTIALS_STAMP} 2>/dev/null)" ] && [ "$( { ${ACTIVE_RUNS_QUERY.replaceAll("\n", "; ")} ; } 2>/dev/null )" = 0 ]; then
+if [ "$stamp" != "$(cat ${CREDENTIALS_STAMP} 2>/dev/null)" ] && [ "$(sqlite3 -readonly ${USERDATA_DB} "${ACTIVE_RUNS_QUERY}" 2>/dev/null || echo 0)" = 0 ]; then
   # The stamp is written only once the server's manager holds the values, so a failed import is retried.
   systemctl --user unset-environment $names &&
     { [ -z "$set_names" ] || systemctl --user import-environment $set_names; } &&
@@ -425,6 +507,7 @@ ${WAIT_SERVER_SCRIPT}
 systemctl --user start t3-boat-host.service >/dev/null 2>&1 || echo ${q(NOT_HOSTED_MARKER)}
 # A hand-out counts as activity, so every holder's idle sweep, not only this one's, leaves the VM on.
 date +%s > ${LAST_ACTIVE_PATH}
+touch ${HANDED_OUT_PATH}
 printf '%s\\n' "$out"`;
 
 /** Separates the descriptor from the pairing code in `startServerScript` output. */
@@ -946,15 +1029,25 @@ export function pickMachine(
   return { kind: "create" };
 }
 
-/**
- * Reads `idleScript` output and says how long the VM has been without a turn,
- * counting from `startedSecondsAgo` (when it was handed out) when that is later.
- * Null while a turn runs or when the VM did not answer, so it stays on.
- */
-export function idleSecondsOf(output: string, startedSecondsAgo: number): number | null {
-  const match = /^(\d+)(?:[ \t]+(\d+))?\s*$/u.exec(output.trim());
-  if (match === null || match[1] !== "0") return null;
-  return match[2] === undefined ? startedSecondsAgo : Math.min(Number(match[2]), startedSecondsAgo);
+export interface IdleProbe {
+  /**
+   * How long the VM has been without a turn or a busy terminal, counting from
+   * `startedSecondsAgo` (when it was handed out) when that is later. Null while it is busy.
+   */
+  readonly idleSeconds: number | null;
+  /** Threads on the VM that were not deleted; null when the VM could not say. */
+  readonly threads: number | null;
+}
+
+/** Reads `idleScript` output; null when the VM did not answer, so it stays on. */
+export function parseIdleProbe(output: string, startedSecondsAgo: number): IdleProbe | null {
+  const match = /^([01])[ \t]+(\d+|-)(?:[ \t]+(\d+))?\s*$/u.exec(output.trim());
+  if (match === null) return null;
+  const threads = match[2] === "-" ? null : Number(match[2]);
+  if (match[1] !== "0") return { idleSeconds: null, threads };
+  const idleSeconds =
+    match[3] === undefined ? startedSecondsAgo : Math.min(Number(match[3]), startedSecondsAgo);
+  return { idleSeconds, threads };
 }
 
 export function machineStateOf(sandboxState: string): "running" | "starting" | "stopped" {

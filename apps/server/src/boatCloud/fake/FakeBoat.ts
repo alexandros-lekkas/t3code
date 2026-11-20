@@ -1,7 +1,7 @@
 import {
   CLI_RELEASE_REPOSITORY,
   MACHINE_LABELS,
-  MACHINE_NAME,
+  machineNameOf,
   NOT_HOSTED_MARKER,
   PAIRING_MARKER,
   backupScript,
@@ -84,6 +84,15 @@ interface FakeSandbox {
   /** Epoch ms of the last hand-out or checkout, which the idle check counts from. */
   lastActive: number;
   diskUsedBytes: number;
+  /** Boat's lease: the VM stops by itself at `deadline`, which a create, resume or extend sets to now plus `ttlSeconds`. */
+  ttlSeconds?: number;
+  deadline?: number | null;
+  stoppedAt?: string | null;
+  dataExpiredAt?: string | null;
+  /** Threads its T3 server holds that were not deleted; unknown (the idle check prints `-`) when absent. */
+  threads?: number;
+  /** A turn runs on it, so its keepalive renews the lease and the idle check reads it busy. */
+  busy?: boolean;
 }
 
 interface FakeSnapshot {
@@ -121,7 +130,7 @@ export const makeFakeBoat = Effect.fn("FakeBoat.make")(function* (options: FakeB
   if (options.seed) {
     addSandbox({
       id: FAKE_RUNNING_VM,
-      name: MACHINE_NAME,
+      name: machineNameOf("pingdotgg/t3code"),
       state: "running",
       readyAt: 0,
       type: "small",
@@ -135,7 +144,7 @@ export const makeFakeBoat = Effect.fn("FakeBoat.make")(function* (options: FakeB
     });
     addSandbox({
       id: FAKE_STOPPED_VM,
-      name: MACHINE_NAME,
+      name: machineNameOf("pingdotgg/t3code"),
       state: "stopped",
       readyAt: 0,
       type: "default",
@@ -237,7 +246,26 @@ export const makeFakeBoat = Effect.fn("FakeBoat.make")(function* (options: FakeB
       sandbox.state = "running";
       sandbox.runningSince = now;
     }
+    // The VM's own keepalive renews the lease while it is busy.
+    if (sandbox.state === "running" && sandbox.busy === true && sandbox.ttlSeconds !== undefined) {
+      sandbox.deadline = now + sandbox.ttlSeconds * 1000;
+      sandbox.lastActive = now;
+    }
+    // Boat enforces the lease itself, whether or not any holder is alive.
+    if (
+      sandbox.state === "running" &&
+      sandbox.deadline !== undefined &&
+      sandbox.deadline !== null &&
+      now >= sandbox.deadline
+    ) {
+      stop(sandbox, sandbox.deadline);
+    }
     return sandbox;
+  };
+  const lease = (sandbox: FakeSandbox, ttlSeconds: unknown, now: number) => {
+    if (typeof ttlSeconds !== "number") return;
+    sandbox.ttlSeconds = ttlSeconds;
+    sandbox.deadline = now + ttlSeconds * 1000;
   };
   const billedSecondsOf = (sandbox: FakeSandbox, now: number) =>
     sandbox.billedSeconds +
@@ -248,6 +276,8 @@ export const makeFakeBoat = Effect.fn("FakeBoat.make")(function* (options: FakeB
     sandbox.billedSeconds = billedSecondsOf(sandbox, now);
     sandbox.runningSince = null;
     sandbox.state = "stopped";
+    sandbox.deadline = null;
+    sandbox.stoppedAt = iso(now);
   };
   const listed = (sandbox: FakeSandbox) => ({
     id: sandbox.id,
@@ -259,6 +289,12 @@ export const makeFakeBoat = Effect.fn("FakeBoat.make")(function* (options: FakeB
     type: sandbox.type,
     vcpu: MACHINE_SPECS[sandbox.type].vcpu,
     memoryGB: MACHINE_SPECS[sandbox.type].memoryGB,
+    createdAt: sandbox.createdAt,
+    stoppedAt: sandbox.state === "stopped" ? (sandbox.stoppedAt ?? null) : null,
+    dataExpiredAt: sandbox.dataExpiredAt ?? null,
+    archiveAfter:
+      sandbox.deadline === undefined || sandbox.deadline === null ? null : iso(sandbox.deadline),
+    ttlSeconds: sandbox.ttlSeconds ?? null,
   });
 
   const pairingJson = options.target.issuePairing.pipe(Effect.map(encodeJson));
@@ -317,7 +353,7 @@ export const makeFakeBoat = Effect.fn("FakeBoat.make")(function* (options: FakeB
     }
     if (command === idleScript) {
       // No turn runs on a fake VM; it idles from its last hand-out.
-      return `0 ${Math.max(0, Math.round((now - sandbox.lastActive) / 1000))}\n`;
+      return `${sandbox.busy === true ? 1 : 0} ${sandbox.threads ?? "-"} ${Math.max(0, Math.round((now - sandbox.lastActive) / 1000))}\n`;
     }
     if (command.includes("projection_projects")) {
       // The checkout: fetch, worktree, project.
@@ -508,6 +544,7 @@ export const makeFakeBoat = Effect.fn("FakeBoat.make")(function* (options: FakeB
           lastActive: now,
           diskUsedBytes: 6.1 * 1024 ** 3,
         };
+        lease(sandbox, body.ttlSeconds, now);
         addSandbox(settle(sandbox, now));
         return reply({ sandbox: listed(sandbox) });
       }
@@ -522,6 +559,10 @@ export const makeFakeBoat = Effect.fn("FakeBoat.make")(function* (options: FakeB
       if (action === "" && method === "GET") return reply({ sandbox: listed(sandbox) });
       if (action === "" && method === "PATCH") {
         if (typeof body.name === "string") sandbox.name = body.name;
+        if (typeof body.labels === "object" && body.labels !== null) {
+          sandbox.labels = body.labels as Record<string, string>;
+        }
+        if (sandbox.state !== "stopped") lease(sandbox, body.ttlSeconds, now);
         return reply({ sandbox: listed(sandbox) });
       }
       if (action === "" && method === "DELETE") {
@@ -547,6 +588,7 @@ export const makeFakeBoat = Effect.fn("FakeBoat.make")(function* (options: FakeB
           sandbox.state = "resuming";
           sandbox.readyAt = now + (yield* Random.nextBetween(2000, 3000)) * scale;
           if (body.type !== undefined) sandbox.type = machineTypeOf(body.type);
+          lease(sandbox, body.ttlSeconds, now);
           settle(sandbox, now);
         }
         return reply({ sandbox: listed(sandbox) });

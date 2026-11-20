@@ -1,5 +1,5 @@
 import { BoatCloudError } from "@t3tools/contracts";
-import { MACHINE_NAME, machineLabelOf, parseRepository } from "@t3tools/shared/boatCloudVm";
+import { machineLabelOf, machineNameOf, parseRepository } from "@t3tools/shared/boatCloudVm";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -237,7 +237,7 @@ const layerFakeLocal = Layer.effect(
           const auth = yield* Effect.serviceOption(EnvironmentAuth.EnvironmentAuth);
           if (Option.isNone(auth)) return yield* noLocalServer("auth");
           const pairing = yield* auth.value
-            .issuePairingCredential({ label: `${MACHINE_NAME} (fake)` })
+            .issuePairingCredential({ label: machineNameOf("fake VM") })
             .pipe(Effect.orDie);
           return {
             credential: pairing.credential,

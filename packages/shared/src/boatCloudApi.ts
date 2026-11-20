@@ -39,6 +39,13 @@ export const BoatSandbox = Schema.Struct({
   type: Schema.optional(Schema.NullOr(Schema.String)),
   vcpu: Schema.optional(Schema.NullOr(Schema.Number)),
   memoryGB: Schema.optional(Schema.NullOr(Schema.Number)),
+  createdAt: Schema.optional(Schema.NullOr(Schema.String)),
+  stoppedAt: Schema.optional(Schema.NullOr(Schema.String)),
+  /** Set once Boat dropped a stopped VM's data, which it keeps for 14 days. */
+  dataExpiredAt: Schema.optional(Schema.NullOr(Schema.String)),
+  /** When Boat stops the VM unless something extends it; null while stopped. */
+  archiveAfter: Schema.optional(Schema.NullOr(Schema.String)),
+  ttlSeconds: Schema.optional(Schema.NullOr(Schema.Number)),
 });
 export type BoatSandbox = typeof BoatSandbox.Type;
 
@@ -482,6 +489,11 @@ export function makeBoatApi(http: HttpClient.HttpClient, apiKey: string) {
       ),
     rename: (id: string, name: string) =>
       send(json("PATCH", `/sandboxes/${id}`, { name }), Schema.Unknown),
+    /** `labels` replaces every label the VM has. */
+    update: (
+      id: string,
+      body: { readonly name?: string; readonly labels?: Readonly<Record<string, string>> },
+    ) => send(json("PATCH", `/sandboxes/${id}`, body), Schema.Unknown),
     /** Moves the auto-stop deadline to now plus `ttlSeconds`. */
     extend: (id: string, ttlSeconds: number) =>
       send(json("PATCH", `/sandboxes/${id}`, { ttlSeconds }), Schema.Unknown),

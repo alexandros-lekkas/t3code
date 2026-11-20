@@ -43,6 +43,8 @@ const status = (patch: Partial<BoatCloudStatus>): BoatCloudStatus => ({
   githubConnected: null,
   shareMachines: false,
   keepReadyMachine: false,
+  idleStopMinutes: 15,
+  deleteStoppedAfterDays: 7,
   defaultMachineType: "small",
   machineTypes: [],
   environmentUsage: [],
