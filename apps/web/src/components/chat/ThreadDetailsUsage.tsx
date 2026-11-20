@@ -60,7 +60,8 @@ export function ThreadDetailsUsage({
   const limits =
     report?.accounts.find((entry) => entry.instanceId === providerInstanceId)?.limits ??
     providers.find((provider) => provider.instanceId === providerInstanceId)?.usageLimits;
-  if (!limits) return null;
+  // An account without subscription limits has nothing to show.
+  if (!limits || limits.unavailable?.reason === "unsupported") return null;
   const notice = limitsNotice(limits, m);
 
   return (
@@ -75,7 +76,7 @@ export function ThreadDetailsUsage({
             label={gt("Limits", { $context: "usage limits row label" })}
             fill={null}
             tone={null}
-            value={gt("Unavailable")}
+            value={notice}
             tooltip={<span className="text-foreground">{notice}</span>}
             opensUsage
           />
@@ -229,9 +230,10 @@ export function UsageRow({
   const rowProps = {
     "aria-label": gt("{label}: {value}", { label, value: ariaValue }),
     className: cn(
-      "col-span-3 grid h-6 grid-cols-subgrid items-center rounded-lg px-2.5 outline-none hover:bg-black/[0.035] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring data-popup-open:bg-black/[0.035] dark:hover:bg-white/[0.08] dark:data-popup-open:bg-white/[0.08]",
+      "col-span-3 grid h-6 grid-cols-subgrid items-center rounded-lg px-2.5 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+      // Only a row that opens the usage page lights up under the pointer.
       opensUsage
-        ? "group cursor-pointer active:bg-black/[0.06] dark:active:bg-white/[0.12]"
+        ? "group cursor-pointer hover:bg-black/[0.035] active:bg-black/[0.06] data-popup-open:bg-black/[0.035] dark:hover:bg-white/[0.08] dark:active:bg-white/[0.12] dark:data-popup-open:bg-white/[0.08]"
         : "cursor-default",
     ),
   };
@@ -275,7 +277,7 @@ export function UsageRow({
           className={cn(
             // Text-only rows span the bar column so they never widen the shared value column.
             "text-end font-medium tabular-nums",
-            fill === null && "col-span-2",
+            fill === null && "col-span-2 min-w-0 truncate",
             tone === "error"
               ? "text-error-foreground"
               : tone === "warning"

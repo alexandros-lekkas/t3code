@@ -264,6 +264,7 @@ import {
   useComposerDraftStore,
   usePromotingDraftThreadKeys,
 } from "../composerDraftStore";
+import { pendingBoatCloudDraftIdOf, usePendingBoatCloudThreads } from "../boatCloudPendingThreads";
 import { useShownThreadRouteTarget } from "../hooks/useShownThreadRouteTarget";
 import {
   SidebarSearchResultRow,
@@ -1068,11 +1069,15 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const snoozingThreadKeysRef = useRef(new Set<string>());
   const removeFromSelection = useThreadSelectionStore((s) => s.removeFromSelection);
   const openAddProjectCommandPalette = () => openCommandPalette({ open: "add-project" });
-  const routeThreadRef = resolveActiveThreadRouteRef(
-    routeTarget,
-    routeDraftThread,
-    routeDraftRedirect,
-  );
+  const threads = useQuietThreadShells();
+  const pendingBoatCloudThreads = usePendingBoatCloudThreads(threads);
+  // A draft waiting on its Boat VM already lists as its thread, so that row is the open one.
+  const routeThreadRef =
+    resolveActiveThreadRouteRef(routeTarget, routeDraftThread, routeDraftRedirect) ??
+    (routeTarget?.kind === "draft"
+      ? (pendingBoatCloudThreads.find((pending) => pending.draftId === routeTarget.draftId)?.ref ??
+        null)
+      : null);
   const routeThreadKey = routeThreadRef ? scopedThreadKey(routeThreadRef) : null;
 
   // A selection made under one scope can hold threads the next scope hides.
@@ -1108,9 +1113,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             ),
           ),
         );
-  const threads = useQuietThreadShells();
   const promotingDraftThreadKeys = usePromotingDraftThreadKeys();
-  const listedThreads =
+  const launchingThreads =
     promotingDraftThreadKeys.length === 0
       ? threads
       : threads.map((thread) =>
@@ -1118,6 +1122,10 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             ? asLaunchingThread(thread)
             : thread,
         );
+  const listedThreads =
+    pendingBoatCloudThreads.length === 0
+      ? launchingThreads
+      : [...pendingBoatCloudThreads.map((pending) => pending.shell), ...launchingThreads];
   const routeRowThreadKey =
     routeThreadRef === null
       ? null
@@ -1459,6 +1467,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     setSelectionAnchor(scopedThreadKey(threadRef));
     if (isMobile) {
       setOpenMobile(false);
+    }
+    // Until its VM creates the thread, it is still the draft.
+    const pendingDraftId = pendingBoatCloudDraftIdOf(threadRef);
+    if (pendingDraftId !== null) {
+      return router.navigate({ to: "/draft/$draftId", params: { draftId: pendingDraftId } });
     }
     return router.navigate({
       to: "/$environmentId/$threadId",

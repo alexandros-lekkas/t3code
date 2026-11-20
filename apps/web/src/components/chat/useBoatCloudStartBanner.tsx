@@ -6,11 +6,7 @@ import { CircleCheckIcon, CircleIcon, CircleXIcon } from "lucide-react";
 import { type BoatCloudBlocker, boatCloudBlocker } from "@t3tools/shared/boatCloudVm";
 import { Link } from "@tanstack/react-router";
 
-import {
-  boatCloudStartProgressAtom,
-  clearBoatCloudStartProgress,
-  usePrimaryBoatCloudStatus,
-} from "../../boatCloud";
+import { boatCloudStartProgressAtom, usePrimaryBoatCloudStatus } from "../../boatCloud";
 import type { DraftId, DraftSessionState } from "../../composerDraftStore";
 import { cn } from "../../lib/utils";
 import { BoatIcon } from "../Icons";
@@ -99,6 +95,12 @@ export function BoatCloudSteps({
 export function useBoatCloudStartBanner(
   draftId: DraftId | null,
   draftThread: DraftSessionState | null,
+  actions: {
+    /** Starts again, for the message the failed start kept. */
+    readonly onRetry: () => void;
+    /** Ends the failed start; its message goes back to the composer. */
+    readonly onDismiss: () => void;
+  },
 ): ComposerBannerStackItem | null {
   const gt = useGT();
   const m = useMessages();
@@ -136,7 +138,12 @@ export function useBoatCloudStartBanner(
       ? {
           description: progress.error,
           dismissLabel: gt("Dismiss"),
-          onDismiss: () => clearBoatCloudStartProgress(draftId),
+          onDismiss: actions.onDismiss,
+          actions: (
+            <Button size="xs" variant="outline" onClick={actions.onRetry}>
+              {gt("Retry")}
+            </Button>
+          ),
         }
       : {}),
     children: <BoatCloudSteps steps={progress.steps} />,

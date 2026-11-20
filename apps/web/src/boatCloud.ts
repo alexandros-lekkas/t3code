@@ -367,25 +367,31 @@ async function prepareBoatCloudProjectNow(
           project.environmentId === session.environmentId &&
           project.workspaceRoot === session.workspaceRoot,
       );
+    // A large repository can still be cloning, and the project only appears after it.
+    const cloning =
+      appAtomRegistry
+        .get(progressAtom)
+        ?.steps.some((entry) => entry.step === "repository" && entry.state === "active") ?? false;
+    const appearTimeoutMs = cloning ? CHECKOUT_TIMEOUT_MS : PROJECT_APPEAR_TIMEOUT_MS;
     const arrived = await Promise.race([
       Promise.all([
         waitForAtomValue({
           registry: appAtomRegistry,
           atom: environmentProjects.projectsAtom,
           predicate: (projects) => findProject(projects) !== undefined,
-          timeoutMs: PROJECT_APPEAR_TIMEOUT_MS,
+          timeoutMs: appearTimeoutMs,
         }),
         waitForAtomValue({
           registry: appAtomRegistry,
           atom: environmentServerConfigsAtom,
           predicate: (configs) => configs.has(session.environmentId),
-          timeoutMs: PROJECT_APPEAR_TIMEOUT_MS,
+          timeoutMs: appearTimeoutMs,
         }),
         waitForAtomValue({
           registry: appAtomRegistry,
           atom: environmentSession.sessionStateAtom(session.environmentId),
           predicate: (result) => sessionHasScope(result, AuthOrchestrationOperateScope),
-          timeoutMs: PROJECT_APPEAR_TIMEOUT_MS,
+          timeoutMs: appearTimeoutMs,
         }),
         worktree === null
           ? true

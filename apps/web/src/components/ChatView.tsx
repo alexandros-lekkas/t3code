@@ -25,6 +25,7 @@ import { useComposerSelection } from "./chat/useComposerSelection";
 import { useComposerFocus } from "./chat/useComposerFocus";
 import { useProjectCloneBanner } from "./chat/useProjectCloneBanner";
 import { useBoatCloudStartBanner } from "./chat/useBoatCloudStartBanner";
+import { usePendingBoatCloudThreadTitle } from "../boatCloudPendingThreads";
 import { useBoatCloudProviderDrivers, useBoatCloudSleep } from "../boatCloud";
 import { draftStartsOwnBoatCloudMachine } from "../boatCloudMachines.logic";
 import { useAttachmentPreviewHandoff } from "./chat/useAttachmentPreviewHandoff";
@@ -835,7 +836,8 @@ export default function ChatView(props: ChatViewProps) {
       })
     : null;
   const draftFallback = draftModelResolution?.fallback ? draftModelResolution : null;
-  const localDraftThread = draftThread
+  const pendingBoatCloudTitle = usePendingBoatCloudThreadTitle(draftId);
+  const builtDraftThread = draftThread
     ? buildLocalDraftThread(
         threadId,
         draftThread,
@@ -844,6 +846,11 @@ export default function ChatView(props: ChatViewProps) {
         messages,
       )
     : undefined;
+  // A draft waiting on its Boat VM is titled as its sidebar row, as the thread will be.
+  const localDraftThread =
+    builtDraftThread && pendingBoatCloudTitle !== null
+      ? { ...builtDraftThread, title: pendingBoatCloudTitle }
+      : builtDraftThread;
   const isServerThread = serverThread !== null;
   const activeThread = isServerThread ? serverThread : localDraftThread;
   const serverLatestRun =
@@ -1162,7 +1169,17 @@ export default function ChatView(props: ChatViewProps) {
   const activeProjectScripts = activeProject ? resolveProjectScripts(settings, activeProject) : [];
   const { projectCloneBannerItem, projectCloneSendBlockReason } =
     useProjectCloneBanner(activeProjectRef);
-  const boatCloudStartBannerItem = useBoatCloudStartBanner(draftId, draftThread);
+  // The send owns a message a failed Boat start kept, and is set up further down.
+  const boatCloudSendActionsRef = useRef<{
+    readonly retry: () => void;
+    readonly dismiss: () => void;
+  } | null>(null);
+  const retryBoatCloudStart = useStableCallback(() => boatCloudSendActionsRef.current?.retry());
+  const dismissBoatCloudStart = useStableCallback(() => boatCloudSendActionsRef.current?.dismiss());
+  const boatCloudStartBannerItem = useBoatCloudStartBanner(draftId, draftThread, {
+    onRetry: retryBoatCloudStart,
+    onDismiss: dismissBoatCloudStart,
+  });
   const activeProjectDefaultModelSelection =
     !isServerThread && draftFallback
       ? draftFallback.selection
@@ -3001,7 +3018,7 @@ export default function ChatView(props: ChatViewProps) {
     scrollToEnd,
     setThreadError,
   });
-  const { onSend } = useComposerSend({
+  const { onSend, retryBoatCloudSend, dismissBoatCloudSend } = useComposerSend({
     environmentId,
     routeThreadKey,
     currentRouteThreadKeyRef,
@@ -3090,6 +3107,10 @@ export default function ChatView(props: ChatViewProps) {
     });
   };
   const onWorktreeSetupWorkLocallyStable = useStableCallback(onWorktreeSetupWorkLocally);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- hands the send's Boat retry and dismiss to the banner, which is built before the send
+  useLayoutEffect(() => {
+    boatCloudSendActionsRef.current = { retry: retryBoatCloudSend, dismiss: dismissBoatCloudSend };
+  }, [retryBoatCloudSend, dismissBoatCloudSend]);
   const onComposerSendStable = useStableCallback(onSend);
   const sendPreviewAnnotation = (
     annotation: PreviewAnnotationPayload,

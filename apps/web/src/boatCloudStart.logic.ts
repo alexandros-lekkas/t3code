@@ -63,7 +63,11 @@ export function withHolderSteps(
       const report = HOLDER_STEPS.has(entry.step)
         ? reported.find((candidate) => candidate.step === entry.step)
         : undefined;
-      return report ? { ...report, detail: report.detail ?? entry.detail } : entry;
+      if (!report) return entry;
+      // The holder lists a step pending until it starts it, which this client may already show.
+      const state =
+        report.state === "pending" && entry.state === "active" ? "active" : report.state;
+      return { ...report, state, detail: report.detail ?? entry.detail };
     }),
   };
 }

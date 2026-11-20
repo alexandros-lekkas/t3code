@@ -1,5 +1,14 @@
 import { msg } from "gt-react";
-import { markBoatCloudStartSent, unmarkBoatCloudStartSent } from "../../boatCloud";
+import {
+  boatCloudStartProgressAtom,
+  clearBoatCloudStartProgress,
+  markBoatCloudStartSent,
+  unmarkBoatCloudStartSent,
+} from "../../boatCloud";
+import {
+  clearBoatCloudThreadPending,
+  markBoatCloudThreadPending,
+} from "../../boatCloudPendingThreads";
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { m } from "~/i18n/messages";
 import { isClearComposerCommand, parseSideChatCommand } from "@t3tools/shared/composerTrigger";
@@ -50,7 +59,7 @@ import {
   scopeThreadRef,
 } from "@t3tools/client-runtime/environment";
 import { createModelSelection } from "@t3tools/shared/model";
-import { type SetStateAction, useLayoutEffect, useRef } from "react";
+import { type SetStateAction, useEffect, useLayoutEffect, useRef } from "react";
 import { flushSync } from "react-dom";
 import { useNavigate } from "@tanstack/react-router";
 import {
@@ -1744,6 +1753,11 @@ export function useComposerSend(input: ComposerSendInput) {
 
   // The sends waiting on a Boat VM that starts or wakes, chained in the order they were sent.
   const boatCloudSendsRef = useRef<Promise<void> | null>(null);
+  /** The message a failed Boat start kept in the thread, until Retry or Dismiss. */
+  const heldBoatCloudSendRef = useRef<{
+    readonly args: Parameters<typeof onSend>;
+    readonly queued: QueuedComposerSend;
+  } | null>(null);
   // Open once the thread takes another message: idle, or queueing behind its starting run.
   const sendGateRef = useRef({ open: true, waiters: [] as Array<() => void> });
   const sendGateOpen = !isSendBusy || sendQueuesBehindSetup;
@@ -1879,6 +1893,8 @@ export function useComposerSend(input: ComposerSendInput) {
 
   const onSendWithRouting = async (...args: Parameters<typeof onSend>) => {
     args[0]?.preventDefault();
+    // A message held by a failed Boat start goes first, and this one queues behind it.
+    if (heldBoatCloudSendRef.current !== null && !args[3]) retryBoatCloudSend();
     const ahead = boatCloudSendsRef.current;
     if (ahead !== null && !args[3]) {
       // Behind a send that waits on a Boat VM, a message queues as it would behind a running turn.
@@ -1902,26 +1918,106 @@ export function useComposerSend(input: ComposerSendInput) {
     const waitsOnBoatCloud =
       draftThread?.environmentSelection === "cloud" && !draftThread?.promotedTo;
     const queued = waitsOnBoatCloud ? takeComposerSend(false) : null;
-    if (queued !== null) markBoatCloudStartSent(draftId);
-    const sendWhenReady = async () => {
-      const ready = await refresh.finally(() => {
-        sendInFlightRef.current = false;
+    if (queued === null) {
+      sendInFlightRef.current = true;
+      return sendWhenReady(args, refresh, null);
+    }
+    if (draftId !== null) {
+      // The sidebar lists the thread from now on, as it will be once the VM has it.
+      const composerDraft = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
+      const instanceId = composerDraft?.activeProvider ?? null;
+      markBoatCloudThreadPending(draftId, {
+        title: deriveThreadTitleSeed(
+          { text: queued.message.text, attachments: queued.message.attachments ?? [] },
+          m,
+        ),
+        sentAt: queued.message.createdAt,
+        modelSelection:
+          instanceId === null
+            ? null
+            : (composerDraft?.modelSelectionByProvider[instanceId] ?? null),
       });
-      // A draft's instance is keyed by its draft, so a route change there is the same draft moving
-      // or promoting. A server thread's instance is reused across threads, so it must still be here.
-      if (!ready || (draftId === null && currentRouteThreadKeyRef.current !== routeThreadKey)) {
-        if (queued !== null) putBackComposerSend(queued);
-        return;
-      }
-      // A woken VM's connection lands in a store update; commit it so the send reads it.
-      flushSync(() => {});
-      if (queued === null) await onSendLatest(...args);
-      else await sendQueued(args, queued);
-      onRoutedSendDispatched();
-    };
-    sendInFlightRef.current = true;
-    if (queued === null) return sendWhenReady();
-    return trackBoatCloudSend(sendWhenReady().finally(() => unmarkBoatCloudStartSent(draftId)));
+    }
+    return sendAfterBoatCloudStart(args, refresh, queued);
   };
-  return { onSend: onSendWithRouting };
+
+  const sendWhenReady = async (
+    args: Parameters<typeof onSend>,
+    refresh: Promise<boolean>,
+    queued: QueuedComposerSend | null,
+  ) => {
+    const ready = await refresh.finally(() => {
+      sendInFlightRef.current = false;
+    });
+    // A draft's instance is keyed by its draft, so a route change there is the same draft moving
+    // or promoting. A server thread's instance is reused across threads, so it must still be here.
+    if (!ready || (draftId === null && currentRouteThreadKeyRef.current !== routeThreadKey)) {
+      if (queued === null) return;
+      const startFailed =
+        draftId !== null && appAtomRegistry.get(boatCloudStartProgressAtom(draftId))?.error;
+      // A failed start keeps the message in its thread, for Retry; Dismiss puts it back.
+      if (startFailed) heldBoatCloudSendRef.current = { args, queued };
+      else releaseBoatCloudSend(queued);
+      return;
+    }
+    // A woken VM's connection lands in a store update; commit it so the send reads it.
+    flushSync(() => {});
+    if (queued === null) await onSendLatest(...args);
+    else await sendQueued(args, queued);
+    onRoutedSendDispatched();
+  };
+
+  const sendAfterBoatCloudStart = (
+    args: Parameters<typeof onSend>,
+    refresh: Promise<boolean>,
+    queued: QueuedComposerSend,
+  ) => {
+    markBoatCloudStartSent(draftId);
+    sendInFlightRef.current = true;
+    return trackBoatCloudSend(
+      sendWhenReady(args, refresh, queued).finally(() => {
+        if (heldBoatCloudSendRef.current?.queued !== queued) unmarkBoatCloudStartSent(draftId);
+      }),
+    );
+  };
+
+  /** The message goes back to the composer, and the draft lists as a draft again. */
+  const releaseBoatCloudSend = useStableCallback((queued: QueuedComposerSend) => {
+    if (draftId !== null) clearBoatCloudThreadPending(draftId);
+    putBackComposerSend(queued);
+  });
+  const retryBoatCloudSend = useStableCallback(() => {
+    const held = heldBoatCloudSendRef.current;
+    if (held === null || sendInFlightRef.current) return;
+    heldBoatCloudSendRef.current = null;
+    // Off Boat now, the message goes back to the composer to be sent from there.
+    const refresh =
+      draftThread?.environmentSelection === "cloud" && !draftThread.promotedTo
+        ? refreshBeforeSend()
+        : null;
+    if (refresh === null) {
+      releaseBoatCloudSend(held.queued);
+      return;
+    }
+    void sendAfterBoatCloudStart(held.args, refresh, held.queued);
+  });
+  const dismissBoatCloudSend = useStableCallback(() => {
+    const held = heldBoatCloudSendRef.current;
+    heldBoatCloudSendRef.current = null;
+    if (draftId !== null) clearBoatCloudStartProgress(draftId);
+    unmarkBoatCloudStartSent(draftId);
+    if (held !== null) releaseBoatCloudSend(held.queued);
+    else if (draftId !== null) clearBoatCloudThreadPending(draftId);
+  });
+  // Leaving the draft puts a held message back in its composer, where it is saved.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- returns a held message to the persisted composer draft when the view unmounts
+  useEffect(
+    () => () => {
+      const held = heldBoatCloudSendRef.current;
+      heldBoatCloudSendRef.current = null;
+      if (held !== null) releaseBoatCloudSend(held.queued);
+    },
+    [releaseBoatCloudSend],
+  );
+  return { onSend: onSendWithRouting, retryBoatCloudSend, dismissBoatCloudSend };
 }

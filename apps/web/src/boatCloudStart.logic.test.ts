@@ -26,6 +26,14 @@ const holderReport = (
 
 describe("Boat cloud start progress", () => {
   it("connects while the checkout runs, and opens the project once both are done", () => {
+    // The holder's first report lists the VM step pending; the step it already shows stays on.
+    expect(
+      states(
+        withHolderSteps(startingProgress("acme/app"), [
+          { step: "machine", state: "pending", detail: null },
+        ]),
+      ),
+    ).toMatchObject({ machine: "active" });
     const reported = withHolderSteps(
       startingProgress("acme/app"),
       holderReport("active", "active"),
