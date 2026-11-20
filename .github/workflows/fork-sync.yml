@@ -3,7 +3,8 @@
 #
 #   1. Find the latest stable release of pingdotgg/t3code (nightlies are ignored). Stop if boat
 #      already has it, or if a sync merge landed on boat in the last 7 days (unless `force`).
-#   2. Merge the release tag into boat. Run .github/scripts/fork-checks.sh.
+#   2. Merge the release tag into boat. Run .github/scripts/fork-checks.sh: repo-wide typecheck,
+#      lint and i18n, and only the tests for what differs from the release (upstream tested it).
 #   3. On a conflict or a failing check, Claude Code (claude-opus-5-5) resolves it, keeping both
 #      upstream's changes and the Boat features, and the checks run again.
 #   4. All green: fast-forward main to the release (or upstream main) and push main and boat
@@ -145,7 +146,8 @@ jobs:
         continue-on-error: true
         env:
           FORK_CHECKS_LOG_DIR: ${{ runner.temp }}/fork-sync/checks-1
-        run: bash .github/scripts/fork-checks.sh
+          REF: ${{ steps.release.outputs.ref }}
+        run: bash .github/scripts/fork-checks.sh "$REF"
 
       - name: Ask Claude to resolve conflicts and fix checks
         id: claude
@@ -181,8 +183,8 @@ jobs:
             API; never revert upstream to fit Boat.
           - Fix real failures. Skip or loosen a test only when it also fails on upstream's own code
             and say so in a comment next to the skip.
-          - Run \`bash .github/scripts/fork-checks.sh\` to verify (it takes a while; you can run single
-            steps such as \`vp run typecheck\` or \`vp run --filter t3 test -- <file>\` while iterating).
+          - Run \`bash .github/scripts/fork-checks.sh $REF\` to verify. While iterating, run single
+            steps such as \`vp run typecheck\` or \`vp run check:changed $REF\`.
           - Do not commit, push, create branches or touch .github/workflows. Leave the result in the
             working tree and index. A merge in progress must stay in progress (do not abort it).
           - Finish with a short summary of what you changed and why.
@@ -228,9 +230,8 @@ jobs:
         continue-on-error: true
         env:
           FORK_CHECKS_LOG_DIR: ${{ runner.temp }}/fork-sync/checks-2
-        run: |
-          vp install
-          bash .github/scripts/fork-checks.sh
+          REF: ${{ steps.release.outputs.ref }}
+        run: bash .github/scripts/fork-checks.sh "$REF"
 
       - name: Decide
         id: decide

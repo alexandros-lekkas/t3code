@@ -1,9 +1,22 @@
 #!/usr/bin/env bash
 # Fork (alexandros-lekkas/t3code): the checks a boat commit must pass, on a GitHub-hosted
 # ubuntu runner. Used by fork-checks.yml and by fork-sync.yml after merging an upstream release.
-# Each step logs to $FORK_CHECKS_LOG_DIR/<step>.log; a summary of failed steps goes to
-# $FORK_CHECKS_LOG_DIR/failed.txt. Exits non-zero when any step fails.
+#
+#   fork-checks.sh <upstream tag>
+#
+# Upstream tested its own release, so only what differs from that tag is tested: the Boat
+# features and any conflict fixes (`check:changed` runs the tests beside and importing changed
+# files). Typecheck, lint and i18n stay repo-wide; they are fast. Without an argument the base is
+# the newest stable upstream tag boat contains.
+# Each step logs to $FORK_CHECKS_LOG_DIR/<step>.log; failed step names go to failed.txt.
 set -uo pipefail
+
+base="${1:-$(git tag --merged HEAD --list 'v*' | grep -Ev -- '-' | sort -V | tail -1)}"
+if [[ -z "$base" ]]; then
+  echo "::error::No upstream release tag to compare with; fetch upstream's tags first."
+  exit 1
+fi
+echo "Comparing with upstream $base"
 
 log_dir="${FORK_CHECKS_LOG_DIR:-${RUNNER_TEMP:-/tmp}/fork-checks}"
 rm -rf "$log_dir"
@@ -33,15 +46,12 @@ step() {
 step install vp install
 step electron vp run --filter @t3tools/desktop ensure:electron
 step typecheck vp run typecheck
-step i18n vp run i18n:check
 step lint vp check
-step test-packages vp run --parallel --concurrency-limit 4 \
-  --filter '!t3' --filter '!@t3tools/monorepo' --filter '!@t3tools/web' test
-step test-server vp run --filter t3 test
-step test-web vp run --filter @t3tools/web test
+step i18n vp run i18n:check
+step changed vp run check:changed "$base"
 
 if [[ -s "$log_dir/failed.txt" ]]; then
   echo "Failed checks: $(tr '\n' ' ' <"$log_dir/failed.txt")"
   exit 1
 fi
-echo "All checks passed."
+echo "All checks passed in ${SECONDS}s."
