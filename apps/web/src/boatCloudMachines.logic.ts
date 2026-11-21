@@ -1,8 +1,11 @@
 import type {
   BoatCloudMachine,
+  BoatCloudMachineState,
+  BoatCloudMachineTypeOption,
   BoatCloudStatus,
   EnvironmentId,
   ScopedThreadRef,
+  ThreadId,
 } from "@t3tools/contracts";
 
 /** How the browser records which VM each thread it started went to. */
@@ -93,4 +96,86 @@ export function boatCloudEnvironmentsToForget(input: {
     (environmentId) =>
       !held.has(environmentId) && !input.connectedEnvironmentIds.has(environmentId),
   );
+}
+
+/** The listed top-level threads on each VM, by sandbox. */
+export function boatCloudThreadsByMachine<
+  Shell extends {
+    readonly environmentId: EnvironmentId;
+    readonly id: ThreadId;
+    readonly lineage: { readonly relationshipToParent: string | null };
+  },
+>(input: {
+  readonly status: BoatCloudStatus | null;
+  readonly threadMachines: Readonly<Record<string, string>>;
+  readonly shells: ReadonlyArray<Shell>;
+  readonly onBoatCloud: (environmentId: EnvironmentId) => boolean;
+}): ReadonlyMap<string, ReadonlyArray<Shell>> {
+  const byMachine = new Map<string, Array<Shell>>();
+  for (const shell of input.shells) {
+    if (shell.lineage.relationshipToParent === "subagent") continue;
+    const machine = boatCloudMachineOfThread({
+      status: input.status,
+      threadMachines: input.threadMachines,
+      ref: { environmentId: shell.environmentId, threadId: shell.id },
+      onBoatCloud: input.onBoatCloud(shell.environmentId),
+    });
+    if (machine === null) continue;
+    const list = byMachine.get(machine.sandboxId) ?? [];
+    list.push(shell);
+    byMachine.set(machine.sandboxId, list);
+  }
+  return byMachine;
+}
+
+/** Where a VM's load reads as an error. */
+export const BOAT_CLOUD_LOAD_ERROR_PERCENT = 90;
+
+export type BoatCloudMachineStateLabel = BoatCloudMachineState | "resizing";
+
+/** A resize reads as itself rather than the wake it runs as. */
+export function boatCloudMachineStateLabel(
+  machine: Pick<BoatCloudMachine, "state" | "resizingTo">,
+  resizeSent: boolean,
+): BoatCloudMachineStateLabel {
+  return machine.resizingTo !== null || resizeSent ? "resizing" : machine.state;
+}
+
+/** Boat cannot resize a VM mid-wake or mid-resize, nor one it only keeps a saved copy of. */
+export function boatCloudResizeBlocked(
+  machine: Pick<BoatCloudMachine, "state" | "resizingTo">,
+): boolean {
+  return machine.resizingTo !== null || machine.state === "starting" || machine.state === "gone";
+}
+
+/**
+ * Memory nearly full with a roomier size the plan can start. CPU is left out, since a build
+ * pegs it, and disk too: a resize keeps the VM's disk as it is.
+ */
+export function boatCloudLowOnMemory(input: {
+  readonly memoryPercent: number | null;
+  readonly memoryGB: number | null;
+  readonly machineTypes: ReadonlyArray<BoatCloudMachineTypeOption>;
+}): boolean {
+  const { memoryPercent, memoryGB } = input;
+  return (
+    memoryPercent !== null &&
+    memoryGB !== null &&
+    memoryPercent >= BOAT_CLOUD_LOAD_ERROR_PERCENT &&
+    input.machineTypes.some((option) => option.available && option.memoryGB > memoryGB)
+  );
+}
+
+/**
+ * What a resize interrupts, so it asks first; null when nothing runs on the VM to stop.
+ * `shared` when other threads use the VM, whether or not this client lists them.
+ */
+export function boatCloudResizeInterrupts(input: {
+  readonly machine: Pick<BoatCloudMachine, "state">;
+  readonly threads: ReadonlyArray<{ readonly running: boolean }>;
+  readonly shared: boolean;
+}): { readonly shared: boolean } | null {
+  if (input.machine.state !== "running") return null;
+  const shared = input.shared || input.threads.length > 1;
+  return shared || input.threads.some((thread) => thread.running) ? { shared } : null;
 }

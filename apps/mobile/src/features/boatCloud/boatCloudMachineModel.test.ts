@@ -27,6 +27,7 @@ const machine = (patch: Partial<BoatCloudMachine> & { sandboxId: string }): Boat
   memoryGB: 4,
   usage: null,
   stats: null,
+  resizingTo: null,
   ...patch,
 });
 

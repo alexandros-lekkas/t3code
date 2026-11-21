@@ -11,6 +11,7 @@ import {
   restoreScript,
   snapshotNameOf,
   statsScript,
+  stopServerScript,
 } from "@t3tools/shared/boatCloudVm";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
@@ -108,6 +109,13 @@ interface FakeSnapshot {
   readonly createdAt: string;
   readyAt: number;
 }
+
+const DEMO_PLAN_MACHINE_TYPES = [
+  { type: "small", available: true },
+  { type: "default", available: true },
+  { type: "large", available: true },
+  { type: "xlarge", available: false, reason: "Not on the demo plan." },
+];
 
 const machineTypeOf = (value: unknown): MachineType =>
   value === "small" || value === "default" || value === "large" || value === "xlarge"
@@ -412,6 +420,10 @@ export const makeFakeBoat = Effect.fn("FakeBoat.make")(function* (options: FakeB
       sandbox.lastActive = now;
       return "";
     }
+    if (command === stopServerScript) {
+      yield* stepDelay(300, 800);
+      return "";
+    }
     if (command === backupScript || command === restoreScript) {
       yield* stepDelay(1500, 3000);
       return "";
@@ -462,12 +474,7 @@ export const makeFakeBoat = Effect.fn("FakeBoat.make")(function* (options: FakeB
       if (path === "/limits") {
         if (options.limits !== undefined) return reply(options.limits);
         return reply({
-          machineTypes: [
-            { type: "small", available: true },
-            { type: "default", available: true },
-            { type: "large", available: true },
-            { type: "xlarge", available: false, reason: "Not on the demo plan." },
-          ],
+          machineTypes: DEMO_PLAN_MACHINE_TYPES,
           overagePrices: { vmHourDollars: DOLLARS_PER_SECOND * 3600 },
           creditSecondsPerDollar: 1 / DOLLARS_PER_SECOND,
           // Shaped like a real account: a $20 plan early in its month, and a $45 wallet.
@@ -671,6 +678,13 @@ export const makeFakeBoat = Effect.fn("FakeBoat.make")(function* (options: FakeB
         });
       }
       if (action === "/resume") {
+        // Boat refuses a size the plan cannot run; the VM stays stopped at its own.
+        if (
+          options.limits === undefined &&
+          DEMO_PLAN_MACHINE_TYPES.some((entry) => entry.type === body.type && !entry.available)
+        ) {
+          return reply({ code: "machine_type_unavailable" }, 409);
+        }
         if (sandbox.state === "stopped") {
           sandbox.state = "resuming";
           sandbox.readyAt = now + (yield* Random.nextBetween(2000, 3000)) * scale;

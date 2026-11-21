@@ -197,15 +197,25 @@ export const layer = McpToolAccess.toLayer(BoatCloudToolkit, {
       ),
     ),
     McpToolAccess.writes(
-      ({ action, sandboxId }) =>
+      ({ action, sandboxId, machineType }) =>
         Effect.gen(function* () {
           const boat = yield* BoatCloud.BoatCloudService;
+          if (action === "resize" && machineType === undefined) {
+            return yield* new OrchestratorMcpFailure({
+              code: "invalid_request",
+              message: "Resize needs a `machineType`.",
+            });
+          }
           const machine = yield* (
-            action === "wake" ? boat.wakeMachine(sandboxId) : boat.stopMachine(sandboxId)
+            action === "resize"
+              ? boat.resizeMachine({ sandboxId, machineType: machineType! })
+              : action === "wake"
+                ? boat.wakeMachine(sandboxId)
+                : boat.stopMachine(sandboxId)
           ).pipe(Effect.mapError(boatFailure));
           return { machine: withoutStats(machine) };
         }),
-      { linkedCallers: { refused: "stop or wake this environment's Boat VMs" } },
+      { linkedCallers: { refused: "stop, wake or resize this environment's Boat VMs" } },
     ),
   ),
 });

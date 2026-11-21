@@ -113,6 +113,7 @@ const DISPLAY_NAMES: ReadonlyMap<string, string> = new Map([
   ["Manage a Boat VM", msg("Manage a Boat VM")],
   ["Stop a Boat VM", msg("Stop a Boat VM")],
   ["Wake a Boat VM", msg("Wake a Boat VM")],
+  ["Resize a Boat VM", msg("Resize a Boat VM")],
   ["Delete a Boat VM", msg("Delete a Boat VM")],
   ["Launch a project thread", msg("Launch a project thread")],
   ["List projects", msg("List projects")],

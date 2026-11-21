@@ -20,6 +20,7 @@ const machine = (
   memoryGB: 4,
   usage: updatedAt === null ? null : { seconds: 60, dollars: 0.01, updatedAt },
   stats: null,
+  resizingTo: null,
 });
 
 describe("boatCloudUsageReadAt", () => {

@@ -1,16 +1,32 @@
-import type { BoatCloudMachineState, ScopedThreadRef } from "@t3tools/contracts";
-import { msg, useGT, useMessages } from "gt-react";
+import type { ScopedThreadRef } from "@t3tools/contracts";
+import { msg, T, useGT, useMessages } from "gt-react";
+import { useState } from "react";
 
 import {
+  availableBoatCloudMachineTypes,
   formatBoatCloudBytes,
   formatBoatCloudCost,
   formatHourlyPrice,
   useBoatCloudMachineTypeLabel,
 } from "../BoatCloudSizeSelector";
 import { usePrimaryBoatCloudStatus } from "../../boatCloud";
+import {
+  BOAT_CLOUD_LOAD_ERROR_PERCENT,
+  type BoatCloudMachineStateLabel,
+  boatCloudLowOnMemory,
+  boatCloudMachineStateLabel,
+  boatCloudResizeBlocked,
+} from "../../boatCloudMachines.logic";
+import {
+  BoatCloudResizeItems,
+  readBoatCloudMachineThreads,
+  useBoatCloudResize,
+} from "../BoatCloudResize";
 import { useBoatCloudThreadMachine } from "../../state/boatCloudThreads";
 import { cn } from "../../lib/utils";
 import { BoatIcon } from "../Icons";
+import { Menu, MenuPopup, MenuTrigger } from "../ui/menu";
+import { ThreadDetailsControl } from "./ThreadDetailsControl";
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import {
   THREAD_DETAILS_PANEL_LABEL_CLASS,
@@ -18,17 +34,19 @@ import {
 } from "./threadDetailsPanelStyles";
 import { UsageRow } from "./ThreadDetailsUsage";
 
-const STATE_LABELS: Record<BoatCloudMachineState, string> = {
+const STATE_LABELS: Record<BoatCloudMachineStateLabel, string> = {
   running: msg("Running", { $context: "VM state" }),
   starting: msg("Waking", { $context: "VM state" }),
   stopped: msg("Sleeping", { $context: "VM state" }),
   gone: msg("Saved copy", { $context: "VM state" }),
+  resizing: msg("Resizing", { $context: "VM state" }),
 };
 
 const percentOf = (used: number, total: number) =>
   total > 0 ? Math.round(Math.max(0, Math.min(100, (used / total) * 100))) : 0;
 
-const loadTone = (percent: number) => (percent >= 90 ? "error" : percent >= 75 ? "warning" : null);
+const loadTone = (percent: number) =>
+  percent >= BOAT_CLOUD_LOAD_ERROR_PERCENT ? "error" : percent >= 75 ? "warning" : null;
 
 /** A Boat cloud thread's VM: its size, state, live load and what it has cost. */
 export function ThreadDetailsSandbox({ threadRef }: { readonly threadRef: ScopedThreadRef }) {
@@ -36,7 +54,9 @@ export function ThreadDetailsSandbox({ threadRef }: { readonly threadRef: Scoped
   const m = useMessages();
   const typeLabel = useBoatCloudMachineTypeLabel();
   const machine = useBoatCloudThreadMachine(threadRef);
-  const { status } = usePrimaryBoatCloudStatus();
+  const { status, holderEnvironmentId } = usePrimaryBoatCloudStatus();
+  const resize = useBoatCloudResize(holderEnvironmentId);
+  const [sizeMenuOpen, setSizeMenuOpen] = useState(false);
   if (machine === null) return null;
   // The environment's figure sums every VM that served it, after a restore moved it.
   const usage = status?.environmentUsage.find((entry) => entry.sandboxId === machine.sandboxId);
@@ -51,7 +71,8 @@ export function ThreadDetailsSandbox({ threadRef }: { readonly threadRef: Scoped
   ]
     .filter(Boolean)
     .join(" · ");
-  const state = m(STATE_LABELS[machine.state]);
+  const resizeSent = resize.resizeSent(machine.sandboxId);
+  const state = m(STATE_LABELS[boatCloudMachineStateLabel(machine, resizeSent)]);
   const cost =
     usage !== undefined
       ? formatBoatCloudCost(usage.seconds, usage.dollars)
@@ -69,22 +90,63 @@ export function ThreadDetailsSandbox({ threadRef }: { readonly threadRef: Scoped
           percent: percentOf(stats.diskUsedBytes, stats.diskTotalBytes),
           value: formatBoatCloudBytes(stats.diskUsedBytes, stats.diskTotalBytes),
         };
+  const resizable =
+    status !== null &&
+    resize.allowed &&
+    availableBoatCloudMachineTypes(status.machineTypes).length > 0;
+  const resizeDisabled = resizeSent || boatCloudResizeBlocked(machine);
+  const lowOnMemory =
+    resizable &&
+    !resizeDisabled &&
+    boatCloudLowOnMemory({ memoryPercent: memory, memoryGB, machineTypes: status.machineTypes });
+  const sizeRow = (
+    <>
+      <BoatIcon aria-hidden className="size-4" />
+      <span className={cn("min-w-0 truncate", THREAD_DETAILS_PANEL_LABEL_CLASS)}>
+        {machineType === null ? gt("Boat VM") : typeLabel(machineType)}
+      </span>
+      <span className="ms-auto shrink-0 text-xs font-normal text-muted-foreground">{state}</span>
+    </>
+  );
   return (
     <ThreadDetailsSection
       headingId="thread-details-sandbox-heading"
       title={gt("Sandbox")}
       showHeading={false}
     >
-      <div
-        className={cn(THREAD_DETAILS_PANEL_LOCKED_ROW_CLASS, "flex items-center")}
-        aria-label={gt("Boat VM")}
-      >
-        <BoatIcon aria-hidden className="size-4" />
-        <span className={cn("min-w-0 truncate", THREAD_DETAILS_PANEL_LABEL_CLASS)}>
-          {machineType === null ? gt("Boat VM") : typeLabel(machineType)}
-        </span>
-        <span className="ms-auto shrink-0 text-xs font-normal text-muted-foreground">{state}</span>
-      </div>
+      {resizable ? (
+        <Menu open={sizeMenuOpen} onOpenChange={setSizeMenuOpen}>
+          <MenuTrigger
+            render={<ThreadDetailsControl part="select" />}
+            disabled={resizeDisabled}
+            aria-label={gt("Boat VM size")}
+          >
+            {sizeRow}
+          </MenuTrigger>
+          <MenuPopup align="start" className="w-(--anchor-width)">
+            <BoatCloudResizeItems
+              machine={machine}
+              machineTypes={status.machineTypes}
+              onChoose={(next) =>
+                resize.choose({
+                  machine,
+                  machineType: next,
+                  threads: readBoatCloudMachineThreads(status, machine.sandboxId),
+                  shared,
+                })
+              }
+            />
+          </MenuPopup>
+        </Menu>
+      ) : (
+        <div
+          className={cn(THREAD_DETAILS_PANEL_LOCKED_ROW_CLASS, "flex items-center")}
+          aria-label={gt("Boat VM")}
+        >
+          {sizeRow}
+        </div>
+      )}
+      {resize.dialog}
       {specs ? (
         <div className="truncate px-2.5 pb-1 text-xs text-muted-foreground tabular-nums">
           {specs}
@@ -151,6 +213,19 @@ export function ThreadDetailsSandbox({ threadRef }: { readonly threadRef: Scoped
           />
         ) : null}
       </div>
+      {lowOnMemory ? (
+        <div className="flex h-7 items-center gap-2 ps-2.5 pe-1 text-xs text-error-foreground">
+          <span className="min-w-0 truncate">{gt("Low on memory")}</span>
+          <ThreadDetailsControl
+            part="meta"
+            tone="primary"
+            className="ms-auto"
+            onClick={() => setSizeMenuOpen(true)}
+          >
+            <T>Resize</T>
+          </ThreadDetailsControl>
+        </div>
+      ) : null}
     </ThreadDetailsSection>
   );
 }

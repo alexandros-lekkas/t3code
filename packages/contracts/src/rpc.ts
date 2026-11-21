@@ -423,6 +423,7 @@ import {
   BoatCloudEmptyInput,
   BoatCloudMachine,
   BoatCloudMachineInput,
+  BoatCloudResizeMachineInput,
   BoatCloudError,
   BoatCloudRunSetupInput,
   BoatCloudSession,
@@ -618,6 +619,7 @@ export const WS_METHODS = {
   boatCloudHoldStart: "boatCloud.holdStart",
   boatCloudStopMachine: "boatCloud.stopMachine",
   boatCloudWakeMachine: "boatCloud.wakeMachine",
+  boatCloudResizeMachine: "boatCloud.resizeMachine",
   boatCloudDeleteMachine: "boatCloud.deleteMachine",
   boatCloudRefreshUsage: "boatCloud.refreshUsage",
   boatCloudClaudeToken: "boatCloud.claudeToken",
@@ -2290,6 +2292,12 @@ const WsBoatCloudWakeMachineRpc = Rpc.make(WS_METHODS.boatCloudWakeMachine, {
   error: BoatCloudErrors,
 });
 
+const WsBoatCloudResizeMachineRpc = Rpc.make(WS_METHODS.boatCloudResizeMachine, {
+  payload: BoatCloudResizeMachineInput,
+  success: BoatCloudMachine,
+  error: BoatCloudErrors,
+});
+
 const WsBoatCloudDeleteMachineRpc = Rpc.make(WS_METHODS.boatCloudDeleteMachine, {
   payload: BoatCloudDeleteMachineInput,
   success: BoatCloudStatus,
@@ -2470,6 +2478,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsBoatCloudHoldStartRpc,
   WsBoatCloudStopMachineRpc,
   WsBoatCloudWakeMachineRpc,
+  WsBoatCloudResizeMachineRpc,
   WsBoatCloudDeleteMachineRpc,
   WsBoatCloudRefreshUsageRpc,
   WsBoatCloudClaudeTokenRpc,

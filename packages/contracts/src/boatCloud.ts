@@ -138,6 +138,8 @@ export const BoatCloudMachine = Schema.Struct({
   stats: Schema.NullOr(BoatCloudMachineStats).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  /** The size a resize under way is moving the VM to; `state` is `starting` until it is back. */
+  resizingTo: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
 });
 export type BoatCloudMachine = typeof BoatCloudMachine.Type;
 
@@ -496,6 +498,13 @@ export const BoatCloudMachineInput = Schema.Struct({
   sandboxId: TrimmedNonEmptyString.check(Schema.isMaxLength(64)),
 });
 export type BoatCloudMachineInput = typeof BoatCloudMachineInput.Type;
+
+/** Restarts a VM on another size. Everything running on it stops; its disk and threads stay. */
+export const BoatCloudResizeMachineInput = Schema.Struct({
+  sandboxId: TrimmedNonEmptyString.check(Schema.isMaxLength(64)),
+  machineType: BoatCloudMachineType,
+});
+export type BoatCloudResizeMachineInput = typeof BoatCloudResizeMachineInput.Type;
 
 export const BoatCloudDeleteMachineInput = Schema.Struct({
   sandboxId: TrimmedNonEmptyString.check(Schema.isMaxLength(64)),

@@ -1,5 +1,6 @@
 import {
   type BoatCloudMachine,
+  type BoatCloudMachineTypeOption,
   type BoatCloudStatus,
   EnvironmentId,
   ThreadId,
@@ -8,9 +9,14 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   boatCloudEnvironmentsToForget,
+  boatCloudLowOnMemory,
   boatCloudMachineOfThread,
+  boatCloudMachineStateLabel,
   boatCloudMachinesToPair,
+  boatCloudResizeBlocked,
+  boatCloudResizeInterrupts,
   boatCloudThreadMachineKey,
+  boatCloudThreadsByMachine,
   draftStartsOwnBoatCloudMachine,
   managedBoatCloudMachine,
 } from "./boatCloudMachines.logic";
@@ -36,6 +42,7 @@ const machine = (
   memoryGB: 4,
   usage: null,
   stats: null,
+  resizingTo: null,
 });
 
 const status = (
@@ -142,5 +149,97 @@ describe("draftStartsOwnBoatCloudMachine", () => {
       }),
     ).toBe(false);
     expect(draftStartsOwnBoatCloudMachine(null)).toBe(false);
+  });
+});
+
+describe("boatCloudThreadsByMachine", () => {
+  const shell = (id: string, relationshipToParent: "subagent" | null = null) => ({
+    environmentId: vmEnvironment,
+    id: ThreadId.make(id),
+    lineage: { relationshipToParent },
+  });
+
+  it("groups top-level threads by the VM they started on, leaving out subagents", () => {
+    const byMachine = boatCloudThreadsByMachine({
+      status: status([
+        machine("first", "running", vmEnvironment),
+        machine("second", "running", vmEnvironment),
+      ]),
+      threadMachines: {
+        [`${vmEnvironment}:a`]: "first",
+        [`${vmEnvironment}:b`]: "first",
+        [`${vmEnvironment}:c`]: "second",
+        [`${vmEnvironment}:sub`]: "first",
+      },
+      shells: [shell("a"), shell("b"), shell("c"), shell("sub", "subagent")],
+      onBoatCloud: () => true,
+    });
+    expect(byMachine.get("first")?.map((entry) => entry.id)).toEqual(["a", "b"]);
+    expect(byMachine.get("second")?.map((entry) => entry.id)).toEqual(["c"]);
+  });
+});
+
+describe("resizing a VM", () => {
+  const size = (
+    id: BoatCloudMachineTypeOption["id"],
+    memoryGB: number,
+    available = true,
+  ): BoatCloudMachineTypeOption => ({
+    id,
+    vcpu: memoryGB / 2,
+    memoryGB,
+    hourlyDollars: null,
+    priceSource: "derived",
+    available,
+    reason: null,
+  });
+  const sizes = [size("small", 4), size("default", 8), size("large", 16, false)];
+
+  it("reads as resizing while one is under way or sent, not as waking", () => {
+    const resizing = { ...machine("vm", "starting", vmEnvironment), resizingTo: "default" };
+    expect(boatCloudMachineStateLabel(resizing, false)).toBe("resizing");
+    expect(boatCloudMachineStateLabel(machine("vm", "running", vmEnvironment), true)).toBe(
+      "resizing",
+    );
+    expect(boatCloudMachineStateLabel(machine("vm", "starting", vmEnvironment), false)).toBe(
+      "starting",
+    );
+  });
+
+  it("is offered for a running or sleeping VM, not one waking, resizing or only saved", () => {
+    expect(boatCloudResizeBlocked(machine("vm", "running", vmEnvironment))).toBe(false);
+    expect(boatCloudResizeBlocked(machine("vm", "stopped", vmEnvironment))).toBe(false);
+    expect(boatCloudResizeBlocked(machine("vm", "starting", vmEnvironment))).toBe(true);
+    expect(boatCloudResizeBlocked(machine("vm", "gone", vmEnvironment))).toBe(true);
+    expect(
+      boatCloudResizeBlocked({ ...machine("vm", "running", vmEnvironment), resizingTo: "small" }),
+    ).toBe(true);
+  });
+
+  it("hints at a resize only near full memory with a roomier size the plan can start", () => {
+    const low = (memoryPercent: number | null, memoryGB: number | null) =>
+      boatCloudLowOnMemory({ memoryPercent, memoryGB, machineTypes: sizes });
+    expect(low(90, 4)).toBe(true);
+    expect(low(89, 4)).toBe(false);
+    expect(low(null, 4)).toBe(false);
+    // Large is roomier but not on the plan.
+    expect(low(95, 8)).toBe(false);
+    expect(low(95, null)).toBe(false);
+  });
+
+  it("asks first only when it interrupts a running turn or other threads", () => {
+    const running = machine("vm", "running", vmEnvironment);
+    const interrupts = (
+      threads: ReadonlyArray<{ readonly running: boolean }>,
+      shared = false,
+      vm: BoatCloudMachine = running,
+    ) => boatCloudResizeInterrupts({ machine: vm, threads, shared });
+    expect(interrupts([{ running: false }])).toBeNull();
+    expect(interrupts([{ running: true }])).toEqual({ shared: false });
+    expect(interrupts([{ running: false }, { running: false }])).toEqual({ shared: true });
+    expect(interrupts([{ running: false }], true)).toEqual({ shared: true });
+    expect(
+      interrupts([{ running: true }], true, machine("vm", "stopped", vmEnvironment)),
+    ).toBeNull();
   });
 });

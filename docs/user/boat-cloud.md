@@ -59,6 +59,13 @@ machine** keeps an idle VM at the default size running while you use T3 Code, so
 boot. That VM is billed at its hourly price; it is off by default, and turning it off deletes the
 idle VM. The thread's details panel shows its VM's size, state, CPU, memory, disk and cost.
 
+To give a VM more memory, change its size: on web and desktop from the size in the thread's details
+panel, and on any client with **Resize** next to the VM under **Settings → Boat → Machines**. It
+stays the same VM, with the same threads, worktrees and uncommitted changes, and its cost keeps
+counting. Resizing restarts the VM, so everything running on it stops, in every thread sharing it;
+running turns continue on their own once it is back. A sleeping VM wakes on the new size. Boat
+refuses a smaller size when the VM's data does not fit on it.
+
 A cloud thread always works in a new worktree, so several threads can share a VM. You choose only
 the base branch. The thread keeps your model and access settings, and its attachments go with it.
 
@@ -75,7 +82,7 @@ checkouts. Settling every thread on a VM stops it the same way about a minute la
 wait. A thread on a stopped VM shows it as sleeping. Your next message turns the same VM back
 on and the thread continues. If Boat deleted the VM, a new one starts from the saved copy.
 **Machines**, in **Settings → Boat**, lists each VM by its
-threads, with its size and cost, and lets you stop, wake or delete it. VMs are not listed with your
+threads, with its size and cost, and lets you stop, wake, resize or delete it. VMs are not listed with your
 other environments.
 
 An agent can also start a thread on Boat for you. Its VM's threads show in your thread list once

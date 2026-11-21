@@ -13,6 +13,7 @@ import {
   makeSpareKeeper,
   needsSnapshot,
   type ReadySpare,
+  resizeMachine,
   startingSnapshot,
   startMachine,
   wakeMachine,
@@ -47,6 +48,8 @@ const runningVm = (
     renameFails?: boolean;
     /** The server does not start on this VM. */
     serverFailsOn?: string;
+    /** Boat refuses to resume a VM on this size. */
+    refusesType?: string;
   } = {},
 ) => {
   const calls: Array<string> = [];
@@ -55,6 +58,8 @@ const runningVm = (
   const roles = new Map([["vm-1", vm.spare ? "spare" : "thread"]]);
   const environments = new Map([["vm-1", "base"]]);
   const states = new Map<string, string>();
+  /** Each VM's size, left out of Boat's answer when unset. */
+  const types = new Map<string, string>();
   /** The size each resume asked for, null when it kept the VM's own. */
   const resumes: Array<unknown> = [];
   const listed = (id: string) => ({
@@ -64,6 +69,7 @@ const runningVm = (
     environment: environments.get(id) ?? "base",
     name: names.get(id),
     labels: { [SNAPSHOT_LABEL]: SNAPSHOT, [ROLE_LABEL]: roles.get(id) ?? "thread" },
+    ...(types.has(id) ? { type: types.get(id) } : {}),
   });
   const http = HttpClient.make((request) =>
     Effect.sync(() => {
@@ -108,8 +114,19 @@ const runningVm = (
         return reply({ sandbox: listed(id) });
       }
       if (path.endsWith("/host")) return reply({ url: `${VM_URL}/` });
+      if (path.endsWith("/stop")) {
+        states.set(id, "archived");
+        return reply({});
+      }
       if (path.endsWith("/resume")) {
         resumes.push(body.type ?? null);
+        if (body.type !== undefined && body.type === vm.refusesType) {
+          return HttpClientResponse.fromWeb(
+            request,
+            Response.json({ code: "plan_limit" }, { status: 409 }),
+          );
+        }
+        if (typeof body.type === "string") types.set(id, body.type);
         states.set(id, "ready");
         return reply({ sandbox: listed(id) });
       }
@@ -130,11 +147,13 @@ const runningVm = (
         if (vm.serverFailsOn === id) return reply({ exitCode: 1, stdout: "" });
         const head = vm.hostsItself === false ? `${NOT_HOSTED_MARKER}\n${descriptor}` : descriptor;
         stdout = script.includes(PAIRING_MARKER) ? `${head}\n${PAIRING_MARKER}\n${pairing}` : head;
+      } else if (script.includes("systemctl --user stop t3code.service")) {
+        calls.push("exec stop server");
       } else if (script.includes("auth pairing create")) stdout = pairing;
       return reply({ exitCode: 0, stdout });
     }),
   );
-  return { api: makeBoatApi(http, "key"), calls, commands, states, resumes };
+  return { api: makeBoatApi(http, "key"), calls, commands, states, types, resumes };
 };
 
 const start = (
@@ -213,6 +232,53 @@ describe("wakeMachine", () => {
       yield* wakeMachine(vm.api, "vm-1");
       assert.deepStrictEqual(vm.resumes, [null]);
     }),
+  );
+});
+
+describe("resizeMachine", () => {
+  it.effect(
+    "stops T3 Code, then the VM, and starts it on the new size; the same size is left on",
+    () =>
+      Effect.gen(function* () {
+        const vm = runningVm("env-1");
+        vm.types.set("vm-1", "small");
+        const resized = yield* resizeMachine(vm.api, "vm-1", "large");
+        assert.strictEqual(resized.environmentId, "env-1");
+        assert.deepStrictEqual(vm.resumes, ["large"]);
+        const order = [
+          "exec stop server",
+          "POST /sandboxes/vm-1/stop",
+          "POST /sandboxes/vm-1/resume",
+        ];
+        assert.deepStrictEqual(
+          vm.calls.filter((call) => order.includes(call)),
+          order,
+        );
+        assert.isAbove(vm.calls.lastIndexOf("exec server"), vm.calls.indexOf(order[2]!));
+
+        vm.calls.length = 0;
+        yield* resizeMachine(vm.api, "vm-1", "large");
+        assert.notInclude(vm.calls, "POST /sandboxes/vm-1/stop");
+        assert.deepStrictEqual(vm.resumes, ["large"]);
+      }),
+  );
+
+  it.effect(
+    "starts the VM again on its old size when Boat refuses the new one, and fails with Boat's reason",
+    () =>
+      Effect.gen(function* () {
+        const vm = runningVm("env-1", { refusesType: "xlarge" });
+        vm.types.set("vm-1", "small");
+        const error = yield* Effect.flip(resizeMachine(vm.api, "vm-1", "xlarge"));
+        assert.strictEqual(error.code, "plan_limit");
+        assert.deepStrictEqual(vm.resumes, ["xlarge", null]);
+        assert.strictEqual(vm.states.get("vm-1"), "ready");
+        assert.strictEqual(vm.types.get("vm-1"), "small");
+        assert.isAbove(
+          vm.calls.lastIndexOf("exec server"),
+          vm.calls.lastIndexOf("POST /sandboxes/vm-1/resume"),
+        );
+      }),
   );
 });
 
@@ -599,7 +665,7 @@ describe("buildSnapshot", () => {
       );
       yield* TestClock.adjust(Duration.minutes(11));
       const error = yield* Fiber.join(fiber);
-      assert.strictEqual(error.message, "Boat did not stop the setup VM in 10 minutes.");
+      assert.strictEqual(error.message, "Boat did not stop the VM in 10 minutes.");
       assert.notInclude(boat.calls, "POST /saved-snapshots");
       assert.include(boat.calls, "DELETE /sandboxes/setup-1");
     }),

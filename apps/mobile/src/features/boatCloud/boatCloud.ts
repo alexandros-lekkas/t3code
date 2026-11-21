@@ -35,6 +35,7 @@ import {
   type BoatCloudHolder,
   boatCloudHoldersAtom,
   boatCloudMachinesAtom,
+  boatCloudResizingAtom,
   boatCloudWakingAtom,
   noteBoatCloudHolders,
   readBoatCloudHoldersOnce,
@@ -464,7 +465,7 @@ export async function wakeBoatCloudIfAsleep(environmentId: EnvironmentId): Promi
 }
 
 export interface BoatCloudSleep {
-  readonly state: "sleeping" | "waking";
+  readonly state: "sleeping" | "waking" | "resizing";
   readonly wake: () => void;
 }
 
@@ -479,10 +480,13 @@ export function useBoatCloudSleep(
 ): BoatCloudSleep | null {
   const machines = useAtomValue(boatCloudMachinesAtom);
   const waking = useAtomValue(boatCloudWakingAtom(environmentId));
+  const resizing = useAtomValue(boatCloudResizingAtom(environmentId));
   const httpBaseUrl = environmentId === null ? null : (machines.get(environmentId) ?? null);
   if (environmentId === null || httpBaseUrl === null || phase === null || phase === "connected") {
     return null;
   }
+  // A message sent meanwhile waits in the queue until the resized VM is back.
+  if (resizing) return { state: "resizing", wake: () => undefined };
   // Retries cycle the phase, so only this app's own wake reads as waking.
   return {
     state: waking ? "waking" : "sleeping",

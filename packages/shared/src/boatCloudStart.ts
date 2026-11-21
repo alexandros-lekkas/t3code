@@ -59,6 +59,7 @@ import {
   snapshotNameOf,
   startServerScript,
   stockPairingScript,
+  stopServerScript,
   syncSignInsScript,
   type VmAgentSignIns,
   subdomainOfHttpBaseUrl,
@@ -879,6 +880,8 @@ export const wakeMachine = Effect.fn("BoatCloud.wakeMachine")(function* (
     readonly signIns?: VmAgentSignIns | null;
     /** The VM's lease on Boat: it stops this long after its deadline last moved. */
     readonly idleTtlSeconds?: number;
+    /** Starts a stopped VM on this size; a VM already on keeps its own. */
+    readonly machineType?: BoatMachineType;
   },
 ) {
   const report = options?.report ?? (() => Effect.void);
@@ -891,7 +894,7 @@ export const wakeMachine = Effect.fn("BoatCloud.wakeMachine")(function* (
       const listed = yield* api.getSandbox(sandboxId);
       if (listed === null) return yield* vmFailure("Boat deleted this VM.", "gone");
       if (machineStateOf(listed.state) === "stopped") {
-        yield* api.resume(sandboxId, ttlSeconds);
+        yield* api.resume(sandboxId, ttlSeconds, options?.machineType);
       } else {
         yield* api.extend(sandboxId, ttlSeconds);
       }
@@ -915,6 +918,69 @@ export const wakeMachine = Effect.fn("BoatCloud.wakeMachine")(function* (
         pairingCode: started.pairing?.code ?? null,
         httpBaseUrl: yield* serverUrl(api, sandbox, started.hosted),
       };
+    }),
+  );
+});
+
+/**
+ * Moves a VM to another size. Boat resizes only as a stopped VM starts, so a VM that is on is
+ * stopped first and whatever ran on it ends. The disk carries over: the T3 server keeps its
+ * identity and threads, and continues the turns the stop cut short.
+ */
+export const resizeMachine = Effect.fn("BoatCloud.resizeMachine")(function* (
+  api: BoatApi,
+  sandboxId: string,
+  machineType: BoatMachineType,
+  options?: Omit<NonNullable<Parameters<typeof wakeMachine>[2]>, "machineType">,
+) {
+  const listed = yield* api.getSandbox(sandboxId);
+  if (listed === null) return yield* vmFailure("Boat deleted this VM.", "gone");
+  if (listed.type === machineType) return yield* wakeMachine(api, sandboxId, options);
+  if (machineStateOf(listed.state) !== "stopped") {
+    // A clean shutdown records the turns it cuts short, so the server continues them on the new size.
+    yield* api.exec(sandboxId, stopServerScript, 45).pipe(
+      Effect.timeout(Duration.seconds(60)),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("boat cloud could not stop T3 Code before a resize", {
+          sandboxId,
+          cause,
+        }),
+      ),
+    );
+    yield* api.stop(sandboxId);
+    yield* waitStopped(api, sandboxId);
+  }
+  const refused: { error: BoatApiError | null } = { error: null };
+  const resizing: BoatApi = {
+    ...api,
+    resume: (id, ttlSeconds, type) =>
+      api.resume(id, ttlSeconds, type).pipe(
+        Effect.tapError((error) =>
+          Effect.sync(() => {
+            refused.error = error;
+          }),
+        ),
+      ),
+  };
+  return yield* wakeMachine(resizing, sandboxId, { ...options, machineType }).pipe(
+    Effect.catch((error) => {
+      const original = refused.error;
+      if (original === null) return Effect.fail(error);
+      // Boat kept the VM at its size, so it comes back on that one rather than staying off.
+      return wakeMachine(api, sandboxId, {
+        ...(options?.signIns === undefined ? {} : { signIns: options.signIns }),
+        ...(options?.idleTtlSeconds === undefined
+          ? {}
+          : { idleTtlSeconds: options.idleTtlSeconds }),
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("boat cloud could not restart a VM on its size after a resize", {
+            sandboxId,
+            cause,
+          }),
+        ),
+        Effect.andThen(Effect.fail(original)),
+      );
     }),
   );
 });
@@ -996,12 +1062,12 @@ export const snapshotToBuild = Effect.fn("BoatCloud.snapshotToBuild")(function* 
 const waitStopped = (api: BoatApi, sandboxId: string) =>
   api.getSandbox(sandboxId).pipe(
     Effect.flatMap((sandbox) => {
-      if (sandbox === null) return Effect.fail(vmFailure("The setup VM no longer exists."));
+      if (sandbox === null) return Effect.fail(vmFailure("The VM no longer exists.", "gone"));
       if (sandbox.state === "archived" || sandbox.state === "stopped") return Effect.void;
       if (sandbox.state === "error") {
-        return Effect.fail(vmFailure("Boat could not stop the setup VM."));
+        return Effect.fail(vmFailure("Boat could not stop the VM."));
       }
-      return Effect.fail(vmFailure("Boat is still stopping the setup VM.", "stopping"));
+      return Effect.fail(vmFailure("Boat is still stopping the VM.", "stopping"));
     }),
     Effect.retry({
       schedule: Schedule.spaced(Duration.seconds(2)),
@@ -1010,7 +1076,7 @@ const waitStopped = (api: BoatApi, sandboxId: string) =>
     }),
     Effect.catchIf(
       (error) => error.code === "stopping",
-      () => Effect.fail(vmFailure("Boat did not stop the setup VM in 10 minutes.")),
+      () => Effect.fail(vmFailure("Boat did not stop the VM in 10 minutes.")),
     ),
   );
 

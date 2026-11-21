@@ -139,7 +139,8 @@ function failureMessage(result: Parameters<typeof squashAtomCommandFailure>[0]) 
   return error instanceof Error ? error.message : m(msg("An error occurred."));
 }
 
-function reportFailure(title: string, result: AtomCommandResult<unknown, unknown>) {
+/** A toast with Boat's own message for a command that failed. */
+export function reportBoatCloudFailure(title: string, result: AtomCommandResult<unknown, unknown>) {
   if (result._tag !== "Failure" || isAtomCommandInterrupted(result)) return;
   toastManager.add(
     stackedThreadToast({ type: "error", title, description: failureMessage(result) }),
@@ -567,7 +568,7 @@ function wakeBoatCloudMachine(input: {
       { label: serverEnvironment.wakeBoatCloud.label, reportFailure: false, reportDefect: true },
     );
     if (woken._tag === "Failure") {
-      reportFailure(m(msg("Could not wake the Boat machine")), woken);
+      reportBoatCloudFailure(m(msg("Could not wake the Boat machine")), woken);
       return false;
     }
     updateWake(environmentId, markAcquired);

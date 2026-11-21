@@ -17,6 +17,7 @@ import {
   type BoatCloudRootEnvironment,
   type BoatCloudRootEnvironmentEdits,
   type BoatCloudSnapshot,
+  type BoatCloudResizeMachineInput,
   type BoatCloudRunSetupInput,
   BoatCloudMachineState,
   type BoatCloudSession,
@@ -51,6 +52,7 @@ import {
   type ReportStep,
   latestCliRelease,
   makeSpareKeeper,
+  resizeMachine,
   snapshotToBuild,
   startMachine,
   startingSnapshot,
@@ -325,6 +327,10 @@ export class BoatCloudService extends Context.Service<
     readonly stopMachine: (sandboxId: string) => Effect.Effect<BoatCloudMachine, BoatCloudError>;
     /** Turns a managed VM on and starts its T3 server, without a pairing code. */
     readonly wakeMachine: (sandboxId: string) => Effect.Effect<BoatCloudMachine, BoatCloudError>;
+    /** Stops the VM and starts it again on another size. Its disk, threads and cost carry over. */
+    readonly resizeMachine: (
+      input: BoatCloudResizeMachineInput,
+    ) => Effect.Effect<BoatCloudMachine, BoatCloudError>;
     /**
      * Deletes a managed VM. A running one needs `force`. This machine keeps its backup, so a
      * thread's VM stays listed as gone and waking it restores it.
@@ -451,6 +457,12 @@ const make = Effect.gen(function* () {
   const observedMultipliers = new Map<string, number>();
   /** Live load of running VMs, measured only while a client watches. */
   const stats = new Map<string, BoatCloudMachineStats>();
+  /** The size each VM under resize moves to; in memory, so a restart never leaves one stuck. */
+  const resizing = new Map<string, BoatCloudMachineType>();
+  /** Bumped as each resize starts and ends, so a Boat read from before then is not applied to it. */
+  const resizes = new Map<string, number>();
+  const resizedSince = (seen: ReadonlyMap<string, number>, sandboxId: string) =>
+    resizing.has(sandboxId) || (resizes.get(sandboxId) ?? 0) !== (seen.get(sandboxId) ?? 0);
   let subscribers = 0;
   const starts = new Map<string, Array<BoatCloudStepProgress>>();
   /** Starts by request id, so a repeated request shares the first one's VM. */
@@ -532,6 +544,9 @@ const make = Effect.gen(function* () {
   const publish = Effect.gen(function* () {
     const connected = Option.isSome(yield* readKey);
     const local = yield* localSignIns.current;
+    const machines = state.machines.map((machine) =>
+      resizing.has(machine.sandboxId) ? { ...machine, state: "starting" as const } : machine,
+    );
     yield* SubscriptionRef.set(statusRef, {
       connected,
       account: connected ? state.account : null,
@@ -539,9 +554,10 @@ const make = Effect.gen(function* () {
         setup.status === "idle" && snapshotName !== null ? { ...setup, status: "ready" } : setup,
       snapshotReady: connected && snapshotName !== null,
       machines: connected
-        ? state.machines.map(({ acquiredAt: _acquiredAt, handOuts: _handOuts, ...machine }) => ({
+        ? machines.map(({ acquiredAt: _acquiredAt, handOuts: _handOuts, ...machine }) => ({
             ...machine,
             stats: machine.state === "running" ? (stats.get(machine.sandboxId) ?? null) : null,
+            resizingTo: resizing.get(machine.sandboxId) ?? null,
           }))
         : [],
       starts: [...starts].map(([requestId, steps]) => ({ requestId, steps })),
@@ -555,7 +571,7 @@ const make = Effect.gen(function* () {
       idleStopMinutes: state.idleStopMinutes,
       deleteStoppedAfterDays: state.deleteStoppedAfterDays,
       machineTypes: machineTypeOptions(connected ? limits : null, observedMultipliers),
-      environmentUsage: connected ? environmentUsageOf(state.machines, state.retired, stats) : [],
+      environmentUsage: connected ? environmentUsageOf(machines, state.retired, stats) : [],
       credit: connected ? creditOf(limits) : null,
       localSignIns: { enabled: state.useLocalSignIns, ...local },
     });
@@ -736,6 +752,7 @@ const make = Effect.gen(function* () {
   const reconcile = Effect.fn("BoatCloud.reconcile")(function* (api: BoatApi) {
     // A VM added after the list was read is missing from it only because it is new.
     const listedFrom = new Set(state.machines.map((machine) => machine.sandboxId));
+    const resizesAtList = new Map(resizes);
     const sandboxes = yield* api.listSandboxes(MACHINE_LABEL_FILTER);
     spares.reconcile(sandboxes);
     const byId = new Map(sandboxes.map((sandbox) => [sandbox.id, sandbox]));
@@ -751,7 +768,9 @@ const make = Effect.gen(function* () {
       const machines: Array<StoredMachine> = [];
       for (const machine of current.machines) {
         const sandbox = byId.get(machine.sandboxId);
-        if (sandbox) {
+        if (sandbox && resizedSince(resizesAtList, machine.sandboxId)) {
+          machines.push(machine);
+        } else if (sandbox) {
           machines.push({
             ...machine,
             state: machineStateOf(sandbox.state),
@@ -965,16 +984,20 @@ const make = Effect.gen(function* () {
       machines: current.machines.map((machine) => {
         const usage = byId.get(machine.sandboxId);
         if (usage === undefined) return machine;
-        const machineType = usage.sandboxType ?? machine.machineType;
-        const spec =
-          machineType !== null && isMachineType(machineType)
-            ? BOAT_MACHINE_SPECS[machineType]
-            : null;
+        // Only fills in an unknown size: Boat's list and a resize keep a known one current.
+        if (machine.machineType !== null || !usage.sandboxType) {
+          return {
+            ...machine,
+            usage: { seconds: usage.seconds, dollars: usage.dollars, updatedAt },
+          };
+        }
+        const machineType = usage.sandboxType;
+        const spec = isMachineType(machineType) ? BOAT_MACHINE_SPECS[machineType] : null;
         return {
           ...machine,
           machineType,
-          vcpu: machine.vcpu ?? spec?.vcpu ?? null,
-          memoryGB: machine.memoryGB ?? spec?.memoryGB ?? null,
+          vcpu: spec?.vcpu ?? machine.vcpu,
+          memoryGB: spec?.memoryGB ?? machine.memoryGB,
           usage: { seconds: usage.seconds, dollars: usage.dollars, updatedAt },
         };
       }),
@@ -1178,7 +1201,7 @@ const make = Effect.gen(function* () {
     for (const machine of state.machines) {
       // A VM this machine never handed out belongs to the holder that did.
       if (machine.state !== "running" || machine.acquiredAt === null) continue;
-      if (claims.has(machine.sandboxId)) continue;
+      if (claims.has(machine.sandboxId) || stopping.has(machine.sandboxId)) continue;
       const handedOutSecondsAgo = (nowMillis - Date.parse(machine.acquiredAt)) / 1000;
       // A start's VM that no client holds any more is asked early whether a thread came of it.
       const maybeUnused =
@@ -1857,6 +1880,8 @@ const make = Effect.gen(function* () {
     const api = yield* requireApi;
     return yield* Effect.gen(function* () {
       const machine = yield* managedMachine(api, sandboxId);
+      // A resize turns the VM back on, so a stop meanwhile would not hold.
+      if (resizing.has(sandboxId)) return yield* busy();
       if (machine.state === "running" || machine.state === "starting") {
         if (!(yield* backupAndStop(api, machine))) return yield* busy();
       }
@@ -1895,6 +1920,92 @@ const make = Effect.gen(function* () {
         }),
       () => release([sandboxId]),
     ).pipe(cloudError("Could not wake the Boat machine."));
+  });
+
+  /**
+   * Held as stopping throughout, so no start picks the VM, a wake waits for it, and the sweep,
+   * a stop and a delete leave it alone. Clients show `resizingTo` meanwhile.
+   */
+  const resizeManaged = Effect.fn("BoatCloud.resizeManaged")(function* (
+    input: BoatCloudResizeMachineInput,
+  ) {
+    const api = yield* requireApi;
+    const { sandboxId, machineType } = input;
+    return yield* Effect.gen(function* () {
+      const machine = yield* managedMachine(api, sandboxId);
+      if (machine.state === "gone") return yield* vmFailure("Boat deleted this VM.", "gone");
+      if (machine.machineType === machineType) return yield* publicMachine(sandboxId);
+      if (limits === null) yield* refreshLimits(api);
+      const option = machineTypeOptions(limits, observedMultipliers).find(
+        (candidate) => candidate.id === machineType,
+      );
+      if (option !== undefined && !option.available) {
+        return yield* vmFailure(
+          `Your Boat plan cannot run ${machineType} VMs${option.reason ? `: ${option.reason}` : ""}.`,
+          "machine_type",
+        );
+      }
+      const resized = Deferred.makeUnsafe<void>();
+      const began = yield* Effect.sync(() => {
+        if (claims.has(sandboxId) || stopping.has(sandboxId)) return false;
+        stopping.set(sandboxId, resized);
+        resizing.set(sandboxId, machineType);
+        resizes.set(sandboxId, (resizes.get(sandboxId) ?? 0) + 1);
+        stats.delete(sandboxId);
+        return true;
+      });
+      if (!began) return yield* busy();
+      const finish = Effect.suspend(() => {
+        resizing.delete(sandboxId);
+        resizes.set(sandboxId, (resizes.get(sandboxId) ?? 0) + 1);
+        stopping.delete(sandboxId);
+        return Deferred.succeed(resized, undefined);
+      });
+      // A failed resize may have restarted the VM on its old size, or left it stopped.
+      const settleFailure = Effect.gen(function* () {
+        yield* reconcile(api);
+        if (findMachine(sandboxId)?.state === "running") {
+          yield* updateMachine(sandboxId, { acquiredAt: yield* now });
+        }
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("boat cloud could not read a VM back after its resize failed", {
+            sandboxId,
+            cause,
+          }),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        yield* publish;
+        // No backup first: the disk comes straight back, and a backup on a VM short of memory is slow.
+        const woken = yield* resizeMachine(api, sandboxId, machineType, {
+          pair: false,
+          signIns: yield* vmSignIns,
+          idleTtlSeconds: idleTtlSeconds(),
+        });
+        const spec = BOAT_MACHINE_SPECS[machineType];
+        yield* updateMachine(sandboxId, {
+          environmentId: woken.environmentId,
+          httpBaseUrl: woken.httpBaseUrl,
+          state: "running",
+          acquiredAt: yield* now,
+          machineType,
+          vcpu: spec.vcpu,
+          memoryGB: spec.memoryGB,
+        });
+      }).pipe(
+        Effect.onExit((exit) =>
+          finish.pipe(
+            Effect.andThen(exit._tag === "Success" ? Effect.void : settleFailure),
+            Effect.andThen(publish),
+          ),
+        ),
+      );
+      yield* Effect.logInfo("boat cloud resized a VM", { sandboxId, machineType });
+      // Its cost now grows at the new size's rate.
+      yield* refreshUsage(api, [sandboxId]).pipe(Effect.forkIn(scope));
+      return yield* publicMachine(sandboxId);
+    }).pipe(cloudError("Could not resize the Boat machine."));
   });
 
   const deleteMachine = Effect.fn("BoatCloud.deleteMachine")(function* (input: {
@@ -2123,6 +2234,7 @@ const make = Effect.gen(function* () {
     updateRootEnvironment,
     stopMachine,
     wakeMachine: wakeManaged,
+    resizeMachine: resizeManaged,
     deleteMachine,
     refreshUsage: refreshUsageNow,
     computeUsage,

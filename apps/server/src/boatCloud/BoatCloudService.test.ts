@@ -1,7 +1,7 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import { EnvironmentId } from "@t3tools/contracts";
+import { type BoatCloudMachine, EnvironmentId } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -46,13 +46,16 @@ interface FakeSandbox {
   state: string;
   environment: string;
   name: string;
+  type?: string;
+  /** Boat refuses to resume the VM on this size, as when its data does not fit. */
+  refusesType?: string;
 }
 
 /**
  * Boat with the given VMs and one ready snapshot. Calls are recorded as `METHOD path`, a
  * command as `exec <sandbox>`, and every body in `bodies`. `onExec` answers commands and
  * `onCall` sees every other call; `answer` replies to one first when it returns a body. A
- * created VM is `vm-new`, and uploads to the signed URL fail.
+ * created VM is `vm-new`, and uploads to the signed URL fail. A resume takes the size it asks for.
  */
 const fakeBoat = (
   sandboxes: Record<string, FakeSandbox>,
@@ -115,7 +118,7 @@ const fakeBoat = (
         return reply({
           ok: true,
           sandboxId: id,
-          sandboxType: "default",
+          sandboxType: sandboxes[id]?.type ?? "default",
           billingMultiplier: 1,
           since: "2026-11-18T00:00:00.000Z",
           until: "2026-11-18T01:00:00.000Z",
@@ -136,6 +139,15 @@ const fakeBoat = (
       if (path === "/sandboxes") return reply({ sandboxes: Object.keys(sandboxes).map(listed) });
       if (path.endsWith("/upload-url")) return reply({ url: "https://files.example/upload" });
       if (path.endsWith("/stop")) sandboxes[id]!.state = "stopped";
+      if (path.endsWith("/resume")) {
+        const sandbox = sandboxes[id]!;
+        if (body.type !== undefined && body.type === sandbox.refusesType) {
+          return reply({ code: "sandbox_too_small" }, 409);
+        }
+        sandbox.state = "ready";
+        if (typeof body.type === "string") sandbox.type = body.type;
+        return reply({ sandbox: listed(id) });
+      }
       if (request.method === "DELETE") delete sandboxes[id];
       if (path === `/sandboxes/${id}` && request.method === "GET") {
         return sandboxes[id] ? reply({ sandbox: listed(id) }) : reply({ code: "not_found" }, 404);
@@ -681,6 +693,191 @@ it.layer(dependencies)("BoatCloudService", (it) => {
       );
     }),
   );
+});
+
+describe("resizeMachine", () => {
+  const SERVER_START = "systemctl --user start t3code.service";
+  const STOP_SERVER = "systemctl --user stop t3code.service";
+  const smallVm = {
+    ...storedMachine("vm-1", "env-1", "base"),
+    machineType: "small",
+    vcpu: 2,
+    memoryGB: 4,
+  };
+  /** vm-1 on Boat, small, whose server answers as env-1; the server stop is recorded as a call. */
+  const smallBoat = (
+    vm: Partial<FakeSandbox> = {},
+    onCall?: (call: string) => Effect.Effect<void>,
+    onExec: (script: string) => Effect.Effect<void> = () => Effect.void,
+  ) => {
+    const boat = fakeBoat(
+      { "vm-1": { state: "ready", environment: "base", name: "Boat cloud", type: "small", ...vm } },
+      (_sandboxId, script) =>
+        onExec(script).pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              if (script.includes(STOP_SERVER) && !script.includes(SERVER_START)) {
+                boat.calls.push("stop server");
+              }
+              return script.includes(SERVER_START)
+                ? JSON.stringify({ environmentId: "env-1" })
+                : "";
+            }),
+          ),
+        ),
+      onCall,
+    );
+    return boat;
+  };
+  const machineOf = (status: { readonly machines: ReadonlyArray<BoatCloudMachine> }) =>
+    status.machines.find((machine) => machine.sandboxId === "vm-1");
+
+  it.layer(dependencies)((it) => {
+    it.effect("stops T3 Code and the VM, then starts it on the new size with its specs", () =>
+      Effect.gen(function* () {
+        const directory = yield* seed([smallVm]);
+        const duringResume: Array<BoatCloudMachine | undefined> = [];
+        let readStatus: Effect.Effect<void> = Effect.void;
+        const boat = smallBoat({}, (call) =>
+          call === "POST /sandboxes/vm-1/resume" ? Effect.suspend(() => readStatus) : Effect.void,
+        );
+
+        const resized = yield* withService(boat.http, (service) =>
+          Effect.gen(function* () {
+            readStatus = Stream.runHead(service.changes).pipe(
+              Effect.map((status) => void duringResume.push(machineOf(Option.getOrThrow(status)))),
+            );
+            return yield* service.resizeMachine({ sandboxId: "vm-1", machineType: "large" });
+          }),
+        );
+
+        assert.deepInclude(duringResume[0], { state: "starting", resizingTo: "large" });
+        assert.deepInclude(resized, {
+          state: "running",
+          machineType: "large",
+          vcpu: 8,
+          memoryGB: 16,
+          resizingTo: null,
+        });
+        const order = ["stop server", "POST /sandboxes/vm-1/stop", "POST /sandboxes/vm-1/resume"];
+        assert.deepStrictEqual(
+          boat.calls.filter((call) => order.includes(call)),
+          order,
+        );
+        assert.isTrue(boat.bodies.some((body) => (body as { type?: string }).type === "large"));
+        // No backup before the stop.
+        assert.notInclude(boat.calls, "POST /sandboxes/vm-1/files/download-url");
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const stored = JSON.parse(yield* fs.readFileString(path.join(directory, "state.json")));
+        assert.deepInclude(stored.machines[0], { machineType: "large", vcpu: 8, memoryGB: 16 });
+        assert.notProperty(stored.machines[0], "resizingTo");
+      }),
+    );
+
+    it.effect("starts the VM again on its old size when Boat refuses the new one", () =>
+      Effect.gen(function* () {
+        yield* seed([smallVm]);
+        const boat = smallBoat({ refusesType: "large" });
+
+        const { error, status } = yield* withService(boat.http, (service) =>
+          Effect.gen(function* () {
+            const error = yield* Effect.flip(
+              service.resizeMachine({ sandboxId: "vm-1", machineType: "large" }),
+            );
+            return { error, status: (yield* service.inspect).status };
+          }),
+        );
+
+        assert.include(error.message, "sandbox_too_small");
+        assert.deepStrictEqual(
+          boat.calls.filter((call) => call === "POST /sandboxes/vm-1/resume").length,
+          2,
+        );
+        assert.deepInclude(machineOf(status), {
+          state: "running",
+          machineType: "small",
+          vcpu: 2,
+          memoryGB: 4,
+          resizingTo: null,
+        });
+      }),
+    );
+
+    it.effect("refuses a size the plan cannot start, and leaves the same size alone", () =>
+      Effect.gen(function* () {
+        yield* seed([smallVm]);
+        const boat = smallBoat();
+
+        const { refused, same } = yield* withService(boat.http, (service) =>
+          Effect.gen(function* () {
+            const refused = yield* Effect.flip(
+              service.resizeMachine({ sandboxId: "vm-1", machineType: "xlarge" }),
+            );
+            const same = yield* service.resizeMachine({ sandboxId: "vm-1", machineType: "small" });
+            return { refused, same };
+          }),
+        );
+
+        assert.include(refused.message, "needs the $100/month plan or higher");
+        assert.deepInclude(same, { state: "running", machineType: "small" });
+        assert.notInclude(boat.calls, "POST /sandboxes/vm-1/stop");
+        assert.notInclude(boat.calls, "POST /sandboxes/vm-1/resume");
+      }),
+    );
+
+    it.effect("is refused while a stop holds the VM, and holds it against a stop itself", () =>
+      Effect.gen(function* () {
+        yield* seed([smallVm]);
+        const backingUp = yield* Deferred.make<void>();
+        const backedUp = yield* Deferred.make<void>();
+        const resuming = yield* Deferred.make<void>();
+        const resumed = yield* Deferred.make<void>();
+        const boat = smallBoat(
+          {},
+          (call) =>
+            call === "POST /sandboxes/vm-1/resume"
+              ? Deferred.succeed(resuming, undefined).pipe(Effect.andThen(Deferred.await(resumed)))
+              : Effect.void,
+          (script) =>
+            script.includes("tar -czf")
+              ? Deferred.succeed(backingUp, undefined).pipe(
+                  Effect.andThen(Deferred.await(backedUp)),
+                )
+              : Effect.void,
+        );
+
+        const { duringStop, duringResize, resized } = yield* withService(boat.http, (service) =>
+          Effect.gen(function* () {
+            const stopping = yield* Effect.forkChild(service.stopMachine("vm-1"));
+            yield* Deferred.await(backingUp);
+            const duringStop = yield* Effect.flip(
+              service.resizeMachine({ sandboxId: "vm-1", machineType: "large" }),
+            );
+            yield* Deferred.succeed(backedUp, undefined);
+            yield* Fiber.join(stopping);
+
+            // A stopped VM starts on the new size.
+            const resizing = yield* Effect.forkChild(
+              service.resizeMachine({ sandboxId: "vm-1", machineType: "large" }),
+            );
+            yield* Deferred.await(resuming);
+            const duringResize = yield* Effect.flip(service.stopMachine("vm-1"));
+            yield* Deferred.succeed(resumed, undefined);
+            return { duringStop, duringResize, resized: yield* Fiber.join(resizing) };
+          }),
+        );
+
+        assert.include(duringStop.message, "it is stopping");
+        assert.include(duringResize.message, "it is stopping");
+        assert.deepInclude(resized, { state: "running", machineType: "large", resizingTo: null });
+        assert.strictEqual(
+          boat.calls.filter((call) => call === "POST /sandboxes/vm-1/stop").length,
+          1,
+        );
+      }),
+    );
+  });
 });
 
 describe("environmentUsageOf", () => {

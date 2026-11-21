@@ -58,6 +58,11 @@ export const boatCloudWakingAtom = Atom.family((_environmentId: EnvironmentId | 
   Atom.make(false).pipe(Atom.keepAlive),
 );
 
+/** Whether this app is moving a VM to another size, so its thread shows "Resizing". */
+export const boatCloudResizingAtom = Atom.family((_environmentId: EnvironmentId | null) =>
+  Atom.make(false).pipe(Atom.keepAlive),
+);
+
 /**
  * Reads every connected machine's Boat status once, without keeping the subscription, which
  * samples VMs for as long as it is open. Resolves with the machines that answered in time.
@@ -96,12 +101,13 @@ export function readBoatCloudHoldersOnce(
   ).then((holders) => holders.filter((holder) => holder !== null));
 }
 
-export type BoatCloudThreadMachineState = "awake" | "sleeping" | "waking";
+export type BoatCloudThreadMachineState = "awake" | "sleeping" | "waking" | "resizing";
 
 /** A thread list row's Boat VM: null when the thread is not on one. */
 export const boatCloudEnvironmentStateAtom = Atom.family((environmentId: EnvironmentId) =>
   Atom.make((get): BoatCloudThreadMachineState | null => {
     if (!get(boatCloudMachinesAtom).has(environmentId)) return null;
+    if (get(boatCloudResizingAtom(environmentId))) return "resizing";
     if (get(boatCloudWakingAtom(environmentId))) return "waking";
     // A VM that is not reachable stopped itself after its threads went quiet.
     return get(connectedEnvironmentIdsAtom).includes(environmentId) ? "awake" : "sleeping";

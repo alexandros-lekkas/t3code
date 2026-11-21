@@ -140,10 +140,13 @@ const BoatCloudSnapshotRebuildTool = Tool.make("t3_boat_cloud_snapshot_rebuild",
 const BoatCloudMachineTool = Tool.make("t3_boat_cloud_machine", {
   ...shared,
   description:
-    "Stop (after a backup), wake, or delete a Boat VM this T3 Code manages. A deleted VM with a backup stays restorable by waking its thread. Deleting a running VM needs `force: true`; delete needs a live full-access or default caller thread.",
+    "Stop (after a backup), wake, resize, or delete a Boat VM this T3 Code manages. Resize restarts the VM on `machineType`: whatever runs on it stops, its disk and threads carry over, and cut-short turns continue. A deleted VM with a backup stays restorable by waking its thread. Deleting a running VM needs `force: true`; delete needs a live full-access or default caller thread.",
   parameters: Schema.Struct({
-    action: Schema.Literals(["stop", "wake", "delete"]),
+    action: Schema.Literals(["stop", "wake", "resize", "delete"]),
     sandboxId: SandboxId,
+    machineType: Schema.optionalKey(
+      BoatCloudMachineType.annotate({ description: "The size to resize to; resize only." }),
+    ),
     force: Schema.optionalKey(Schema.Boolean),
   }),
   success: Schema.Struct({ machine: Schema.NullOr(Machine) }),

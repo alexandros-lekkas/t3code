@@ -1549,7 +1549,9 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
                   ? gt("Sleeping", { $context: "Boat VM state" })
                   : boatCloudState === "waking"
                     ? gt("Waking", { $context: "Boat VM state" })
-                    : null,
+                    : boatCloudState === "resizing"
+                      ? gt("Resizing", { $context: "Boat VM state" })
+                      : null,
               ]
                 .filter(Boolean)
                 .join(" · ")}

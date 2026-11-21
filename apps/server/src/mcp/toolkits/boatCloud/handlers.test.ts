@@ -85,6 +85,12 @@ const run = (runtimeMode: RuntimeMode) =>
           Effect.sync(() => machineCalls.push(`stop ${sandboxId}`)).pipe(
             Effect.andThen(Effect.fail(new BoatCloudError({ message: "Boat deleted this VM." }))),
           ),
+        resizeMachine: ({ sandboxId, machineType }) =>
+          Effect.sync(() => machineCalls.push(`resize ${sandboxId} ${machineType}`)).pipe(
+            Effect.andThen(
+              Effect.fail(new BoatCloudError({ message: "Your Boat plan cannot run xlarge VMs." })),
+            ),
+          ),
         deleteMachine: ({ sandboxId, force }) =>
           Effect.sync(() => {
             machineCalls.push(`delete ${sandboxId} ${force}`);
@@ -114,6 +120,15 @@ const run = (runtimeMode: RuntimeMode) =>
           setVariables: [{ key: "API_KEY", value: "x", secretRef: ref }],
         }),
         stop: yield* call("t3_boat_cloud_machine", { action: "stop", sandboxId: "vm-1" }),
+        resize: yield* call("t3_boat_cloud_machine", {
+          action: "resize",
+          sandboxId: "vm-1",
+          machineType: "xlarge",
+        }),
+        resizeWithoutSize: yield* call("t3_boat_cloud_machine", {
+          action: "resize",
+          sandboxId: "vm-1",
+        }),
         deleted: yield* call("t3_boat_cloud_machine", {
           action: "delete",
           sandboxId: "vm-1",
@@ -152,18 +167,25 @@ it.effect("hands secrets to the root environment write-only, consuming each secr
       code: "orchestration_error",
       message: "Boat deleted this VM.",
     });
-    expect(result.machineCalls).toEqual(["stop vm-1", "delete vm-1 true"]);
+    expect(result.resize).toMatchObject({
+      code: "orchestration_error",
+      message: "Your Boat plan cannot run xlarge VMs.",
+    });
+    expect(result.resizeWithoutSize).toMatchObject({ code: "invalid_request" });
+    expect(result.machineCalls).toEqual(["stop vm-1", "resize vm-1 xlarge", "delete vm-1 true"]);
     expect(result.deleted).toEqual({ machine: null });
   }),
 );
 
-it.effect("lets a thread below full access stop a VM but not edit Boat cloud or delete one", () =>
-  Effect.gen(function* () {
-    const result = yield* run("auto-accept-edits");
-    expect(result.updated).toMatchObject({ code: "capability_denied" });
-    expect(result.deleted).toMatchObject({ code: "capability_denied" });
-    expect(result.updates).toEqual([]);
-    expect(result.consumed).toEqual([]);
-    expect(result.machineCalls).toEqual(["stop vm-1"]);
-  }),
+it.effect(
+  "lets a thread below full access stop or resize a VM but not edit Boat cloud or delete one",
+  () =>
+    Effect.gen(function* () {
+      const result = yield* run("auto-accept-edits");
+      expect(result.updated).toMatchObject({ code: "capability_denied" });
+      expect(result.deleted).toMatchObject({ code: "capability_denied" });
+      expect(result.updates).toEqual([]);
+      expect(result.consumed).toEqual([]);
+      expect(result.machineCalls).toEqual(["stop vm-1", "resize vm-1 xlarge"]);
+    }),
 );

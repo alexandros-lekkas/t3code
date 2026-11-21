@@ -85,7 +85,11 @@ describe("RPC authorization scopes", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.boatCloudRefreshUsage)).toBe(
       AuthOrchestrationReadScope,
     );
-    for (const method of [WS_METHODS.boatCloudStopMachine, WS_METHODS.boatCloudWakeMachine]) {
+    for (const method of [
+      WS_METHODS.boatCloudStopMachine,
+      WS_METHODS.boatCloudWakeMachine,
+      WS_METHODS.boatCloudResizeMachine,
+    ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
     }
     expect(requiredScopeForRpcMethod(WS_METHODS.boatCloudDeleteMachine)).toBe(

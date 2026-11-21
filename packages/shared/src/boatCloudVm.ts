@@ -792,6 +792,10 @@ for p in ${BACKUP_PATHS.join(" ")}; do [ -e "$p" ] && paths="$paths $p"; done
 umask 077
 tar -czf ${VM_BACKUP_ARCHIVE} --exclude=node_modules --exclude=.t3/userdata/logs --exclude=.t3/userdata/secrets $paths`;
 
+/** Stops the T3 server, whose shutdown records the turns it cuts short for its next start. */
+export const stopServerScript = `${USER_BUS}
+systemctl --user stop t3code.service`;
+
 export const restoreScript = `set -e
 ${USER_BUS}
 systemctl --user stop t3code.service

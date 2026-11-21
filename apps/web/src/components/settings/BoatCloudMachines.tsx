@@ -11,14 +11,22 @@ import { useState } from "react";
 
 import { cn } from "~/lib/utils";
 import { useNowMinute } from "../../hooks/useNowMinute";
+import { threadRuntimeIsActive } from "@t3tools/client-runtime/state/shell";
 import { useVisibleThreadShells } from "../../state/entities";
-import { boatCloudMachineOfThread } from "../../boatCloudMachines.logic";
+import {
+  type BoatCloudMachineStateLabel,
+  boatCloudMachineStateLabel,
+  boatCloudResizeBlocked,
+  boatCloudThreadsByMachine,
+} from "../../boatCloudMachines.logic";
 import { useBoatCloudThreadMachines } from "../../state/boatCloudThreads";
 import { useEnvironments } from "../../state/environments";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
+import { BoatCloudResizeItems, useBoatCloudResize } from "../BoatCloudResize";
 import {
+  availableBoatCloudMachineTypes,
   formatBoatCloudCost,
   formatHourlyPrice,
   useBoatCloudSizeLine,
@@ -34,23 +42,33 @@ import {
   AlertDialogTitle,
 } from "../ui/alert-dialog";
 import { Button } from "../ui/button";
-import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
+import {
+  Menu,
+  MenuItem,
+  MenuPopup,
+  MenuSub,
+  MenuSubPopup,
+  MenuSubTrigger,
+  MenuTrigger,
+} from "../ui/menu";
 import { Spinner } from "../ui/spinner";
 import { SettingsRow, SettingsSection } from "./settingsLayout";
 
-const MACHINE_STATE: Record<BoatCloudMachine["state"], string> = {
+const MACHINE_STATE: Record<BoatCloudMachineStateLabel, string> = {
   running: msg("Running", { $context: "VM state" }),
   starting: msg("Waking", { $context: "VM state" }),
   stopped: msg("Sleeping", { $context: "VM state" }),
   gone: msg("Saved copy", { $context: "VM state" }),
+  resizing: msg("Resizing", { $context: "VM state" }),
 };
 
-/** Green while the VM runs and bills, amber while it wakes, muted while it sleeps. */
-const MACHINE_STATE_DOT: Record<BoatCloudMachine["state"], string> = {
+/** Green while the VM runs and bills, amber while it wakes or resizes, muted while it sleeps. */
+const MACHINE_STATE_DOT: Record<BoatCloudMachineStateLabel, string> = {
   running: "bg-success",
   starting: "bg-warning",
   stopped: "bg-muted-foreground/40",
   gone: "bg-muted-foreground/40",
+  resizing: "bg-warning",
 };
 
 const repositoryName = (repository: string) => repository.split("/").slice(1).join("/");
@@ -59,6 +77,7 @@ interface MachineThread {
   readonly environmentId: EnvironmentId;
   readonly id: string;
   readonly title: string;
+  readonly running: boolean;
 }
 
 /** The listed cloud threads on each VM, by sandbox. */
@@ -71,21 +90,23 @@ function useThreadsByMachine(status: BoatCloudStatus) {
       environment.boatCloud ? [environment.environmentId] : [],
     ),
   );
-  const byMachine = new Map<string, Array<MachineThread>>();
-  for (const shell of shells) {
-    if (shell.lineage.relationshipToParent === "subagent") continue;
-    const machine = boatCloudMachineOfThread({
-      status,
-      threadMachines,
-      ref: { environmentId: shell.environmentId, threadId: shell.id },
-      onBoatCloud: boatCloudEnvironments.has(shell.environmentId),
-    });
-    if (machine === null) continue;
-    const list = byMachine.get(machine.sandboxId) ?? [];
-    list.push(shell);
-    byMachine.set(machine.sandboxId, list);
-  }
-  return byMachine;
+  const byMachine = boatCloudThreadsByMachine({
+    status,
+    threadMachines,
+    shells,
+    onBoatCloud: (environmentId) => boatCloudEnvironments.has(environmentId),
+  });
+  return new Map(
+    [...byMachine].map(([sandboxId, list]): [string, ReadonlyArray<MachineThread>] => [
+      sandboxId,
+      list.map((shell) => ({
+        environmentId: shell.environmentId,
+        id: shell.id,
+        title: shell.title,
+        running: threadRuntimeIsActive(shell.runtime),
+      })),
+    ]),
+  );
 }
 
 function MachineRow({
@@ -108,8 +129,12 @@ function MachineRow({
   const sizeLine = useBoatCloudSizeLine();
   const stop = useAtomCommand(serverEnvironment.boatCloudStopMachine);
   const wake = useAtomCommand(serverEnvironment.boatCloudWakeMachine);
+  const resize = useBoatCloudResize(holderEnvironmentId);
   const [busy, setBusy] = useState(false);
-  const state = MACHINE_STATE[machine.state];
+  const resizeSent = resize.resizeSent(machine.sandboxId);
+  const stateLabel = boatCloudMachineStateLabel(machine, resizeSent);
+  const state = MACHINE_STATE[stateLabel];
+  const resizable = resize.allowed && availableBoatCloudMachineTypes(machineTypes).length > 0;
   const repositories = machine.repositories.map(repositoryName).join(", ");
   const first = threads[0];
   const name = first?.title ?? (repositories || gt("Ready spare"));
@@ -157,40 +182,70 @@ function MachineRow({
         <span className="flex items-center gap-1.5">
           <span
             aria-hidden
-            className={cn("size-1.5 shrink-0 rounded-full", MACHINE_STATE_DOT[machine.state])}
+            className={cn("size-1.5 shrink-0 rounded-full", MACHINE_STATE_DOT[stateLabel])}
           />
           {[m(state), details].filter(Boolean).join(" · ")}
         </span>
       }
       control={
-        <Menu>
-          <MenuTrigger
-            render={
-              <Button
-                size="icon-sm"
-                variant="ghost-muted"
-                disabled={busy}
-                aria-label={gt("Machine actions")}
-              />
-            }
-          >
-            {busy ? <Spinner aria-hidden size="xs" /> : <MoreVertical aria-hidden />}
-          </MenuTrigger>
-          <MenuPopup align="end">
-            {machine.state === "running" ? (
-              <MenuItem onClick={() => void run(stop)}>
-                <T>Stop</T>
+        <>
+          <Menu>
+            <MenuTrigger
+              render={
+                <Button
+                  size="icon-sm"
+                  variant="ghost-muted"
+                  disabled={busy || resizeSent}
+                  aria-label={gt("Machine actions")}
+                />
+              }
+            >
+              {busy || resizeSent ? (
+                <Spinner aria-hidden size="xs" />
+              ) : (
+                <MoreVertical aria-hidden />
+              )}
+            </MenuTrigger>
+            <MenuPopup align="end">
+              {machine.state === "running" ? (
+                <MenuItem onClick={() => void run(stop)}>
+                  <T>Stop</T>
+                </MenuItem>
+              ) : machine.state === "stopped" || machine.state === "gone" ? (
+                <MenuItem onClick={() => void run(wake)}>
+                  <T>Wake</T>
+                </MenuItem>
+              ) : null}
+              {resizable ? (
+                <MenuSub>
+                  <MenuSubTrigger disabled={boatCloudResizeBlocked(machine)}>
+                    <T>Resize</T>
+                  </MenuSubTrigger>
+                  <MenuSubPopup>
+                    <BoatCloudResizeItems
+                      machine={machine}
+                      machineTypes={machineTypes}
+                      onChoose={(machineType) =>
+                        resize.choose({
+                          machine,
+                          machineType,
+                          threads,
+                          shared:
+                            environmentUsage.find((entry) => entry.sandboxId === machine.sandboxId)
+                              ?.shared === true,
+                        })
+                      }
+                    />
+                  </MenuSubPopup>
+                </MenuSub>
+              ) : null}
+              <MenuItem variant="destructive" onClick={() => onDelete(machine, name)}>
+                <T>Delete</T>
               </MenuItem>
-            ) : machine.state === "stopped" || machine.state === "gone" ? (
-              <MenuItem onClick={() => void run(wake)}>
-                <T>Wake</T>
-              </MenuItem>
-            ) : null}
-            <MenuItem variant="destructive" onClick={() => onDelete(machine, name)}>
-              <T>Delete</T>
-            </MenuItem>
-          </MenuPopup>
-        </Menu>
+            </MenuPopup>
+          </Menu>
+          {resize.dialog}
+        </>
       }
     />
   );

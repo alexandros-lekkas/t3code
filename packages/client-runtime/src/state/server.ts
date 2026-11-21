@@ -1903,6 +1903,10 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:boat-cloud:wake-machine",
       tag: WS_METHODS.boatCloudWakeMachine,
     }),
+    boatCloudResizeMachine: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:boat-cloud:resize-machine",
+      tag: WS_METHODS.boatCloudResizeMachine,
+    }),
     boatCloudDeleteMachine: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:boat-cloud:delete-machine",
       tag: WS_METHODS.boatCloudDeleteMachine,

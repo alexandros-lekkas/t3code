@@ -319,7 +319,7 @@ export interface ThreadDetailScreenProps {
   readonly onSendCommand: (text: string) => Promise<MessageId | null>;
   readonly onReconnectEnvironment: () => void;
   /** Set while the thread's Boat VM is stopped; it reads as asleep, not disconnected. */
-  readonly boatCloudSleep?: "sleeping" | "waking" | null;
+  readonly boatCloudSleep?: "sleeping" | "waking" | "resizing" | null;
   readonly canSwitchThreadProvider: boolean;
   readonly onRespondToApproval: ApprovalResponder;
   readonly onSelectUserInputOption: (

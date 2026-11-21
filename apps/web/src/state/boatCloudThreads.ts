@@ -83,6 +83,11 @@ export function useBoatCloudThreadMachines(): Readonly<Record<string, string>> {
   return useAtomValue(threadMachinesAtom);
 }
 
+/** The same, read once, for a handler that should not re-render on every change. */
+export function readBoatCloudThreadMachines(): Readonly<Record<string, string>> {
+  return appAtomRegistry.get(threadMachinesAtom);
+}
+
 /** Call only with a thread on a Boat cloud VM; `sandboxId` when this browser started it there. */
 export function rememberOpenedBoatCloudThread(ref: ScopedThreadRef, sandboxId?: string): void {
   if (sandboxId !== undefined) rememberThreadMachine(ref, sandboxId);

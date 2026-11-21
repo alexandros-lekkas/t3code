@@ -441,6 +441,10 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
     "boat-cloud-update",
   ),
   t3_boat_cloud_machine_wake: tool(["Wake", "Waking", "Woke", "a Boat VM"], "boat-cloud-update"),
+  t3_boat_cloud_machine_resize: tool(
+    ["Resize", "Resizing", "Resized", "a Boat VM"],
+    "boat-cloud-update",
+  ),
   t3_boat_cloud_machine_delete: tool(
     ["Delete", "Deleting", "Deleted", "a Boat VM"],
     "boat-cloud-update",

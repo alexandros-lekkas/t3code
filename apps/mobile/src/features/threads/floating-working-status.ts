@@ -66,7 +66,7 @@ export function connectionFloatingStatus(
     readonly environmentLabel: string | null;
     readonly onReconnect: () => void;
     /** Set while the thread's Boat VM is stopped. */
-    readonly boatCloudSleep?: "sleeping" | "waking" | null;
+    readonly boatCloudSleep?: "sleeping" | "waking" | "resizing" | null;
   },
   resolve: MessageResolver = m,
 ): FloatingWorkingStatus | null {
@@ -84,6 +84,14 @@ export function connectionFloatingStatus(
     input.connectionState !== "unsupported" &&
     input.connectionState !== "connected"
   ) {
+    if (input.boatCloudSleep === "resizing") {
+      return {
+        kind: "connection",
+        tone: "waking",
+        label: resolve(msg("Resizing {environmentLabel}…", { environmentLabel })),
+        onPress: input.onReconnect,
+      };
+    }
     return input.boatCloudSleep === "waking"
       ? {
           kind: "connection",

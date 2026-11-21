@@ -3,8 +3,10 @@ import type { MenuAction } from "@react-native-menu/menu";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import {
   type BoatCloudMachine,
+  type BoatCloudMachineType,
   type BoatCloudMachineTypeOption,
   boatCloudUsageReadAt,
+  type EnvironmentId,
 } from "@t3tools/contracts";
 import { useGT, useMessages } from "gt-react-native";
 import { useEffect, useState } from "react";
@@ -16,7 +18,9 @@ import { ControlPill } from "../../components/ui/ControlPill";
 import * as Dialog from "../../components/ui/Dialog";
 import { Menu } from "../../components/ui/Menu";
 import { RowPressable } from "../../components/ui/RowPressable";
+import { environmentCatalog } from "../../connection/catalog";
 import { cn } from "../../lib/cn";
+import { appAtomRegistry } from "../../state/atom-registry";
 import { serverEnvironment } from "../../state/server";
 import { environmentThreadShells } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -26,6 +30,7 @@ import { useVisibleSecondClock } from "../threads/use-visible-second-clock";
 import {
   boatCloudHoldersAtom,
   boatCloudMachinesAtom,
+  boatCloudResizingAtom,
   noteBoatCloudHolders,
 } from "../boatCloud/boatCloudManaged";
 import {
@@ -39,10 +44,12 @@ import {
   mergeBoatCloudMachines,
 } from "../boatCloud/boatCloudMachineModel";
 import { useBoatCloudMachineTypeLabel } from "../boatCloud/BoatCloudMachineTypes";
+import { availableMachineTypes } from "../boatCloud/machineTypeChoice";
 import {
   deletePhoneBoatCloudMachine,
   phoneBoatCloudAtom,
   refreshPhoneBoatCloud,
+  resizePhoneBoatCloudMachine,
   stopPhoneBoatCloudMachine,
   wakePhoneBoatCloudMachine,
 } from "../boatCloud/phoneBoatCloud";
@@ -78,7 +85,9 @@ function MachineStateDot(props: { readonly state: BoatCloudMachine["state"] }) {
 function MachineRow(props: {
   readonly managed: BoatCloudManagedMachine;
   readonly threads: ReadonlyArray<EnvironmentThreadShell>;
-  readonly option: BoatCloudMachineTypeOption | undefined;
+  readonly machineTypes: ReadonlyArray<BoatCloudMachineTypeOption>;
+  /** The environment the VM serves, whose threads show "Resizing" while this app resizes it. */
+  readonly environmentId: EnvironmentId | undefined;
   readonly separated: boolean;
 }) {
   const gt = useGT();
@@ -87,9 +96,11 @@ function MachineRow(props: {
   const selectDetail = useSelectWorkspaceDetail();
   const { machine, holderEnvironmentId } = props.managed;
   const [busy, setBusy] = useState(false);
+  const [resizingHere, setResizingHere] = useState(false);
   const stop = useAtomCommand(serverEnvironment.boatCloudStopMachine, gt("Stop the VM"));
   const wake = useAtomCommand(serverEnvironment.boatCloudWakeMachine, gt("Wake the VM"));
   const remove = useAtomCommand(serverEnvironment.boatCloudDeleteMachine, gt("Delete the VM"));
+  const resize = useAtomCommand(serverEnvironment.boatCloudResizeMachine, gt("Resize the VM"));
 
   const thread = props.threads[0];
   const repositories = machine.repositories.map(repositoryName).join(", ");
@@ -100,11 +111,12 @@ function MachineRow(props: {
     : repositories || gt("Ready spare");
   const spare = !thread && !repositories;
   const type = machine.machineType;
+  const option = props.machineTypes.find((candidate) => candidate.id === type);
   const meta = [
     type === null ? null : isBoatCloudMachineType(type) ? machineTypeLabel(type) : type,
     machine.vcpu === null ? null : gt("{vcpu} vCPU", { vcpu: machine.vcpu }),
     machine.memoryGB === null ? null : gt("{memory} GB", { memory: machine.memoryGB }),
-    formatBoatCloudHourly(props.option),
+    formatBoatCloudHourly(option),
     machine.usage === null
       ? null
       : formatBoatCloudCost(machine.usage.seconds, machine.usage.dollars),
@@ -112,6 +124,7 @@ function MachineRow(props: {
     .filter(Boolean)
     .join(" · ");
   const running = machine.state === "running" || machine.state === "starting";
+  const resizing = machine.resizingTo !== null || resizingHere;
 
   const run = async (action: () => Promise<unknown>) => {
     setBusy(true);
@@ -129,6 +142,36 @@ function MachineRow(props: {
       holderEnvironmentId === null
         ? wakePhoneBoatCloudMachine(machine.sandboxId)
         : wake({ environmentId: holderEnvironmentId, input: { sandboxId: machine.sandboxId } }),
+    );
+  const resizeMachine = async (machineType: BoatCloudMachineType) => {
+    const { environmentId } = props;
+    setResizingHere(true);
+    if (environmentId) appAtomRegistry.set(boatCloudResizingAtom(environmentId), true);
+    await run(() =>
+      holderEnvironmentId === null
+        ? resizePhoneBoatCloudMachine(machine.sandboxId, machineType)
+        : resize({
+            environmentId: holderEnvironmentId,
+            input: { sandboxId: machine.sandboxId, machineType },
+          }),
+    );
+    setResizingHere(false);
+    if (!environmentId) return;
+    appAtomRegistry.set(boatCloudResizingAtom(environmentId), false);
+    // The VM's server restarted, so its saved connection retries now instead of backing off.
+    void environmentCatalog.retryNow.run(appAtomRegistry, environmentId);
+  };
+  const confirmResize = (machineType: BoatCloudMachineType) =>
+    Dialog.alert(
+      gt("Resize {name} to {size}?", { name, size: machineTypeLabel(machineType) }),
+      gt("Resizing restarts the VM. Running turns are interrupted and continue once it is back."),
+      [
+        { text: gt("Cancel"), style: "cancel" },
+        {
+          text: gt("Resize", { $context: "verb, resize a VM" }),
+          onPress: () => void resizeMachine(machineType),
+        },
+      ],
     );
   const deleteMachine = () =>
     Dialog.alert(
@@ -165,6 +208,29 @@ function MachineRow(props: {
     ...(machine.state === "stopped" || machine.state === "gone"
       ? [{ id: "wake", title: gt("Wake", { $context: "verb, wake a VM" }), image: "power" }]
       : []),
+    ...(machine.state === "gone"
+      ? []
+      : [
+          {
+            id: "resize",
+            title: gt("Resize", { $context: "verb, resize a VM" }),
+            image: "arrow.up.left.and.arrow.down.right",
+            subactions: availableMachineTypes(props.machineTypes).map((candidate) => ({
+              id: `resize:${candidate.id}`,
+              title: machineTypeLabel(candidate.id),
+              subtitle: [
+                gt("{vcpu} vCPU · {memory} GB", {
+                  vcpu: candidate.vcpu,
+                  memory: candidate.memoryGB,
+                }),
+                formatBoatCloudHourly(candidate),
+              ]
+                .filter(Boolean)
+                .join(" · "),
+              state: candidate.id === type ? ("on" as const) : ("off" as const),
+            })),
+          } satisfies MenuAction,
+        ]),
     {
       id: "delete",
       title: gt("Delete"),
@@ -190,9 +256,11 @@ function MachineRow(props: {
         ) : null}
       </View>
       <View className="shrink-0 flex-row items-center gap-1.5">
-        <MachineStateDot state={machine.state} />
+        <MachineStateDot state={resizing ? "starting" : machine.state} />
         <Text textRole="footnote" className="text-foreground-muted" numberOfLines={1}>
-          {m(BOAT_CLOUD_MACHINE_STATE_LABELS[machine.state])}
+          {resizing
+            ? gt("Resizing", { $context: "Boat VM state" })
+            : m(BOAT_CLOUD_MACHINE_STATE_LABELS[machine.state])}
         </Text>
       </View>
       <Menu
@@ -202,8 +270,13 @@ function MachineRow(props: {
         title={name}
         actions={actions}
         onPressAction={({ nativeEvent }) => {
-          if (busy) return;
-          if (nativeEvent.event === "stop") void stopMachine();
+          if (busy || resizing) return;
+          const [event, machineType] = nativeEvent.event.split(":");
+          if (event === "resize") {
+            if (isBoatCloudMachineType(machineType) && machineType !== type) {
+              confirmResize(machineType);
+            }
+          } else if (nativeEvent.event === "stop") void stopMachine();
           else if (nativeEvent.event === "wake") void wakeMachine();
           else if (nativeEvent.event === "delete") deleteMachine();
         }}
@@ -211,7 +284,7 @@ function MachineRow(props: {
         <ControlPill
           icon="ellipsis"
           accessibilityLabel={gt("{name} options", { name })}
-          disabled={busy}
+          disabled={busy || resizing}
         />
       </Menu>
     </View>
@@ -262,12 +335,12 @@ export function BoatCloudMachinesSection() {
     pairedUrls: paired,
   });
   const threads = boatCloudThreadsByMachine(environments, shells);
-  const optionOf = (managed: BoatCloudManagedMachine) => {
-    const status =
+  // The holder's plan decides the sizes; the phone's VMs go by the phone's.
+  const machineTypesOf = (managed: BoatCloudManagedMachine) =>
+    (
       holders.find((holder) => holder.environmentId === managed.holderEnvironmentId)?.status ??
-      holders[0]?.status;
-    return status?.machineTypes.find((option) => option.id === managed.machine.machineType);
-  };
+      phone
+    ).machineTypes;
   const updatedAt = boatCloudUsageReadAt(machines.map((entry) => entry.machine));
 
   const refresh = async () => {
@@ -300,7 +373,8 @@ export function BoatCloudMachinesSection() {
             key={managed.machine.sandboxId}
             managed={managed}
             threads={threads.get(managed.machine.sandboxId) ?? []}
-            option={optionOf(managed)}
+            machineTypes={machineTypesOf(managed)}
+            environmentId={environments.get(managed.machine.sandboxId)}
             separated={index > 0}
           />
         ))}

@@ -26,6 +26,7 @@ import {
   findSandboxByHttpBaseUrl,
   latestCliRelease,
   makeSpareKeeper,
+  resizeMachine,
   snapshotToBuild,
   startMachine,
   startingSnapshot,
@@ -125,6 +126,8 @@ const errorMessage = (error: unknown) =>
 let keyGeneration = 0;
 /** The saved snapshot new VMs start from, or null before setup. */
 let snapshotName: string | null = null;
+/** The sizes this phone is moving its VMs to; Boat only reports them as stopping and starting. */
+const resizing = new Map<string, BoatCloudMachineType>();
 
 /**
  * Reads the key, the snapshot and the VMs from Boat. Leaves a setup in progress alone,
@@ -191,7 +194,7 @@ export function refreshPhoneBoatCloud(): Promise<void> {
             httpBaseUrl: sandbox.subdomain
               ? `https://${sandbox.subdomain}-${VM_T3_PORT}.on.boat.dev`
               : null,
-            state: machineStateOf(sandbox.state),
+            state: resizing.has(sandbox.id) ? "starting" : machineStateOf(sandbox.state),
             repositories: [],
             backedUpAt: null,
             environment: sandbox.environment ?? null,
@@ -201,6 +204,7 @@ export function refreshPhoneBoatCloud(): Promise<void> {
             // The phone keeps no usage reads or stats; a machine holding the key does.
             usage: null,
             stats: null,
+            resizingTo: resizing.get(sandbox.id) ?? null,
           })),
         environment,
         environments: listed,
@@ -500,6 +504,27 @@ export function stopPhoneBoatCloudMachine(sandboxId: string): Promise<void> {
 
 export function wakePhoneBoatCloudMachine(sandboxId: string): Promise<void> {
   return changePhoneMachine(m(msg("Could not wake the VM")), (api) => wakeMachine(api, sandboxId));
+}
+
+/** Restarts a VM this phone sees on another size. Everything running on it stops meanwhile. */
+export function resizePhoneBoatCloudMachine(
+  sandboxId: string,
+  machineType: BoatCloudMachineType,
+): Promise<void> {
+  return changePhoneMachine(m(msg("Could not resize the VM")), (api) =>
+    Effect.suspend(() => {
+      resizing.set(sandboxId, machineType);
+      setStatus((status) => ({
+        ...status,
+        machines: status.machines.map((machine) =>
+          machine.sandboxId === sandboxId
+            ? { ...machine, state: "starting", resizingTo: machineType }
+            : machine,
+        ),
+      }));
+      return resizeMachine(api, sandboxId, machineType);
+    }).pipe(Effect.ensuring(Effect.sync(() => resizing.delete(sandboxId)))),
+  );
 }
 
 export function deletePhoneBoatCloudMachine(sandboxId: string): Promise<void> {
