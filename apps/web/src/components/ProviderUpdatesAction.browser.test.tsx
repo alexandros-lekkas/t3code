@@ -29,6 +29,7 @@ const state = vi.hoisted(() => ({
 
 vi.mock(import("~/state/environments"), () => ({
   useEnvironments: (() => ({ environments: state.environments })) as never,
+  useMachineEnvironments: (() => ({ environments: state.environments })) as never,
   useEnvironmentProviders: () => state.providers,
 }));
 vi.mock(import("@t3tools/client-runtime/state/session"), async (original) => {

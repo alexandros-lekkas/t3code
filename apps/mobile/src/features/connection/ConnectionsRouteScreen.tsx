@@ -3,7 +3,7 @@ import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScroll
 
 import { useNavigation } from "@react-navigation/native";
 import type { EnvironmentId } from "@t3tools/contracts";
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -13,6 +13,7 @@ import { LocalEnvironmentList } from "./LocalEnvironmentList";
 import { PullRequestRoutingSettings } from "./PullRequestRoutingSettings";
 import { isBoatCloudEnvironment } from "./environmentSections";
 import { LinkedEnvironmentsSection } from "./LinkedEnvironmentsSection";
+import { LinkSeveralEnvironmentsAction } from "./LinkSeveralEnvironments";
 
 export function ConnectionsRouteScreen() {
   const gt = useGT();
@@ -69,11 +70,16 @@ export function ConnectionsRouteScreen() {
         {connectedEnvironments
           .filter((environment) => environment.connectionState === "connected")
           .map((environment) => (
-            <LinkedEnvironmentsSection
-              key={environment.environmentId}
-              environmentId={environment.environmentId}
-              environmentLabel={environment.environmentLabel}
-            />
+            <Fragment key={environment.environmentId}>
+              <LinkedEnvironmentsSection
+                environmentId={environment.environmentId}
+                environmentLabel={environment.environmentLabel}
+              />
+              <LinkSeveralEnvironmentsAction
+                environmentId={environment.environmentId}
+                environmentLabel={environment.environmentLabel}
+              />
+            </Fragment>
           ))}
         <PullRequestRoutingSettings />
       </ScrollView>

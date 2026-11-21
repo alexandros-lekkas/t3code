@@ -30,7 +30,6 @@ const usedPercentOf = (left: number, total: number) =>
 function monthMinutesBefore(periodEnd: string): number | undefined {
   const end = Date.parse(periodEnd);
   if (!Number.isFinite(end)) return undefined;
-  // @effect-diagnostics-next-line globalDate:off
   const start = new Date(end);
   start.setUTCMonth(start.getUTCMonth() - 1);
   return Math.round((end - start.getTime()) / 60_000);

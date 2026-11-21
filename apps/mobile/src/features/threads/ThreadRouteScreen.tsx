@@ -1147,6 +1147,7 @@ function ThreadRouteContent(
           }
           boatCloudSleep={boatCloudSleep?.state ?? null}
           offersSideChat={composer.sideChatUnavailableReason === null}
+          onSendCommand={composer.onSendCommand}
           onReconnectEnvironment={handleReconnectEnvironment}
           canSwitchThreadProvider={composer.canSwitchThreadProvider}
           onRespondToApproval={requests.onRespondToApproval}

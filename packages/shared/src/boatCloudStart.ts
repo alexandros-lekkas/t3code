@@ -450,8 +450,7 @@ export const startMachine = Effect.fn("BoatCloud.startMachine")(function* (
       // Without sharing, only the spare can be picked, so the other VMs are not measured.
       sandboxes.filter(
         (sandbox) =>
-          machineStateOf(sandbox.state) !== "starting" &&
-          (shareMachines || isSpare(sandbox)),
+          machineStateOf(sandbox.state) !== "starting" && (shareMachines || isSpare(sandbox)),
       ),
       (sandbox): Effect.Effect<MachineCandidate> => {
         const running = machineStateOf(sandbox.state) === "running";
@@ -841,11 +840,7 @@ export const makeSpareKeeper = () => {
     reconcile: (sandboxes: ReadonlyArray<BoatSandbox>) => {
       const byId = new Map(sandboxes.map((sandbox) => [sandbox.id, sandbox]));
       const listed = ready === null ? undefined : byId.get(ready.sandboxId);
-      if (
-        listed === undefined ||
-        !isSpare(listed) ||
-        machineStateOf(listed.state) !== "running"
-      ) {
+      if (listed === undefined || !isSpare(listed) || machineStateOf(listed.state) !== "running") {
         ready = null;
       }
       for (const sandboxId of taken) {
