@@ -4758,6 +4758,8 @@
   "fc3feba263971bce": "The prompt was stashed, but browser storage rejected its images. They will be missing if you reload.",
   "9e36559d0fa0cca8": "Stashed images did not attach",
   "7a4f60ec9438cac3": "{count, plural, one {That prompt was restored or deleted before {count} image finished saving. Re-attach it if you still need it.} other {That prompt was restored or deleted before {count} images finished saving. Re-attach them if you still need them.}}",
+  "9591f76bb6f616f7": "Your message is still sending",
+  "339982c30dd64dc3": "Pick where the thread runs once it has gone out.",
   "13cf3cd978eef92a": "Keep attachments on this machine",
   "a4ca7da61227002d": "Remove attachments before choosing automatic routing, then attach them on the selected machine.",
   "512d8afab852df1a": "Could not switch machine",

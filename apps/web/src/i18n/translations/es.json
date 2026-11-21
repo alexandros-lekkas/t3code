@@ -4756,6 +4756,8 @@
   "fc3feba263971bce": "El prompt se guardó en el stash, pero el almacenamiento del navegador rechazó sus imágenes. Faltarán si recargas.",
   "9e36559d0fa0cca8": "Las imágenes del stash no se adjuntaron",
   "7a4f60ec9438cac3": "{count, plural, one {Ese prompt se restauró o eliminó antes de que terminara de guardarse {count} imagen. Vuelve a adjuntarla si aún la necesitas.} other {Ese prompt se restauró o eliminó antes de que terminaran de guardarse {count} imágenes. Vuelve a adjuntarlas si aún las necesitas.}}",
+  "9591f76bb6f616f7": "Tu mensaje aún se está enviando",
+  "339982c30dd64dc3": "Elige dónde se ejecuta el hilo cuando se haya enviado.",
   "13cf3cd978eef92a": "Mantener los adjuntos en esta máquina",
   "a4ca7da61227002d": "Quita los adjuntos antes de elegir el enrutamiento automático y adjúntalos en la máquina seleccionada.",
   "512d8afab852df1a": "No se pudo cambiar de máquina",

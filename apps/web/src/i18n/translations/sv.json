@@ -4757,6 +4757,8 @@
   "fc3feba263971bce": "Prompten lades undan, men webbläsarens lagring avvisade dess bilder. De saknas om du laddar om.",
   "9e36559d0fa0cca8": "Undanlagda bilder bifogades inte",
   "7a4f60ec9438cac3": "{count, plural, one {Prompten återställdes eller togs bort innan {count} bild hade sparats. Bifoga den igen om du fortfarande behöver den.} other {Prompten återställdes eller togs bort innan {count} bilder hade sparats. Bifoga dem igen om du fortfarande behöver dem.}}",
+  "9591f76bb6f616f7": "Ditt meddelande skickas fortfarande",
+  "339982c30dd64dc3": "Välj var tråden körs när det har skickats.",
   "13cf3cd978eef92a": "Behåll bilagorna på den här datorn",
   "a4ca7da61227002d": "Ta bort bilagorna innan du väljer automatisk routning och bifoga dem sedan på den valda datorn.",
   "512d8afab852df1a": "Kunde inte byta dator",

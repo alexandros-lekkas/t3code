@@ -4759,6 +4759,8 @@
   "fc3feba263971bce": "Der Prompt wurde abgelegt, aber der Browserspeicher hat seine Bilder abgelehnt. Sie fehlen, wenn du neu lädst.",
   "9e36559d0fa0cca8": "Abgelegte Bilder wurden nicht angehängt",
   "7a4f60ec9438cac3": "{count, plural, one {Dieser Prompt wurde wiederhergestellt oder gelöscht, bevor {count} Bild fertig gespeichert war. Hänge es erneut an, wenn du es noch brauchst.} other {Dieser Prompt wurde wiederhergestellt oder gelöscht, bevor {count} Bilder fertig gespeichert waren. Hänge sie erneut an, wenn du sie noch brauchst.}}",
+  "9591f76bb6f616f7": "Deine Nachricht wird noch gesendet",
+  "339982c30dd64dc3": "Wähle aus, wo der Thread läuft, sobald sie gesendet ist.",
   "13cf3cd978eef92a": "Anhänge auf diesem Rechner behalten",
   "a4ca7da61227002d": "Entferne die Anhänge, bevor du automatisches Routing wählst, und hänge sie dann auf dem ausgewählten Rechner an.",
   "512d8afab852df1a": "Rechner konnte nicht gewechselt werden",
