@@ -305,6 +305,42 @@ describe.skipIf(!hasSqlite)("idleScript", () => {
     assert.strictEqual(output, "0 0 - -");
   });
 
+  const providerThread = (id: string, status: string, tasks: ReadonlyArray<object>) =>
+    `INSERT INTO orchestration_v2_projection_provider_threads VALUES ('${id}', '${status}', '${JSON.stringify({ pendingBackgroundTasks: tasks })}')`;
+  const withProviderThreads = (db: string, ...rows: ReadonlyArray<string>) =>
+    insert(
+      db,
+      `CREATE TABLE orchestration_v2_projection_provider_threads (provider_thread_id TEXT, status TEXT, payload_json TEXT); ${rows.join("; ")}`,
+    );
+
+  it("is busy while an agent waits on background work, within the unattended cap", () => {
+    const awaitedBuild = { kind: "command", taskId: "build", awaited: true };
+    const asked = (secondsAgo: number) => (_home: string, db: string) => {
+      insert(
+        db,
+        `INSERT INTO orchestration_v2_projection_runs VALUES ('r1', 'completed', '${at(secondsAgo)}')`,
+      );
+      withProviderThreads(db, providerThread("p1", "idle", [awaitedBuild]));
+    };
+    assert.match(runIdle(asked(600)), /^1 0 \d+ -$/u);
+    assert.strictEqual(runIdle(asked(7 * 3600)), "0 0 - -");
+  });
+
+  it("is not busy for work no one waits on, or on a closed provider thread", () => {
+    const output = runIdle((_home, db) => {
+      insert(
+        db,
+        `INSERT INTO orchestration_v2_projection_runs VALUES ('r1', 'completed', '${at(600)}')`,
+      );
+      withProviderThreads(
+        db,
+        providerThread("p1", "idle", [{ kind: "command", taskId: "dev-server" }]),
+        providerThread("p2", "closed", [{ kind: "command", taskId: "build", awaited: true }]),
+      );
+    });
+    assert.strictEqual(output, "0 0 - -");
+  });
+
   const thread = (id: string, payload: object, deletedAt: string | null = null) =>
     `INSERT INTO orchestration_v2_projection_threads VALUES ('${id}', ${deletedAt === null ? "NULL" : `'${deletedAt}'`}, '${JSON.stringify(payload)}')`;
   const settled = (secondsAgo: number) => ({

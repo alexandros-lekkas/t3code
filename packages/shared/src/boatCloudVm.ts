@@ -137,15 +137,20 @@ const RUNS = "orchestration_v2_projection_runs";
 const ACTIVE_RUNS_QUERY = `SELECT count(*) FROM ${RUNS} WHERE status IN (${ACTIVE_RUN_STATUSES})`;
 /** `<active runs> <runs asked for within the unattended cap>` on one line. */
 const RUNS_QUERY = `SELECT (${ACTIVE_RUNS_QUERY}) || ' ' || (SELECT count(*) FROM ${RUNS} WHERE requested_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-${MAX_UNATTENDED_SECONDS} seconds'))`;
+/**
+ * Background work an agent said it waits on (t3_background_wait). Its turn has ended, so no
+ * run is active, but the thread resumes when the work ends. A dev server it left is not awaited.
+ */
+const AWAITED_WORK_QUERY = `SELECT count(*) FROM orchestration_v2_projection_provider_threads, json_each(payload_json, '\\$.pendingBackgroundTasks') WHERE status NOT IN ('closed','archived','error') AND json_extract(json_each.value, '\\$.awaited') = 1`;
 const TERMINAL_LOGS = `${VM_HOME}/.t3/userdata/logs/terminals`;
 
-/** Epoch seconds of the last time the VM saw a running turn, a busy terminal or a hand-out. */
+/** Epoch seconds of the last time the VM saw a running turn, awaited work, a busy terminal or a hand-out. */
 const LAST_ACTIVE_PATH = `${VM_HOME}/.t3-boat-last-active`;
 /** Touched on every hand-out and wake, which count as someone asking for the VM. */
 const HANDED_OUT_PATH = `${VM_HOME}/.t3-boat-handed-out`;
 /**
- * Sets `active` to 1 while a turn runs or a terminal wrote in the last two minutes, and
- * someone asked for the VM within the unattended cap; 0 otherwise.
+ * Sets `active` to 1 while a turn runs, an agent waits on background work, or a terminal wrote
+ * in the last two minutes, and someone asked for the VM within the unattended cap; 0 otherwise.
  */
 const READ_ACTIVE = `db=${USERDATA_DB}
 read -r running recent <<T3_RUNS
@@ -156,6 +161,8 @@ attended=""
 [ -n "$(find ${HANDED_OUT_PATH} -mmin -${MAX_UNATTENDED_SECONDS / 60} 2>/dev/null)" ] && attended=1
 busy=""
 [ "\${running:-0}" -gt 0 ] 2>/dev/null && busy=1
+awaited="$(sqlite3 -readonly "$db" "${AWAITED_WORK_QUERY}" 2>/dev/null)"
+[ "\${awaited:-0}" -gt 0 ] 2>/dev/null && busy=1
 [ -n "$(find ${TERMINAL_LOGS} -type f -mmin -2 2>/dev/null | head -n1)" ] && busy=1
 active=0
 [ -n "$attended" ] && [ -n "$busy" ] && active=1 && date +%s > ${LAST_ACTIVE_PATH}`;

@@ -52,6 +52,8 @@ import {
   usePrimaryBoatCloudStatus,
 } from "../../boatCloud";
 import { boatCloudBlocker } from "@t3tools/shared/boatCloudVm";
+import * as Effect from "effect/Effect";
+import { runtime } from "../../lib/runtime";
 
 interface DraftEnvironmentRoutingInput {
   readonly draftId: DraftId | null;
@@ -345,8 +347,32 @@ export function useDraftEnvironmentRouting(input: DraftEnvironmentRoutingInput) 
     getDraftSession,
     setDraftThreadContext,
   ]);
+  // A send in flight holds the draft's machine. A pick then says so, and leaves a trace in the
+  // primary server's trace file, since a send that never settles holds it until reload.
+  const runOnHeldBySend = (choice: "auto" | "boat" | "machine") => {
+    if (!sendInFlightRef.current) return false;
+    toastManager.add({
+      type: "warning",
+      id: "run-on-held-by-send",
+      title: m(msg("Your message is still sending")),
+      description: m(msg("Pick where the thread runs once it has gone out.")),
+    });
+    runtime.runFork(
+      Effect.logWarning("Run on choice ignored while a message is sending").pipe(
+        Effect.withSpan("web.composer.runOnHeldBySend", {
+          attributes: {
+            "t3code.draft.id": draftId ?? "",
+            "t3code.run_on.choice": choice,
+            "t3code.run_on.selection": draftThread?.environmentSelection ?? "",
+            "t3code.environment.id": draftThread?.environmentId ?? "",
+          },
+        }),
+      ),
+    );
+    return true;
+  };
   const onAutoEnvironment = () => {
-    if (envLocked || !draftId || sendInFlightRef.current) return;
+    if (envLocked || !draftId || runOnHeldBySend("auto")) return;
     if (composerHasAttachments) {
       toastManager.add({
         type: "warning",
@@ -372,7 +398,7 @@ export function useDraftEnvironmentRouting(input: DraftEnvironmentRoutingInput) 
   };
   const onAutoEnvironmentStable = useStableCallback(onAutoEnvironment);
   const onCloudEnvironment = () => {
-    if (envLocked || !draftId || sendInFlightRef.current) return;
+    if (envLocked || !draftId || runOnHeldBySend("boat")) return;
     setDraftThreadContext(draftId, {
       environmentSelection: "cloud",
       loadBalancedEnvironmentId: null,
@@ -461,7 +487,7 @@ export function useDraftEnvironmentRouting(input: DraftEnvironmentRoutingInput) 
   const isEnvironmentChanging = busyEnvironmentChange?.scope === environmentChangeScope;
 
   const onEnvironmentChange = (nextEnvironmentId: EnvironmentId) => {
-    if (envLocked || !draftId || sendInFlightRef.current) return;
+    if (envLocked || !draftId || runOnHeldBySend("machine")) return;
     const originalDraft = getDraftSession(draftId);
     if (!originalDraft || originalDraft.promotedTo) return;
     const target = logicalProjectEnvironments.find(

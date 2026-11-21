@@ -4805,6 +4805,8 @@
   "fc3feba263971bce": "O prompt foi guardado, mas o armazenamento do navegador rejeitou as imagens. Elas vão faltar se você recarregar.",
   "9e36559d0fa0cca8": "As imagens guardadas não foram anexadas",
   "7a4f60ec9438cac3": "{count, plural, one {Esse prompt foi restaurado ou excluído antes de {count} imagem terminar de ser salva. Anexe-a novamente se ainda precisar dela.} other {Esse prompt foi restaurado ou excluído antes de {count} imagens terminarem de ser salvas. Anexe-as novamente se ainda precisar delas.}}",
+  "9591f76bb6f616f7": "Sua mensagem ainda está sendo enviada",
+  "339982c30dd64dc3": "Escolha onde a thread roda depois que ela for enviada.",
   "13cf3cd978eef92a": "Manter os anexos nesta máquina",
   "a4ca7da61227002d": "Remova os anexos antes de escolher o roteamento automático e depois anexe-os na máquina selecionada.",
   "512d8afab852df1a": "Não foi possível trocar de máquina",
