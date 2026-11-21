@@ -4806,6 +4806,8 @@
   "fc3feba263971bce": "Le prompt a été mis de côté, mais le stockage du navigateur a refusé ses images. Elles manqueront si vous rechargez.",
   "9e36559d0fa0cca8": "Les images mises de côté n’ont pas été jointes",
   "7a4f60ec9438cac3": "{count, plural, one {Ce prompt a été restauré ou supprimé avant la fin de l’enregistrement de {count} image. Joignez-la à nouveau si vous en avez encore besoin.} other {Ce prompt a été restauré ou supprimé avant la fin de l’enregistrement de {count} images. Joignez-les à nouveau si vous en avez encore besoin.}}",
+  "9591f76bb6f616f7": "Votre message est encore en cours d’envoi",
+  "339982c30dd64dc3": "Choisissez où le fil s’exécute une fois qu’il est parti.",
   "13cf3cd978eef92a": "Garder les pièces jointes sur cette machine",
   "a4ca7da61227002d": "Retirez les pièces jointes avant de choisir le routage automatique, puis joignez-les sur la machine sélectionnée.",
   "512d8afab852df1a": "Impossible de changer de machine",
