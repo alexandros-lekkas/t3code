@@ -4726,6 +4726,8 @@
   "06cdf54d45b0a187": "Falló la tarea en segundo plano",
   "d769a69cec09af0b": "No se pudo iniciar el hilo",
   "4c13b543b99e5fac": "Abrir borrador",
+  "a5ef8db22e098f63": "Boat está listo",
+  "cda0a24fc72ca8f0": "Abre el borrador para enviar tu mensaje.",
   "850da199488a3ccb": "Las máquinas del stash no pueden ir en una respuesta",
   "2f011c299e8b8542": "Restaura este prompt cuando se haya respondido a la pregunta del agente.",
   "93e1adec217df51c": "Los archivos del stash pertenecen a otro entorno",

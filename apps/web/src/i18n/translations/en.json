@@ -4728,6 +4728,8 @@
   "06cdf54d45b0a187": "Background task failed",
   "d769a69cec09af0b": "Could not start thread",
   "4c13b543b99e5fac": "Open draft",
+  "a5ef8db22e098f63": "Boat is ready",
+  "cda0a24fc72ca8f0": "Open the draft to send your message.",
   "850da199488a3ccb": "Stashed machines can't go in an answer",
   "2f011c299e8b8542": "Restore this prompt after the agent's question is answered.",
   "93e1adec217df51c": "Stashed files belong to another environment",

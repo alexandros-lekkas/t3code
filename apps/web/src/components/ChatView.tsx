@@ -1278,6 +1278,7 @@ export default function ChatView(props: ChatViewProps) {
   const logicalProjectEnvironments = useLogicalProjectEnvironments(
     activeProject,
     activeProjectIsScratch && draftId !== null,
+    draftStartsOwnBoatCloudMachine(draftThread),
   );
   const hasMultipleEnvironments = logicalProjectEnvironments.length > 1;
   const canAutoBalanceEnvironments = hasMultipleEnvironments && !activeProjectIsScratch;

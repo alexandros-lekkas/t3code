@@ -1750,6 +1750,14 @@ export function useComposerSend(input: ComposerSendInput) {
   };
 
   const onSendLatest = useStableCallback(onSend);
+  const mountedRef = useRef(false);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- a send that waits on a Boat VM checks this view is still open before it goes out
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   // The sends waiting on a Boat VM that starts or wakes, chained in the order they were sent.
   const boatCloudSendsRef = useRef<Promise<void> | null>(null);
@@ -1870,6 +1878,8 @@ export function useComposerSend(input: ComposerSendInput) {
   });
 
   const sendQueued = async (args: Parameters<typeof onSend>, send: QueuedComposerSend) => {
+    // A closed view's send still targets the machine its draft was on when it last rendered.
+    if (!mountedRef.current) return putBackComposerSend(send);
     let accepted = false;
     await onSendLatest(args[0], args[1], args[2], undefined, {
       send,
@@ -1958,6 +1968,17 @@ export function useComposerSend(input: ComposerSendInput) {
       // A failed start keeps the message in its thread, for Retry; Dismiss puts it back.
       if (startFailed) heldBoatCloudSendRef.current = { args, queued };
       else releaseBoatCloudSend(queued);
+      return;
+    }
+    if (queued !== null && !mountedRef.current) {
+      // The message goes back to the draft, which is on the VM now, to be sent from there.
+      releaseBoatCloudSend(queued);
+      toastManager.add({
+        type: "warning",
+        title: m(msg("Boat is ready")),
+        description: m(msg("Open the draft to send your message.")),
+        timeout: 0,
+      });
       return;
     }
     // A woken VM's connection lands in a store update; commit it so the send reads it.

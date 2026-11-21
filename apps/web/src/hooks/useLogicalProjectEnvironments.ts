@@ -19,6 +19,7 @@ import { useClientSettings } from "./useSettings";
 export function useLogicalProjectEnvironments(
   activeProject: EnvironmentProject | null,
   scratchDraft: boolean,
+  startsOwnBoatCloudMachine = false,
 ): readonly EnvironmentOption[] {
   const { environments } = useEnvironments();
   const allProjects = useProjects();
@@ -32,12 +33,19 @@ export function useLogicalProjectEnvironments(
   const envs: EnvironmentOption[] = [];
   const pushEnvironment = (environmentId: EnvironmentId, projectId: ProjectId | null) => {
     const environment = environmentById.get(environmentId) ?? null;
-    // The Boat cloud entry stands for every VM; only the one this draft is on shows itself.
-    if (environment?.boatCloud && environmentId !== activeProject.environmentId) return;
+    // The Boat cloud entry stands for every VM. Only the one this draft is on shows itself,
+    // under its own name, and not while the draft starts a VM of its own.
+    if (
+      environment?.boatCloud &&
+      (startsOwnBoatCloudMachine || environmentId !== activeProject.environmentId)
+    )
+      return;
     envs.push({
       environmentId,
       projectId,
-      label: environment?.label ?? environmentId,
+      label:
+        (environment?.boatCloud ? environment.entry.target.label : environment?.label) ??
+        environmentId,
       isPrimary: environmentId === primaryEnvironmentId,
       machine: resolveEnvironmentMachineKind(environment?.serverConfig ?? null),
     });
