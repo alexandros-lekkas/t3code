@@ -69,7 +69,8 @@ this computer's, so a cloud thread only offers the providers those sign-ins cove
 
 ## When VMs stop
 
-A VM turns off once none of its threads has run a turn for 10 minutes. A connected machine holding
+A VM turns off once none of its threads has run a turn or waited on background work it started,
+such as a build, for 10 minutes. Neither keeps it on past 6 hours without a message or a wake. A connected machine holding
 the key stops it a minute early and first saves a copy of the VM's threads, provider sessions, and
 checkouts. Settling every thread on a VM stops it the same way about a minute later, without the
 wait. A thread on a stopped VM shows it as sleeping. Your next message turns the same VM back
