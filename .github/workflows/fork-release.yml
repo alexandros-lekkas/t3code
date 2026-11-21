@@ -269,10 +269,12 @@ jobs:
       contents: write
     timeout-minutes: 15
     steps:
+      # Release notes walk the commits since the previous release; blobs are not needed.
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
-          fetch-depth: 1
+          fetch-depth: 0
+          filter: blob:none
 
       - name: Download the release files
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -309,12 +311,14 @@ jobs:
             git push origin "refs/tags/$tag"
           fi
           cd release
-          notes="$(printf 'Boat fork build of T3 Code from %s (%s).\n\nSelf-signed (not notarized) macOS arm64 build, plus t3 server archives for macOS arm64 and Linux x64/arm64. Installed fork builds update themselves from this feed; to install by hand, unzip and move the app into /Applications.' "${GITHUB_SHA:0:10}" "$GITHUB_REF_NAME")"
+          # The release marked Latest is the one installed builds run, so notes cover what is new since it.
+          previous="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName 2>/dev/null || true)"
+          ../.github/scripts/fork-release-notes.sh "$VERSION" "$previous" > ../release-notes.md
           gh release create "$tag" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --title "T3 Code (Lekkas) $VERSION" \
-            --notes "$notes" \
+            --notes-file ../release-notes.md \
             --latest \
             "$ZIP" "$ZIP.blockmap" latest-mac.yml SHA256SUMS t3-"$VERSION"-*.tar.gz
           echo "::notice::Published https://github.com/$GITHUB_REPOSITORY/releases/tag/$tag"
