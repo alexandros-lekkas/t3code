@@ -80,3 +80,22 @@ export function usePendingBoatCloudThreadTitle(draftId: DraftId | null): string 
   const pending = useAtomValue(pendingAtom);
   return draftId === null ? null : (pending[draftId]?.title ?? null);
 }
+
+const waitingSendsAtom = Atom.make<ReadonlyArray<DraftId>>([]).pipe(
+  Atom.keepAlive,
+  Atom.withLabel("boat-cloud-waiting-sends"),
+);
+
+/** Whether the draft's view holds a message that waits on its VM, so the view must stay open. */
+export function setBoatCloudSendWaiting(draftId: DraftId, waiting: boolean) {
+  const current = appAtomRegistry.get(waitingSendsAtom);
+  if (current.includes(draftId) === waiting) return;
+  appAtomRegistry.set(
+    waitingSendsAtom,
+    waiting ? [...current, draftId] : current.filter((id) => id !== draftId),
+  );
+}
+
+export function useBoatCloudWaitingSendDraftIds(): ReadonlyArray<DraftId> {
+  return useAtomValue(waitingSendsAtom);
+}

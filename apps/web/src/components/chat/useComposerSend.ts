@@ -8,6 +8,7 @@ import {
 import {
   clearBoatCloudThreadPending,
   markBoatCloudThreadPending,
+  setBoatCloudSendWaiting,
 } from "../../boatCloudPendingThreads";
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { m } from "~/i18n/messages";
@@ -1896,9 +1897,19 @@ export function useComposerSend(input: ComposerSendInput) {
       () => undefined,
     );
     boatCloudSendsRef.current = settled;
+    syncBoatCloudSendWaiting();
     return send.finally(() => {
       if (boatCloudSendsRef.current === settled) boatCloudSendsRef.current = null;
+      syncBoatCloudSendWaiting();
     });
+  };
+  // While a message waits on the VM, or a failed start holds one, the layout keeps this view.
+  const syncBoatCloudSendWaiting = () => {
+    if (draftId === null) return;
+    setBoatCloudSendWaiting(
+      draftId,
+      boatCloudSendsRef.current !== null || heldBoatCloudSendRef.current !== null,
+    );
   };
 
   const onSendWithRouting = async (...args: Parameters<typeof onSend>) => {
@@ -2018,6 +2029,7 @@ export function useComposerSend(input: ComposerSendInput) {
         : null;
     if (refresh === null) {
       releaseBoatCloudSend(held.queued);
+      syncBoatCloudSendWaiting();
       return;
     }
     void sendAfterBoatCloudStart(held.args, refresh, held.queued);
@@ -2029,6 +2041,7 @@ export function useComposerSend(input: ComposerSendInput) {
     unmarkBoatCloudStartSent(draftId);
     if (held !== null) releaseBoatCloudSend(held.queued);
     else if (draftId !== null) clearBoatCloudThreadPending(draftId);
+    syncBoatCloudSendWaiting();
   });
   // Leaving the draft puts a held message back in its composer, where it is saved.
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- returns a held message to the persisted composer draft when the view unmounts
@@ -2037,8 +2050,9 @@ export function useComposerSend(input: ComposerSendInput) {
       const held = heldBoatCloudSendRef.current;
       heldBoatCloudSendRef.current = null;
       if (held !== null) releaseBoatCloudSend(held.queued);
+      if (draftId !== null) setBoatCloudSendWaiting(draftId, false);
     },
-    [releaseBoatCloudSend],
+    [releaseBoatCloudSend, draftId],
   );
   return { onSend: onSendWithRouting, retryBoatCloudSend, dismissBoatCloudSend };
 }
