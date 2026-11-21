@@ -81,6 +81,8 @@ interface EnvironmentCommandAtomOptions<Input, A, E, R> extends Omit<
     registry: AtomRegistry.AtomRegistry,
     environmentId: EnvironmentIdType,
   ) => Effect.Effect<A, E, R>;
+  /** False for refreshes nobody asked for: they must not turn a sleeping machine on. */
+  readonly wakesEnvironment?: boolean;
 }
 
 interface EnvironmentQueryAtomOptions<Input, A, E, R> extends Omit<
@@ -957,8 +959,10 @@ export function createEnvironmentCommand<R, ER, Input, A, E>(
     ...(options.scheduler === undefined ? {} : { scheduler: options.scheduler }),
     ...(options.concurrency === undefined ? {} : { concurrency: options.concurrency }),
     execute: (target, registry) =>
-      EnvironmentWaker.pipe(
-        Effect.flatMap((waker) => waker.wakeIfAsleep(target.environmentId)),
+      (options.wakesEnvironment === false
+        ? Effect.void
+        : EnvironmentWaker.pipe(Effect.flatMap((waker) => waker.wakeIfAsleep(target.environmentId)))
+      ).pipe(
         Effect.andThen(
           runInEnvironment(
             target.environmentId,
@@ -1091,6 +1095,7 @@ export function createEnvironmentRpcCommand<
       EnvironmentSupervisor.EnvironmentSupervisor | EnvironmentRegistry.EnvironmentRegistry
     >;
     readonly scheduler?: AtomCommandScheduler;
+    readonly wakesEnvironment?: boolean;
     readonly concurrency?: AtomCommandConcurrency<{
       readonly environmentId: EnvironmentIdType;
       readonly input: NoInfer<Input>;
@@ -1118,6 +1123,9 @@ export function createEnvironmentRpcCommand<
     label: options.label,
     ...(options.scheduler === undefined ? {} : { scheduler: options.scheduler }),
     ...(options.concurrency === undefined ? {} : { concurrency: options.concurrency }),
+    ...(options.wakesEnvironment === undefined
+      ? {}
+      : { wakesEnvironment: options.wakesEnvironment }),
     execute: (input: Input, registry, environmentId) => {
       const target = {
         environmentId,

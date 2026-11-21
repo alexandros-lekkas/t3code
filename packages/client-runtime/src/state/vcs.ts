@@ -309,6 +309,7 @@ export function createVcsEnvironmentAtoms<R, E>(
     refreshBranch: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:vcs:refresh-branch",
       tag: WS_METHODS.vcsRefreshBranch,
+      wakesEnvironment: false,
       execute: refreshVcsBranch,
       scheduler: vcsCommandScheduler,
       concurrency: vcsCommandConcurrency,
@@ -337,6 +338,7 @@ export function createVcsEnvironmentAtoms<R, E>(
     refreshStatus: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:vcs:refresh-status",
       tag: WS_METHODS.vcsRefreshStatus,
+      wakesEnvironment: false,
       scheduler: vcsCommandScheduler,
       concurrency: vcsCommandConcurrency,
       onSettled: invalidateRefs,

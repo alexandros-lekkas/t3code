@@ -1604,10 +1604,18 @@ describe("runtime command runner", () => {
     expect(woken._tag).toBe("Success");
     const stillAsleep = await command.run(registry, { environmentId: asleep, input: undefined });
     expect(stillAsleep._tag).toBe("Failure");
+    const refresh = createEnvironmentCommand(runtime, {
+      label: "test.environment-refresh",
+      wakesEnvironment: false,
+      execute: (_input: undefined, _registry, environmentId) =>
+        Effect.sync(() => events.push(`refresh:${environmentId}`)),
+    });
+    await refresh.run(registry, { environmentId: asleep, input: undefined });
     expect(events).toEqual([
       "wake:query-environment",
       "run:query-environment",
       "wake:asleep-environment",
+      "refresh:asleep-environment",
     ]);
     registry.dispose();
   });
