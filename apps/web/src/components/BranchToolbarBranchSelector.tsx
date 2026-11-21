@@ -135,6 +135,7 @@ export function BranchToolbarBranchSelector({
   );
   const updateEmptyThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
+    wakesEnvironment: false,
   });
   const switchRef = useAtomCommand(vcsEnvironment.switchRef, {
     reportFailure: false,

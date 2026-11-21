@@ -4873,6 +4873,7 @@
   "afcdd2cfeee51b11": "{environment} 服务器",
   "4e6afe39ed8f8dd5": "服务器",
   "e63659de3a4f93ce": "隐藏这个服务器的会话。可在“环境”设置中重新开启。",
+  "c0c0aaae7f901cd6": "正在调整 {environment} 的大小",
   "46ed9d70ec85cef2": "正在唤醒 {environment}",
   "95d8ed8b02effb64": "{environment} 正在休眠",
   "7c162800f84f1dec": "发送一条消息即可唤醒它。",

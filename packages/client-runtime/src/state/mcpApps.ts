@@ -11,10 +11,12 @@ export function createMcpAppEnvironmentAtoms<R, E>(
     callTool: createEnvironmentRpcCommand(runtime, {
       label: "environment-command:mcp-apps:call-tool",
       tag: WS_METHODS.mcpAppsCallTool,
+      wakesEnvironment: false,
     }),
     toolInfo: createEnvironmentRpcCommand(runtime, {
       label: "environment-command:mcp-apps:tool-info",
       tag: WS_METHODS.mcpAppsToolInfo,
+      wakesEnvironment: false,
     }),
     /** The tool definition an app reads from its host context. */
     toolInfoQuery: createEnvironmentRpcQueryAtomFamily(runtime, {
@@ -24,10 +26,12 @@ export function createMcpAppEnvironmentAtoms<R, E>(
     readResource: createEnvironmentRpcCommand(runtime, {
       label: "environment-command:mcp-apps:read-resource",
       tag: WS_METHODS.mcpAppsReadResource,
+      wakesEnvironment: false,
     }),
     updateModelContext: createEnvironmentRpcCommand(runtime, {
       label: "environment-command:mcp-apps:update-model-context",
       tag: WS_METHODS.mcpAppsUpdateModelContext,
+      wakesEnvironment: false,
     }),
   };
 }

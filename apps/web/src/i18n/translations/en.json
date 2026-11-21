@@ -4868,6 +4868,7 @@
   "afcdd2cfeee51b11": "{environment} server",
   "4e6afe39ed8f8dd5": "server",
   "e63659de3a4f93ce": "Hide this server's threads. Switch it on again in Environments.",
+  "c0c0aaae7f901cd6": "Resizing {environment}",
   "46ed9d70ec85cef2": "Waking {environment}",
   "95d8ed8b02effb64": "{environment} is sleeping",
   "7c162800f84f1dec": "Send a message to wake it.",

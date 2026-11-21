@@ -133,6 +133,7 @@ export function createProjectEnvironmentAtoms<R, E>(
     fileMetadataThread: fileMetadata.retainThread,
     invalidateFileMetadata: createEnvironmentCommand(runtime, {
       label: "environment-data:filesystem:invalidate-metadata",
+      wakesEnvironment: false,
       execute: (input: { paths: ReadonlyArray<string> }, registry, environmentId) =>
         Effect.forEach([...new Set(input.paths)], (path) =>
           fileMetadata

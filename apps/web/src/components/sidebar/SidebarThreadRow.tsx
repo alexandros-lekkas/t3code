@@ -49,6 +49,7 @@ import {
   ClockIcon,
   GitBranchIcon,
   MessageCircleQuestionIcon,
+  MoonIcon,
   PinIcon,
   PinOffIcon,
   ShieldQuestionIcon,
@@ -567,6 +568,7 @@ const TOP_STATUS_ICONS = {
   failed: CircleAlertIcon,
   done: CircleCheckIcon,
   woke: AlarmClockIcon,
+  sleeping: MoonIcon,
 } as const;
 
 function TopStatusIcon(props: { icon: keyof typeof TOP_STATUS_ICONS; className: string }) {
@@ -782,8 +784,18 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     isActive: props.isActive,
     isSelected,
   });
-  const topStatus =
-    status === "preparing" || status === "working"
+  const boatMachineState = useBoatCloudThreadMachineState(threadRef);
+  // A stopped VM runs nothing, so a run it was in the middle of reads as asleep, not in progress.
+  const asleepMidRun =
+    (boatMachineState === "stopped" || boatMachineState === "gone") &&
+    (status === "preparing" || status === "working" || status === "waiting");
+  const topStatus = asleepMidRun
+    ? {
+        label: gt("Sleeping", { $context: "VM state" }),
+        icon: "sleeping" as const,
+        className: "text-muted-foreground",
+      }
+    : status === "preparing" || status === "working"
       ? {
           label:
             status === "preparing"
@@ -866,7 +878,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     : thread.modelSelection.model;
 
   const isRemote = thread.environmentId !== props.currentEnvironmentId;
-  const boatMachineState = useBoatCloudThreadMachineState(threadRef);
   const showsScratchMachine = !checkoutThread.branch && props.scratchMachineLabel !== null;
 
   const detailsTooltip = (
@@ -1262,7 +1273,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   const remoteMachineIcon =
     (isRemote || boatMachineState !== null) && !showsScratchMachine ? (
       <span className="inline-flex shrink-0 items-center gap-1 text-sidebar-muted-foreground/70">
-        {boatMachineState === "stopped" || boatMachineState === "gone" ? (
+        {(boatMachineState === "stopped" || boatMachineState === "gone") && !asleepMidRun ? (
           <span className="text-xs">
             <T>Sleeping</T>
           </span>
@@ -1657,7 +1668,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                             BackgroundThreadAnnouncer and the open thread's
                             timeline speak status changes instead. */}
                           {topStatus.label}
-                          {status === "preparing" || status === "working" ? (
+                          {asleepMidRun ? null : status === "preparing" || status === "working" ? (
                             <span aria-hidden>
                               <WorkingDuration
                                 environmentId={thread.environmentId}

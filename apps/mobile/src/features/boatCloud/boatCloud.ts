@@ -35,7 +35,7 @@ import {
   type BoatCloudHolder,
   boatCloudHoldersAtom,
   boatCloudMachinesAtom,
-  boatCloudResizingAtom,
+  boatCloudThreadResizingAtom,
   boatCloudWakingAtom,
   noteBoatCloudHolders,
   readBoatCloudHoldersOnce,
@@ -480,7 +480,7 @@ export function useBoatCloudSleep(
 ): BoatCloudSleep | null {
   const machines = useAtomValue(boatCloudMachinesAtom);
   const waking = useAtomValue(boatCloudWakingAtom(environmentId));
-  const resizing = useAtomValue(boatCloudResizingAtom(environmentId));
+  const resizing = useAtomValue(boatCloudThreadResizingAtom(environmentId));
   const httpBaseUrl = environmentId === null ? null : (machines.get(environmentId) ?? null);
   if (environmentId === null || httpBaseUrl === null || phase === null || phase === "connected") {
     return null;

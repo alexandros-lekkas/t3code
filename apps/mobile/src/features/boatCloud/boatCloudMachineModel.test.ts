@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   boatCloudMachineEnvironments,
+  boatCloudMachineResizing,
   boatCloudThreadsByMachine,
   formatBoatCloudCost,
   mergeBoatCloudMachines,
@@ -118,6 +119,23 @@ describe("boatCloudThreadsByMachine", () => {
       thread(envA, "child", true),
     ]);
     expect(threads.get("vm")?.map((entry) => entry.id)).toEqual(["parent"]);
+  });
+});
+
+describe("boatCloudMachineResizing", () => {
+  it("finds a resize another client started, by environment or by the URL this phone pairs", () => {
+    const resizing = (patch: Partial<BoatCloudMachine>) => [
+      status({ machines: [machine({ sandboxId: "vm", resizingTo: "large", ...patch })] }),
+    ];
+    const url = "https://vm-3773.on.boat.dev";
+    expect(boatCloudMachineResizing(resizing({ environmentId: envA }), envA, "https://x")).toBe(
+      true,
+    );
+    expect(boatCloudMachineResizing(resizing({}), envA, `${url.toUpperCase()}/`)).toBe(true);
+    expect(boatCloudMachineResizing(resizing({ environmentId: envB }), envA, "https://x")).toBe(
+      false,
+    );
+    expect(boatCloudMachineResizing(resizing({ resizingTo: null }), envA, url)).toBe(false);
   });
 });
 

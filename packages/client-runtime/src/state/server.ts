@@ -1695,6 +1695,7 @@ export function createServerEnvironmentAtoms<R, E>(
     refreshProviders: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:refresh-providers",
       tag: WS_METHODS.serverRefreshProviders,
+      wakesEnvironment: false,
       // A rescan during the request must leave the stored basis behind the new stamp.
       onStart: ({ environmentId, input }, registry) =>
         registry

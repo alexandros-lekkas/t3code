@@ -139,16 +139,19 @@ export function mergeComputeUsage(
   const seen = new Set<string>();
   const kept: UsageComputeBucket[] = [];
   for (const { environmentId, summary } of newestFirst) {
+    // Marked after the report: it can split one VM's period across the sizes a resize spanned.
+    const reported: string[] = [];
     for (const bucket of summary?.compute ?? []) {
       const key = JSON.stringify([bucket.sandboxId, bucket.day, bucket.hourStart ?? null]);
       if (seen.has(key)) continue;
-      seen.add(key);
+      reported.push(key);
       const owner =
         bucket.environmentId !== null && listed.has(bucket.environmentId)
           ? bucket.environmentId
           : environmentId;
       if (selectedEnvironmentIds === null || selectedEnvironmentIds.has(owner)) kept.push(bucket);
     }
+    for (const key of reported) seen.add(key);
   }
   if (kept.length === 0) return EMPTY_COMPUTE;
 
@@ -170,6 +173,15 @@ export function mergeComputeUsage(
   const hourly = new Map<string, { seconds: number; dollars: number }>();
   let seconds = 0;
   let dollars = 0;
+  const machineTypes = new Map<
+    string,
+    {
+      machineType: string | null;
+      seconds: number;
+      dollars: number;
+      sandboxIds: Set<string>;
+    }
+  >();
   for (const bucket of kept) {
     seconds += bucket.seconds;
     dollars += bucket.dollars;
@@ -184,23 +196,17 @@ export function mergeComputeUsage(
     machines.set(bucket.sandboxId, machine);
     add(daily, bucket.day, bucket);
     if (bucket.hourStart !== undefined) add(hourly, bucket.hourStart, bucket);
-  }
-  const machineTypes = new Map<
-    string,
-    { machineType: string | null; seconds: number; dollars: number; machines: number }
-  >();
-  for (const machine of machines.values()) {
-    const key = machine.machineType ?? "";
-    const entry = machineTypes.get(key) ?? {
-      machineType: machine.machineType,
+    const typeKey = bucket.machineType ?? "";
+    const type = machineTypes.get(typeKey) ?? {
+      machineType: bucket.machineType,
       seconds: 0,
       dollars: 0,
-      machines: 0,
+      sandboxIds: new Set<string>(),
     };
-    entry.seconds += machine.seconds;
-    entry.dollars += machine.dollars;
-    entry.machines += 1;
-    machineTypes.set(key, entry);
+    type.seconds += bucket.seconds;
+    type.dollars += bucket.dollars;
+    type.sandboxIds.add(bucket.sandboxId);
+    machineTypes.set(typeKey, type);
   }
   const byDollars = (a: ComputeFigures, b: ComputeFigures) =>
     b.dollars - a.dollars || b.seconds - a.seconds;
@@ -208,7 +214,9 @@ export function mergeComputeUsage(
     seconds,
     dollars,
     machines: [...machines.values()].sort(byDollars),
-    machineTypes: [...machineTypes.values()].sort(byDollars),
+    machineTypes: [...machineTypes.values()]
+      .map(({ sandboxIds, ...type }) => ({ ...type, machines: sandboxIds.size }))
+      .sort(byDollars),
     daily,
     hourly,
   };

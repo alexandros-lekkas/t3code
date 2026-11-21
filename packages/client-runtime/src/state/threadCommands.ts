@@ -255,6 +255,7 @@ export function createThreadEnvironmentAtoms<R, E>(
     visit: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:visit",
       execute: visitThread,
+      wakesEnvironment: false,
       scheduler,
       concurrency,
     }),
@@ -422,6 +423,7 @@ export function createThreadEnvironmentAtoms<R, E>(
     loadEarlierHistory: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:load-earlier-history",
       execute: loadEarlierHistory,
+      wakesEnvironment: false,
       scheduler,
       concurrency: {
         mode: "serial",

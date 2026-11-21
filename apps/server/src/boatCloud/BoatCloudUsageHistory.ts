@@ -32,6 +32,8 @@ const StoredHour = Schema.Struct({
   start: Schema.Number,
   seconds: Schema.Number,
   dollars: Schema.Number,
+  /** The size Boat reported when the hour was read; absent in older files: the VM's size. */
+  machineType: Schema.optional(Schema.String),
 });
 
 const StoredMachine = Schema.Struct({
@@ -47,6 +49,7 @@ const StoredMachine = Schema.Struct({
       end: Schema.Number,
       seconds: Schema.Number,
       dollars: Schema.Number,
+      machineType: Schema.optional(Schema.String),
     }),
   ),
   /** Boat no longer lists it, so its hours are final. */
@@ -137,15 +140,26 @@ export const syncMachine = Effect.fn("BoatUsageHistory.syncMachine")(function* <
   const kept = (previous?.hours ?? []).filter(
     (hour) => hour.start >= oldest && !added.some((entry) => entry.start === hour.start),
   );
+  const machineType = sandbox.type ?? previous?.machineType ?? null;
+  // A resize keeps the VM, so each hour records the size it was read at.
+  const sized = machineType === null ? {} : { machineType };
   return {
-    machineType: sandbox.type ?? previous?.machineType ?? null,
+    machineType,
     environmentId: listed.environmentId ?? previous?.environmentId ?? null,
     settledUntil: Math.max(currentHour, previous?.settledUntil ?? 0),
-    hours: [...kept, ...added].toSorted((a, b) => a.start - b.start),
+    hours: [...kept, ...added.map((hour) => ({ ...hour, ...sized }))].toSorted(
+      (a, b) => a.start - b.start,
+    ),
     open:
       open === null || open.seconds <= 0
         ? null
-        : { start: currentHour, end: nowMs, seconds: open.seconds, dollars: open.dollars },
+        : {
+            start: currentHour,
+            end: nowMs,
+            seconds: open.seconds,
+            dollars: open.dollars,
+            ...sized,
+          },
     gone: false,
   } satisfies StoredUsageMachine;
 });
@@ -187,12 +201,13 @@ export function computeBuckets(
   const add = (
     sandboxId: string,
     machine: StoredUsageMachine,
+    machineType: string | null,
     day: string,
     hourStart: string | undefined,
     seconds: number,
     dollars: number,
   ) => {
-    const key = `${day}\u0000${hourStart ?? ""}\u0000${sandboxId}`;
+    const key = `${day}\u0000${hourStart ?? ""}\u0000${sandboxId}\u0000${machineType ?? ""}`;
     const bucket = buckets.get(key);
     if (bucket !== undefined) {
       bucket.seconds += seconds;
@@ -203,7 +218,7 @@ export function computeBuckets(
       day: UsageDay.make(day),
       ...(hourStart === undefined ? {} : { hourStart }),
       sandboxId,
-      machineType: machine.machineType,
+      machineType,
       environmentId: machine.environmentId as UsageComputeBucket["environmentId"],
       seconds,
       dollars,
@@ -218,6 +233,7 @@ export function computeBuckets(
     for (const span of spans) {
       const length = span.end - span.start;
       if (length <= 0) continue;
+      const machineType = span.machineType ?? machine.machineType;
       if (hourly !== null) {
         const first = Math.max(0, Math.floor((span.start - hourly.since) / HOUR_MS));
         for (let index = first; ; index += 1) {
@@ -230,6 +246,7 @@ export function computeBuckets(
           add(
             sandboxId,
             machine,
+            machineType,
             dayOf(periodStart),
             DateTime.formatIso(DateTime.makeUnsafe(periodStart)),
             span.seconds * share,
@@ -243,7 +260,15 @@ export function computeBuckets(
         const share = (Math.min(slot + SLOT_MS, span.end) - slot) / length;
         const day = dayOf(slot);
         if (day < input.sinceDay || day > input.untilDay) continue;
-        add(sandboxId, machine, day, undefined, span.seconds * share, span.dollars * share);
+        add(
+          sandboxId,
+          machine,
+          machineType,
+          day,
+          undefined,
+          span.seconds * share,
+          span.dollars * share,
+        );
       }
     }
   }

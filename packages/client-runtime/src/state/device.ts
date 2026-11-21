@@ -59,6 +59,7 @@ export function createDeviceEnvironmentAtoms<R, E>(
     list: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:device:list",
       tag: WS_METHODS.deviceList,
+      wakesEnvironment: false,
       scheduler,
       concurrency,
     }),
@@ -83,6 +84,7 @@ export function createDeviceEnvironmentAtoms<R, E>(
     detail: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:device:detail",
       tag: WS_METHODS.deviceDetail,
+      wakesEnvironment: false,
       scheduler,
       concurrency,
     }),

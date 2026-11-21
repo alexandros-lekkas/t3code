@@ -8157,23 +8157,17 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       yield* queueMessage("settle-automatic-user-queued", "user");
       yield* queueMessage("settle-automatic-agent-queued-2", "agent");
       yield* holdQueueAfterRestart("settle-automatic-restart-2");
-      const error = yield* orchestrator
-        .dispatch({
-          type: "thread.settle",
-          commandId: CommandId.make("settle-automatic-settle-2"),
-          threadId,
-        })
-        .pipe(Effect.flip);
-      assert.equal(error._tag, "OrchestratorDispatchError");
-      assert.equal(
-        error.cause,
-        `Thread ${threadId} has a queued message. Send it or remove it from the queue before settling.`,
-      );
-      const blocked = yield* orchestrator.getThreadProjection(threadId);
-      assert.isNull(blocked.thread.settledAt);
+      yield* orchestrator.dispatch({
+        type: "thread.settle",
+        commandId: CommandId.make("settle-automatic-settle-2"),
+        threadId,
+      });
+      // The user's own queued message stays in the queue for when they come back to the thread.
+      const kept = yield* orchestrator.getThreadProjection(threadId);
+      assert.isNotNull(kept.thread.settledAt);
       assert.deepEqual(
-        blocked.runs.filter((run) => run.status === "queued").map((run) => run.userMessageId),
-        ["settle-automatic-user-queued", "settle-automatic-agent-queued-2"],
+        kept.runs.filter((run) => run.status === "queued").map((run) => run.userMessageId),
+        ["settle-automatic-user-queued"],
       );
     }),
   );

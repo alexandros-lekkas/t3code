@@ -99,6 +99,22 @@ export function boatCloudThreadsByMachine<
   return bySandbox;
 }
 
+/** Whether any machine reports the VM serving this environment, or at its URL, mid-resize. */
+export function boatCloudMachineResizing(
+  statuses: ReadonlyArray<BoatCloudStatus>,
+  environmentId: EnvironmentId,
+  httpBaseUrl: string,
+): boolean {
+  return statuses.some((status) =>
+    status.machines.some(
+      (machine) =>
+        machine.resizingTo !== null &&
+        (machine.environmentId === environmentId ||
+          (machine.httpBaseUrl !== null && sameUrl(machine.httpBaseUrl, httpBaseUrl))),
+    ),
+  );
+}
+
 /** A VM and the holder that reports it: a connected machine, or null for this phone. */
 export interface BoatCloudManagedMachine {
   readonly machine: BoatCloudMachine;

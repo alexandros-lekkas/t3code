@@ -15,7 +15,17 @@ export function useAtomCommand<A, E, W>(
   const label = typeof options === "string" ? options : (options?.label ?? command.label);
   const reportFailure = typeof options === "string" ? true : (options?.reportFailure ?? true);
   const reportDefect = typeof options === "string" ? true : (options?.reportDefect ?? true);
+  const wakes =
+    typeof options === "string" || options?.wakesEnvironment === undefined
+      ? {}
+      : { wakesEnvironment: options.wakesEnvironment };
 
   return (value, call) =>
-    runAtomCommand(registry, command, value, { label, reportFailure, reportDefect, ...call });
+    runAtomCommand(registry, command, value, {
+      label,
+      reportFailure,
+      reportDefect,
+      ...wakes,
+      ...call,
+    });
 }

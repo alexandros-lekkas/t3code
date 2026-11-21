@@ -33,6 +33,7 @@ import {
   type SupervisorConnectionState,
 } from "../connection/model.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
+import { EnvironmentRpcUnavailableError, EnvironmentWaker } from "../rpc/client.ts";
 import type { RpcSession } from "../rpc/session.ts";
 import { createThreadEnvironmentAtoms } from "./threadCommands.ts";
 import * as ThreadHistoryController from "./threadHistoryController.ts";
@@ -95,6 +96,7 @@ const SNAPSHOT: OrchestrationV2ShellSnapshot = {
 const makeHarness = Effect.fn("TestThreadCommands.makeHarness")(function* (options?: {
   readonly loadEarlier?: () => Effect.Effect<ThreadHistoryController.ThreadHistoryLoadEarlierResult>;
   readonly reconcilePendingWork?: (threadId: ThreadId) => Effect.Effect<void>;
+  readonly waker?: (typeof EnvironmentWaker)["Service"];
 }) {
   const requests = yield* Queue.unbounded<{
     command: OrchestrationV2Command;
@@ -143,6 +145,7 @@ const makeHarness = Effect.fn("TestThreadCommands.makeHarness")(function* (optio
         SecureRandom.SecureRandom,
         SecureRandom.make((size) => new Uint8Array(size)),
       ),
+      options?.waker === undefined ? Layer.empty : Layer.succeed(EnvironmentWaker, options.waker),
       Layer.succeed(
         ThreadHistoryController.ThreadHistoryController,
         ThreadHistoryController.ThreadHistoryController.of({
@@ -239,6 +242,60 @@ describe("history loading", () => {
       expect(first.command).toMatchObject({ type: "message.dispatch", threadId: THREAD_ID });
       expect(second.command).toMatchObject({ type: "run.interrupt", threadId: controlThreadId });
       expect(results.map((value) => value._tag)).toEqual(["Success", "Success", "Success"]);
+    }),
+  );
+});
+
+describe("a sleeping machine", () => {
+  it.effect("stays asleep when a thread is opened or its history loads, and Stop wakes it", () =>
+    Effect.gen(function* () {
+      const wakes: Array<EnvironmentId> = [];
+      const h = yield* makeHarness({
+        loadEarlier: () => Effect.succeed({ _tag: "loaded" }),
+        waker: {
+          wakeIfAsleep: (environmentId) =>
+            Effect.sync(() => wakes.push(environmentId)).pipe(
+              Effect.andThen(
+                Effect.fail(
+                  new EnvironmentRpcUnavailableError({ environmentId, message: "Asleep." }),
+                ),
+              ),
+            ),
+        },
+      });
+      const visit = yield* Effect.forkChild(
+        Effect.exit(
+          h.commands.visit.run(h.registry, {
+            environmentId: ENVIRONMENT_ID,
+            input: { threadId: THREAD_ID, visitedAt: "2026-09-12T10:00:00.000Z", opened: true },
+          }),
+        ),
+        { startImmediately: true },
+      );
+      const visitRequest = yield* Effect.raceFirst(
+        Queue.take(h.requests),
+        Fiber.join(visit).pipe(Effect.andThen(Effect.die("The visit was never sent."))),
+      );
+      yield* Deferred.succeed(visitRequest.reply, { sequence: 1 });
+      expect(visitRequest.command).toMatchObject({ type: "thread.visit", threadId: THREAD_ID });
+      expect(Exit.isSuccess(yield* Fiber.join(visit))).toBe(true);
+      const history = yield* Effect.exit(
+        h.commands.loadEarlierHistory.run(h.registry, {
+          environmentId: ENVIRONMENT_ID,
+          input: { threadId: THREAD_ID },
+        }),
+      );
+      expect(Exit.isSuccess(history)).toBe(true);
+      expect(wakes).toEqual([]);
+
+      const stop = yield* Effect.exit(
+        h.commands.interruptTurn.run(h.registry, {
+          environmentId: ENVIRONMENT_ID,
+          input: { threadId: THREAD_ID, runId: RunId.make("run") },
+        }),
+      );
+      expect(Exit.isFailure(stop)).toBe(true);
+      expect(wakes).toEqual([ENVIRONMENT_ID]);
     }),
   );
 });

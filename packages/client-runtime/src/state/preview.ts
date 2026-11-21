@@ -70,6 +70,7 @@ export function createPreviewEnvironmentAtoms<R, E>(
     reportProfiles: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:preview:report-profiles",
       tag: WS_METHODS.previewReportProfiles,
+      wakesEnvironment: false,
       concurrency: { mode: "latest", key: ({ environmentId }) => environmentId },
     }),
     stopLocalServer: createEnvironmentRpcCommand(runtime, {
@@ -79,6 +80,7 @@ export function createPreviewEnvironmentAtoms<R, E>(
     reportStatus: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:preview:report-status",
       tag: WS_METHODS.previewReportStatus,
+      wakesEnvironment: false,
       scheduler: statusScheduler,
       concurrency: {
         mode: "latest",

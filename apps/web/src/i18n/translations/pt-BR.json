@@ -4866,6 +4866,7 @@
   "afcdd2cfeee51b11": "Servidor {environment}",
   "4e6afe39ed8f8dd5": "servidor",
   "e63659de3a4f93ce": "Oculta as threads deste servidor. Ative-o novamente em Ambientes.",
+  "c0c0aaae7f901cd6": "Redimensionando {environment}",
   "46ed9d70ec85cef2": "Acordando {environment}",
   "95d8ed8b02effb64": "{environment} está em repouso",
   "7c162800f84f1dec": "Envie uma mensagem para acordá-la.",

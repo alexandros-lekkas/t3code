@@ -1,11 +1,14 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import { UsageDay } from "@t3tools/contracts";
 import type { BoatSandbox } from "@t3tools/shared/boatCloudApi";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 
 import {
   computeBuckets,
+  makeBoatUsageHistory,
   readHours,
   settleHistory,
   syncMachine,
@@ -96,6 +99,7 @@ describe("syncMachine", () => {
         end: DAY_START + 6.5 * HOUR,
         seconds: 900,
         dollars: 0.009,
+        machineType: "small",
       });
 
       const later = boatOver(spans);
@@ -113,6 +117,44 @@ describe("syncMachine", () => {
         9.5 * 1800,
       );
       assert.isNull(second.open);
+    }),
+  );
+
+  it.effect("keeps the size each hour was billed at across a resize", () =>
+    Effect.gen(function* () {
+      const boat = boatOver([[DAY_START, DAY_START + 4 * HOUR]]);
+      const before = yield* syncMachine(
+        undefined,
+        { sandbox: sandbox(), environmentId: null },
+        boat.read,
+        DAY_START + 2 * HOUR,
+      );
+      const after = yield* syncMachine(
+        before,
+        { sandbox: sandbox({ type: "large" }), environmentId: null },
+        boat.read,
+        DAY_START + 4 * HOUR,
+      );
+      assert.strictEqual(after.machineType, "large");
+      assert.deepStrictEqual(
+        after.hours.map((hour) => hour.machineType),
+        ["small", "small", "large", "large"],
+      );
+      const buckets = computeBuckets(
+        { machines: { bx_one: after } },
+        {
+          sinceDay: UsageDay.make("2026-11-18"),
+          untilDay: UsageDay.make("2026-11-18"),
+          timeZone: "UTC",
+        },
+      );
+      assert.deepStrictEqual(
+        buckets.map((bucket) => [bucket.machineType, bucket.seconds]),
+        [
+          ["small", 3600],
+          ["large", 3600],
+        ],
+      );
     }),
   );
 
@@ -228,6 +270,41 @@ describe("computeBuckets", () => {
       ],
     );
   });
+});
+
+describe("makeBoatUsageHistory", () => {
+  it.effect("loads a history file from before hours recorded their size", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const directory = yield* fs.makeTempDirectoryScoped();
+      const filePath = `${directory}/usage.json`;
+      yield* fs.writeFileString(
+        filePath,
+        JSON.stringify({
+          machines: {
+            bx_one: {
+              machineType: "small",
+              environmentId: null,
+              settledUntil: DAY_START + 2 * HOUR,
+              hours: [{ start: DAY_START + HOUR, seconds: 1800, dollars: 0.018 }],
+              open: null,
+              gone: false,
+            },
+          },
+        }),
+      );
+      const history = yield* makeBoatUsageHistory(filePath);
+      const buckets = yield* history.buckets({
+        sinceDay: UsageDay.make("2026-11-18"),
+        untilDay: UsageDay.make("2026-11-18"),
+        timeZone: "UTC",
+      });
+      assert.deepStrictEqual(
+        buckets.map((bucket) => [bucket.machineType, bucket.seconds]),
+        [["small", 1800]],
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
 });
 
 describe("settleHistory", () => {

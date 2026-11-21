@@ -34,6 +34,7 @@ export function useThreadLinkedPullRequest(input: {
     input;
   const updateThreadMetadata = useOrchestrationCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
+    wakesEnvironment: false,
   });
   const persistedStatus = useLinkedThreadPullRequest(input.environmentId, persisted);
   const detected = gitStatus?.pr;

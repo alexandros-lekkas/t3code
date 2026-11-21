@@ -745,6 +745,24 @@ describe("mergeComputeUsage", () => {
     expect(merged.daily.get("2026-08-07")?.seconds).toBe(3600);
   });
 
+  it("splits a resized VM's time by the size each period was billed at", () => {
+    const merged = mergeComputeUsage(
+      [
+        reporting("mac", "2026-08-07T10:00:00.000Z", [vm({ seconds: 3600, dollars: 0.036 })]),
+        reporting("laptop", "2026-08-07T11:00:00.000Z", [
+          vm(),
+          vm({ machineType: "large", seconds: 900, dollars: 0.036 }),
+        ]),
+      ],
+      null,
+    );
+    expect(merged.machines).toHaveLength(1);
+    expect(merged.machineTypes).toEqual([
+      { machineType: "large", seconds: 900, dollars: 0.036, machines: 1 },
+      { machineType: "small", seconds: 1800, dollars: 0.018, machines: 1 },
+    ]);
+  });
+
   it("counts a VM for the environment it served when that one is listed, else its holder", () => {
     const environments = [
       reporting("mac", "2026-08-07T10:00:00.000Z", [

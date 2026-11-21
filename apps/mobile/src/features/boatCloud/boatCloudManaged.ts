@@ -9,6 +9,7 @@ import { AsyncResult, Atom } from "effect/reactivity";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { connectedEnvironmentIdsAtom, environmentPresentations } from "../../state/presentation";
 import { serverEnvironment } from "../../state/server";
+import { boatCloudMachineResizing } from "./boatCloudMachineModel";
 import type { BoatCloudHolder } from "./boatCloudManagedEnvironments";
 
 export type { BoatCloudHolder };
@@ -61,6 +62,23 @@ export const boatCloudWakingAtom = Atom.family((_environmentId: EnvironmentId | 
 /** Whether this app is moving a VM to another size, so its thread shows "Resizing". */
 export const boatCloudResizingAtom = Atom.family((_environmentId: EnvironmentId | null) =>
   Atom.make(false).pipe(Atom.keepAlive),
+);
+
+/**
+ * A thread's VM mid-resize, by this app or another client. Only while the VM is away does it read
+ * the connected machines' status, which samples their running VMs while it is open.
+ */
+export const boatCloudThreadResizingAtom = Atom.family((environmentId: EnvironmentId | null) =>
+  Atom.make((get) => {
+    if (get(boatCloudResizingAtom(environmentId))) return true;
+    if (environmentId === null || get(connectedEnvironmentIdsAtom).includes(environmentId)) {
+      return false;
+    }
+    const httpBaseUrl = get(boatCloudMachinesAtom).get(environmentId);
+    if (httpBaseUrl === undefined) return false;
+    const statuses = get(boatCloudHoldersAtom).map((holder) => holder.status);
+    return boatCloudMachineResizing(statuses, environmentId, httpBaseUrl);
+  }).pipe(Atom.withLabel(`mobile-boat-cloud:thread-resizing:${environmentId}`)),
 );
 
 /**

@@ -71,6 +71,7 @@ import {
   environmentSessionGenerationAtom,
   executeAtomQuery,
   type QueryAnswerHandler,
+  runAtomCommand,
 } from "./runtime.ts";
 
 const QUERY_ENVIRONMENT = new PrimaryConnectionTarget({
@@ -1622,11 +1623,21 @@ describe("runtime command runner", () => {
             Effect.sync(() => events.push(`refresh:${environmentId}`)),
         });
         yield* Effect.exit(refresh.run(registry, { environmentId: asleep, input: undefined }));
+        // A caller nobody prompted, such as an effect on mount, leaves it asleep too.
+        yield* Effect.promise(() =>
+          runAtomCommand(
+            registry,
+            command,
+            { environmentId: asleep, input: undefined },
+            { wakesEnvironment: false },
+          ),
+        );
         expect(events).toEqual([
           "wake:query-environment",
           "run:query-environment",
           "wake:asleep-environment",
           "refresh:asleep-environment",
+          "run:asleep-environment",
         ]);
         registry.dispose();
       }),

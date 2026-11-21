@@ -564,7 +564,8 @@ export function useComposerSend(input: ComposerSendInput) {
       });
       return;
     }
-    if (activeEnvironmentUnavailable) {
+    // A sleeping Boat VM is not offline: the send's commands wait on its wake.
+    if (activeEnvironmentUnavailable && wakeBeforeSend === null) {
       const toastSlot = environmentUnavailableSendToastSlotRef.current;
       environmentUnavailableSendToastSlotRef.current =
         (toastSlot + 1) % ENVIRONMENT_UNAVAILABLE_SEND_TOAST_TRAIL_SIZE;

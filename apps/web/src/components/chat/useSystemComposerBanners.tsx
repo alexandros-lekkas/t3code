@@ -205,15 +205,22 @@ export function useSystemComposerBanners(input: SystemComposerBannersInput) {
         variant: "info",
         group: "environment",
         icon: <MoonIcon />,
-        ...(boatCloudSleep.wakeSteps !== null
+        ...(boatCloudSleep.state === "resizing"
           ? {
-              title: gt("Waking {environment}", { environment: activeEnvironment.label }),
-              children: <BoatCloudSteps steps={boatCloudSleep.wakeSteps} waking />,
+              title: gt("Resizing {environment}", { environment: activeEnvironment.label }),
+              description: gt(
+                "Resizing restarts the machine. Running turns are interrupted and continue once it is back.",
+              ),
             }
-          : {
-              title: gt("{environment} is sleeping", { environment: activeEnvironment.label }),
-              description: gt("Send a message to wake it."),
-            }),
+          : boatCloudSleep.wakeSteps !== null
+            ? {
+                title: gt("Waking {environment}", { environment: activeEnvironment.label }),
+                children: <BoatCloudSteps steps={boatCloudSleep.wakeSteps} waking />,
+              }
+            : {
+                title: gt("{environment} is sleeping", { environment: activeEnvironment.label }),
+                description: gt("Send a message to wake it."),
+              }),
       });
     }
     if (showUnavailableBanner) {

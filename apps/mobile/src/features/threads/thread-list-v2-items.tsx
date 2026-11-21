@@ -876,13 +876,17 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const isUnread = status === "ready" && threadHasUnseenCompletion(thread);
   const workingLabel = STATUS_LABEL_BY_STATUS[status];
   const showsWoke = status === "ready" && props.wokeAt !== null;
-  const statusEntry =
-    (status === "working" && workingLabel !== undefined && thread.goal?.status === "active"
-      ? {
-          ...workingLabel,
-          label: msg("Goal", { $context: "thread status, working toward a goal" }),
-        }
-      : workingLabel) ?? (isUnread ? DONE_STATUS_LABEL : undefined);
+  // A stopped VM runs nothing: the row keeps its "Sleeping" line and drops the ticking status.
+  const asleepMidRun =
+    boatCloudState === "sleeping" && (status === "working" || status === "waiting");
+  const statusEntry = asleepMidRun
+    ? undefined
+    : ((status === "working" && workingLabel !== undefined && thread.goal?.status === "active"
+        ? {
+            ...workingLabel,
+            label: msg("Goal", { $context: "thread status, working toward a goal" }),
+          }
+        : workingLabel) ?? (isUnread ? DONE_STATUS_LABEL : undefined));
   const statusLabel = statusEntry && {
     ...statusEntry,
     label: statusEntry.label === null ? null : m(statusEntry.label),

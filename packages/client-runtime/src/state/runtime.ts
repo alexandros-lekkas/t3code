@@ -11,6 +11,7 @@ import {
   type EnvironmentId as EnvironmentIdType,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import type * as Exit from "effect/Exit";
@@ -84,7 +85,7 @@ interface EnvironmentCommandAtomOptions<Input, A, E, R> extends Omit<
     registry: AtomRegistry.AtomRegistry,
     environmentId: EnvironmentIdType,
   ) => Effect.Effect<A, E, R>;
-  /** False for refreshes nobody asked for: they must not turn a sleeping machine on. */
+  /** False for commands nobody asks for by hand: they must not turn a sleeping machine on. */
   readonly wakesEnvironment?: boolean;
 }
 
@@ -148,7 +149,14 @@ export interface AtomCommandOptions {
   readonly reportDefect?: boolean;
   /** Aborting interrupts the run. */
   readonly signal?: AbortSignal | undefined;
+  /** False for a run nobody asked for, such as one an effect or a timer starts. */
+  readonly wakesEnvironment?: boolean;
 }
+
+/** Set while a command runs that nobody asked for, so it leaves a sleeping machine asleep. */
+const UnrequestedRun = Context.Reference<boolean>("@t3tools/client-runtime/state/UnrequestedRun", {
+  defaultValue: () => false,
+});
 
 export interface AtomCommandReporter {
   readonly warn: (message: string, cause: Cause.Cause<unknown>) => void;
@@ -380,8 +388,9 @@ export function runAtomCommand<W, A, E>(
   options: AtomCommandOptions = {},
   reporter: AtomCommandReporter = console,
 ): Promise<AtomCommandResult<A, E>> {
+  const run = Effect.suspend(() => command.run(registry, input));
   return settleAtEdge(
-    Effect.suspend(() => command.run(registry, input)),
+    options.wakesEnvironment === false ? Effect.provideService(run, UnrequestedRun, true) : run,
     { ...options, label: options.label ?? command.label },
     reporter,
   );
@@ -1003,7 +1012,13 @@ export function createEnvironmentCommand<R, ER, Input, A, E>(
     execute: (target, registry) =>
       (options.wakesEnvironment === false
         ? Effect.void
-        : EnvironmentWaker.pipe(Effect.flatMap((waker) => waker.wakeIfAsleep(target.environmentId)))
+        : Effect.flatMap(UnrequestedRun, (unrequested) =>
+            unrequested
+              ? Effect.void
+              : EnvironmentWaker.pipe(
+                  Effect.flatMap((waker) => waker.wakeIfAsleep(target.environmentId)),
+                ),
+          )
       ).pipe(
         Effect.andThen(
           runInEnvironment(

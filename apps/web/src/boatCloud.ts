@@ -641,7 +641,7 @@ export function wakeBoatCloudIfAsleep(environmentId: EnvironmentId): Promise<boo
 }
 
 export interface BoatCloudSleep {
-  readonly state: "sleeping" | "waking";
+  readonly state: "sleeping" | "waking" | "resizing";
   /** This client's wake of the VM, while it runs. */
   readonly wakeSteps: ReadonlyArray<BoatCloudStepProgress> | null;
   /** Turns the VM on and resolves once it is connected; false when that failed. */
@@ -657,7 +657,7 @@ export function useBoatCloudSleep(
   environmentId: EnvironmentId | null,
   phase: EnvironmentConnectionPhase | null,
 ): BoatCloudSleep | null {
-  const holderEnvironmentId = usePrimaryEnvironmentId();
+  const { holderEnvironmentId, status } = usePrimaryBoatCloudStatus();
   const environment = useEnvironment(environmentId);
   const wakeProgress = useAtomValue(boatCloudWakeProgressAtom(environmentId));
   const httpBaseUrl = environment?.displayUrl ?? null;
@@ -669,6 +669,10 @@ export function useBoatCloudSleep(
     phase === "connected"
   ) {
     return null;
+  }
+  // The holder reports a resize from any client; the VM comes back on its own.
+  if ((managedBoatCloudMachine(status, environmentId)?.resizingTo ?? null) !== null) {
+    return { state: "resizing", wakeSteps: null, wake: () => Promise.resolve(false) };
   }
   // Retries cycle the phase, so only this client's own wake reads as waking.
   return {
