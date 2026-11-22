@@ -15,6 +15,7 @@ import type { Project } from "./types";
 
 const primaryEnvironmentId = EnvironmentId.make("env-primary");
 const remoteEnvironmentId = EnvironmentId.make("env-remote");
+const boatCloudEnvironmentId = EnvironmentId.make("env-boat-vm");
 const repositoryIdentity = {
   canonicalKey: "github.com/example/shared-repo",
   locator: {
@@ -279,7 +280,7 @@ describe("environment grouping", () => {
     });
   });
 
-  it("targets an open copy when the preferred project is archived", () => {
+  it("targets an open copy when the preferred project is archived or on a Boat VM", () => {
     const archived = makeProject({
       repositoryIdentity,
       archivedAt: "2026-01-02T00:00:00.000Z",
@@ -289,18 +290,30 @@ describe("environment grouping", () => {
       environmentId: remoteEnvironmentId,
       repositoryIdentity,
     });
+    const onVm = makeProject({
+      id: ProjectId.make("vm-copy"),
+      environmentId: boatCloudEnvironmentId,
+      repositoryIdentity,
+    });
     const groups = buildSidebarProjectSnapshots({
-      projects: [archived, open],
+      projects: [archived, open, onVm],
       settings: defaultGroupingSettings,
       primaryEnvironmentId,
       resolveEnvironmentLabel: () => null,
+      isBoatCloudEnvironment: (environmentId) => environmentId === boatCloudEnvironmentId,
     });
     const [entry] = buildSidebarProjectPickerEntries({
       groups: pickableProjectGroups(groups),
       preferredProjectRef: { environmentId: archived.environmentId, projectId: archived.id },
     });
+    const [fromVm] = buildSidebarProjectPickerEntries({
+      groups: pickableProjectGroups(groups),
+      preferredProjectRef: { environmentId: onVm.environmentId, projectId: onVm.id },
+    });
 
     expect(entry?.targetProject).toMatchObject({ environmentId: open.environmentId, id: open.id });
+    expect(fromVm?.isPreferred).toBe(true);
+    expect(fromVm?.targetProject).toMatchObject({ environmentId: open.environmentId, id: open.id });
     expect(entry?.group.memberProjectRefs).toContainEqual({
       environmentId: archived.environmentId,
       projectId: archived.id,

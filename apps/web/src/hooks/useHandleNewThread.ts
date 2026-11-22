@@ -41,6 +41,8 @@ import { readT3ProjectFile } from "../lib/t3ProjectFileDefaults";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentSummaries } from "../state/presentation";
 import { environmentServerConfigsAtom } from "../state/server";
+import { readBoatCloudEnvironmentIds, readPrimaryEnvironmentId } from "../state/environments";
+import { newThreadProjectRef } from "../boatCloudMachines.logic";
 import { resolveThreadRouteTarget } from "../threadRoutes";
 import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore";
 import { getClientSettings } from "./useSettings";
@@ -93,8 +95,8 @@ export function createNewThreadHandler(router: AnyRouter) {
   };
 
   return (
-    projectRef: ScopedProjectRef,
-    options?: {
+    requestedProjectRef: ScopedProjectRef,
+    requestedOptions?: {
       branch?: string | null;
       worktreePath?: string | null;
       envMode?: DraftThreadEnvMode;
@@ -106,6 +108,19 @@ export function createNewThreadHandler(router: AnyRouter) {
   ): Promise<{ draftId: DraftId; threadId: ThreadId } | null> => {
     const projects = readProjects();
     const projectGroupingSettings = selectProjectGroupingSettings(getClientSettings());
+    const projectRef = newThreadProjectRef({
+      projectRef: requestedProjectRef,
+      projects,
+      logicalProjectKeyOf: (project) =>
+        deriveLogicalProjectKeyFromSettings(project, projectGroupingSettings),
+      boatCloudEnvironmentIds: readBoatCloudEnvironmentIds(),
+      primaryEnvironmentId: readPrimaryEnvironmentId(),
+    });
+    // A Boat VM's worktree path means nothing on the machine the thread moved to.
+    const options =
+      projectRef !== requestedProjectRef && requestedOptions?.worktreePath != null
+        ? { ...requestedOptions, worktreePath: null }
+        : requestedOptions;
     // Read at call time; status pushes replace the config map and would recreate every sidebar handler.
     const environmentServerConfigs = appAtomRegistry.get(environmentServerConfigsAtom);
     const targetServerSettings =

@@ -18,6 +18,7 @@ import {
   boatCloudProviderDrivers,
   cloneRepositoriesScript,
   idleScript,
+  linksOnScript,
   parkCheckoutFunction,
   parseIdleProbe,
   parseMeasure,
@@ -637,6 +638,29 @@ describe("syncSignInsScript", () => {
       "dummy-claude-token",
     );
     assert.isTrue(NodeFS.existsSync(stamp));
+  });
+});
+
+describe("linksOnScript", () => {
+  it("turns Linked environments on in a VM's settings and keeps what is there", () => {
+    const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "boat-links-on-"));
+    using _cleanup = {
+      [Symbol.dispose]: () => NodeFS.rmSync(root, { recursive: true, force: true }),
+    };
+    const file = NodePath.join(root, "userdata", "settings.json");
+    const run = () => NodeChildProcess.spawnSync("sh", ["-c", linksOnScript(file)]).status;
+    const read = () => JSON.parse(NodeFS.readFileSync(file, "utf8"));
+
+    assert.strictEqual(run(), 0);
+    assert.deepStrictEqual(read(), { linkedEnvironmentsEnabled: true });
+
+    NodeFS.writeFileSync(file, JSON.stringify({ theme: "dark", linkedEnvironmentsEnabled: false }));
+    assert.strictEqual(run(), 0);
+    assert.deepStrictEqual(read(), { theme: "dark", linkedEnvironmentsEnabled: true });
+
+    NodeFS.writeFileSync(file, "{ broken");
+    run();
+    assert.strictEqual(NodeFS.readFileSync(file, "utf8"), "{ broken");
   });
 });
 

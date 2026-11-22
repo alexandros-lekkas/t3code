@@ -37,6 +37,8 @@ export type EnvironmentPresence = "local-only" | "remote-only" | "mixed";
 export interface SidebarProjectGroupMember extends Project {
   physicalProjectKey: string;
   environmentLabel: string | null;
+  /** On a Boat VM: its threads list here, but it is never a place to start one or a machine to show. */
+  boatCloud?: boolean;
 }
 
 export interface SidebarProjectSnapshot extends Project {
@@ -59,6 +61,7 @@ export function projectGroupsSpanEnvironments(
   const environmentIds = new Set<EnvironmentId>();
   for (const group of groups) {
     for (const member of group.memberProjects) {
+      if (member.boatCloud) continue;
       environmentIds.add(member.environmentId);
       if (environmentIds.size > 1) return true;
     }
@@ -148,6 +151,7 @@ export function buildSidebarProjectSnapshots(
     groupScratchProjects?: boolean;
     primaryEnvironmentId: EnvironmentId | null;
     resolveEnvironmentLabel: (environmentId: EnvironmentId) => string | null;
+    isBoatCloudEnvironment?: (environmentId: EnvironmentId) => boolean;
     isDesktopLocalEnvironment?: (environmentId: EnvironmentId) => boolean;
     isWslEnvironment?: (environmentId: EnvironmentId) => boolean;
   },
@@ -167,6 +171,7 @@ export function buildSidebarProjectSnapshots(
         ...project,
         physicalProjectKey,
         environmentLabel: input.resolveEnvironmentLabel(project.environmentId),
+        boatCloud: input.isBoatCloudEnvironment?.(project.environmentId) ?? false,
       }),
     );
     const representative =
@@ -222,7 +227,9 @@ export function buildSidebarProjectPickerEntries(input: {
 }) {
   const preferredProjectRef = input.preferredProjectRef;
   const entries = input.groups.flatMap((group): SidebarProjectPickerEntry[] => {
-    const members = group.memberProjects.filter(isPickableProjectMember);
+    const members = group.memberProjects.filter(
+      (member) => isPickableProjectMember(member) && !member.boatCloud,
+    );
     const isPreferred = preferredProjectRef
       ? group.memberProjectRefs.some(
           (projectRef) =>

@@ -10,6 +10,7 @@ import {
 
 const VM_HOME = "/home/user";
 const USERDATA_DB = `${VM_HOME}/.t3/userdata/statev2.sqlite`;
+const VM_SETTINGS = `${VM_HOME}/.t3/userdata/settings.json`;
 export const VM_T3_PORT = 3773;
 export const VM_SKILLS_ARCHIVE = "/tmp/t3-skills.tar.gz";
 export const VM_BACKUP_ARCHIVE = "/tmp/t3-boat-backup.tar.gz";
@@ -265,11 +266,22 @@ const INSTRUCTIONS_MARKER = "t3-boat-cloud";
 const AGENT_INSTRUCTIONS = `This is a Boat cloud VM. When you finish a task, commit your changes with a clear message and push the branch to origin. Do not open a pull request unless the user asks for one.`;
 
 /**
+ * An agent elsewhere reaches a VM's threads as a linked environment, and that setting is off
+ * by default. The server watches the file, so a running one takes it without a restart.
+ * A file that is not JSON is left alone, as the server leaves it for the user to repair.
+ */
+export const linksOnScript = (settingsPath = VM_SETTINGS) => {
+  const merge = `SELECT json_set(CAST(coalesce(readfile('${settingsPath.replaceAll("'", "''")}'), '{}') AS TEXT), '$.linkedEnvironmentsEnabled', json('true'))`;
+  return `grep -qs '"linkedEnvironmentsEnabled": *true' ${q(settingsPath)} || { mkdir -p "$(dirname ${q(settingsPath)})" && sqlite3 :memory: ${q(merge)} > ${q(`${settingsPath}.t3`)} && mv ${q(`${settingsPath}.t3`)} ${q(settingsPath)}; }`;
+};
+
+/**
  * Makes a VM keep itself on during turns and tells its agents to commit and
  * push. Idempotent, so it also brings VMs from an older snapshot up to date.
  */
 const prepareVmScript = `set -e
 ${USER_BUS}
+${linksOnScript()} || rm -f ${VM_SETTINGS}.t3
 changed=""
 put() { [ "$(cat "$1" 2>/dev/null)" = "$2" ] || { printf '%s\\n' "$2" > "$1"; changed=1; }; }
 mkdir -p ${UNIT_DIRECTORY}

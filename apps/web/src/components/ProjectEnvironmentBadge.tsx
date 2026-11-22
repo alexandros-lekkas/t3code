@@ -11,7 +11,8 @@ export function ProjectEnvironmentBadge(props: {
   readonly machineByEnvironmentId: ReadonlyMap<EnvironmentId, EnvironmentMachineKind>;
 }) {
   const gt = useGT();
-  const remoteMembers = props.group.memberProjects
+  const machineMembers = props.group.memberProjects.filter((member) => !member.boatCloud);
+  const remoteMembers = machineMembers
     .filter((member) => member.environmentId !== props.primaryEnvironmentId)
     .map((member) => ({
       ...member,
@@ -24,7 +25,7 @@ export function ProjectEnvironmentBadge(props: {
     .map((member) => member.environmentLabel)
     .filter((label, index, all) => all.indexOf(label) === index)
     .join(", ");
-  const alsoHere = remoteMembers.length < props.group.memberProjects.length;
+  const alsoHere = remoteMembers.length < machineMembers.length;
   const description = alsoHere ? gt("Also on {labels}", { labels }) : gt("On {labels}", { labels });
   return (
     <Tooltip>

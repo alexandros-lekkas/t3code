@@ -3,6 +3,7 @@ import {
   type BoatCloudMachineTypeOption,
   type BoatCloudStatus,
   EnvironmentId,
+  ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
@@ -19,6 +20,7 @@ import {
   boatCloudThreadsByMachine,
   draftStartsOwnBoatCloudMachine,
   managedBoatCloudMachine,
+  newThreadProjectRef,
 } from "./boatCloudMachines.logic";
 
 const vmEnvironment = EnvironmentId.make("vm-env");
@@ -241,5 +243,45 @@ describe("resizing a VM", () => {
     expect(
       interrupts([{ running: true }], true, machine("vm", "stopped", vmEnvironment)),
     ).toBeNull();
+  });
+});
+
+describe("newThreadProjectRef", () => {
+  const primary = EnvironmentId.make("primary-env");
+  const laptop = EnvironmentId.make("laptop-env");
+  const project = (
+    environmentId: EnvironmentId,
+    key: string,
+    archivedAt: string | null = null,
+  ) => ({
+    environmentId,
+    id: ProjectId.make(`${environmentId}-${key}`),
+    key,
+    archivedAt,
+  });
+  const onVm = project(vmEnvironment, "platform");
+  const refOf = (entry: ReturnType<typeof project>) => ({
+    environmentId: entry.environmentId,
+    projectId: entry.id,
+  });
+  const target = (projects: ReadonlyArray<ReturnType<typeof project>>, from = onVm) =>
+    newThreadProjectRef({
+      projectRef: refOf(from),
+      projects,
+      logicalProjectKeyOf: (entry) => entry.key,
+      boatCloudEnvironmentIds: new Set([vmEnvironment]),
+      primaryEnvironmentId: primary,
+    });
+
+  it("moves a new thread off a Boat VM to an open copy on a machine, this one first", () => {
+    const onLaptop = project(laptop, "platform");
+    const onPrimary = project(primary, "platform");
+    const other = project(primary, "other");
+    expect(target([onVm, onLaptop, onPrimary, other])).toEqual(refOf(onPrimary));
+    expect(target([onVm, onLaptop, project(primary, "platform", "2026-01-01")])).toEqual(
+      refOf(onLaptop),
+    );
+    expect(target([onVm, other])).toEqual(refOf(onVm));
+    expect(target([onVm, onLaptop], onLaptop)).toEqual(refOf(onLaptop));
   });
 });

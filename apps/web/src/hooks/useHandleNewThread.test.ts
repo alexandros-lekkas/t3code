@@ -244,6 +244,10 @@ vi.mock("../state/olderSettledShelf", () => ({ readUnloadedThreadCount: () => 0 
 vi.mock("../state/presentation", () => ({
   environmentSummaries: { connectedEnvironmentIdsAtom: "connected-environment-ids" },
 }));
+vi.mock("../state/environments", () => ({
+  readBoatCloudEnvironmentIds: () => new Set(),
+  readPrimaryEnvironmentId: () => null,
+}));
 vi.mock("../state/server", () => ({
   environmentServerConfigsAtom: {},
   primaryServerSettingsAtom: "primary-settings",

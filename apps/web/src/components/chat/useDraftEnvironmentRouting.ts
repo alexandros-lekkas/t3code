@@ -32,7 +32,13 @@ import {
   selectProjectGroupingSettings,
 } from "@t3tools/client-runtime/state/project-grouping";
 import { useComposerDraftStore, DraftId } from "../../composerDraftStore";
-import { type EnvironmentPresentation, useEnvironmentProviders } from "../../state/environments";
+import {
+  type EnvironmentPresentation,
+  readPrimaryEnvironmentId,
+  useBoatCloudEnvironmentIds,
+  useEnvironmentProviders,
+} from "../../state/environments";
+import { newThreadProjectRef } from "../../boatCloudMachines.logic";
 import { currentClientMetadata } from "../../connection/platform";
 import { useProjects } from "../../state/entities";
 import { rememberOpenedBoatCloudThread } from "../../state/boatCloudThreads";
@@ -371,6 +377,32 @@ export function useDraftEnvironmentRouting(input: DraftEnvironmentRoutingInput) 
     );
     return true;
   };
+  const boatCloudEnvironmentIds = useBoatCloudEnvironmentIds();
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- a saved draft can still sit on a Boat VM, known only once its connection loads; it moves to the project on a machine
+  useEffect(() => {
+    if (!draftId || !draftThread || draftThread.promotedTo || sendInFlightRef.current) return;
+    if (draftThread.environmentSelection === "cloud") return;
+    const onDraft = scopeProjectRef(draftThread.environmentId, draftThread.projectId);
+    const projectRef = newThreadProjectRef({
+      projectRef: onDraft,
+      projects: allProjects,
+      logicalProjectKeyOf: (project) =>
+        deriveLogicalProjectKeyFromSettings(project, projectGroupingSettings),
+      boatCloudEnvironmentIds,
+      primaryEnvironmentId: readPrimaryEnvironmentId(),
+    });
+    if (projectRef === onDraft) return;
+    carryFanoutSelections(draftThread, projectRef.environmentId);
+    setDraftThreadContext(draftId, { projectRef, loadBalancedEnvironmentId: null });
+  }, [
+    draftId,
+    draftThread,
+    allProjects,
+    projectGroupingSettings,
+    boatCloudEnvironmentIds,
+    sendInFlightRef,
+    setDraftThreadContext,
+  ]);
   const onAutoEnvironment = () => {
     if (envLocked || !draftId || runOnHeldBySend("auto")) return;
     if (composerHasAttachments) {

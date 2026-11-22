@@ -8,6 +8,7 @@ import {
 import { Discovery } from "@t3tools/client-runtime/relay";
 import type { EnvironmentId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
+import { Atom } from "effect/reactivity";
 
 import { environmentCatalog } from "../connection/catalog";
 import { appAtomRegistry } from "../rpc/atomRegistry";
@@ -77,6 +78,28 @@ export function isMachineEnvironment(environment: Pick<BaseEnvironmentPresentati
     environment.entry.target._tag === "PrimaryConnectionTarget" ||
     !isBoatCloudConnectionEntry(environment.entry)
   );
+}
+
+/** Boat VMs among the saved connections, so server pushes never recompute it. */
+const boatCloudEnvironmentIdsAtom = Atom.make((get) => {
+  const next = new Set<EnvironmentId>();
+  for (const [environmentId, entry] of get(environmentCatalog.catalogValueAtom).entries) {
+    if (!isMachineEnvironment({ entry })) next.add(environmentId);
+  }
+  const previous = Option.getOrNull(get.self<ReadonlySet<EnvironmentId>>());
+  return previous !== null &&
+    previous.size === next.size &&
+    [...next].every((id) => previous.has(id))
+    ? previous
+    : next;
+});
+
+export function useBoatCloudEnvironmentIds(): ReadonlySet<EnvironmentId> {
+  return useAtomValue(boatCloudEnvironmentIdsAtom);
+}
+
+export function readBoatCloudEnvironmentIds(): ReadonlySet<EnvironmentId> {
+  return appAtomRegistry.get(boatCloudEnvironmentIdsAtom);
 }
 
 export function machineEnvironmentsOf<T extends Pick<BaseEnvironmentPresentation, "entry">>(

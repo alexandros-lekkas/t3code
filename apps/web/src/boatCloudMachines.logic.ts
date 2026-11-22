@@ -4,6 +4,8 @@ import type {
   BoatCloudMachineTypeOption,
   BoatCloudStatus,
   EnvironmentId,
+  ProjectId,
+  ScopedProjectRef,
   ScopedThreadRef,
   ThreadId,
 } from "@t3tools/contracts";
@@ -62,6 +64,44 @@ export function boatCloudMachineOfThread(input: {
   if (!input.onBoatCloud) return null;
   const serving = status.machines.filter((machine) => machine.environmentId === ref.environmentId);
   return serving.length === 1 ? serving[0]! : null;
+}
+
+/**
+ * A new thread never starts on a Boat VM, which serves only the thread it was started for. It
+ * goes to an open copy of the same project on one of the user's machines, this one first, and
+ * stays put only when there is none.
+ */
+export function newThreadProjectRef<
+  P extends {
+    readonly environmentId: EnvironmentId;
+    readonly id: ProjectId;
+    readonly archivedAt?: string | null | undefined;
+  },
+>(input: {
+  readonly projectRef: ScopedProjectRef;
+  readonly projects: ReadonlyArray<P>;
+  readonly logicalProjectKeyOf: (project: P) => string;
+  readonly boatCloudEnvironmentIds: ReadonlySet<EnvironmentId>;
+  readonly primaryEnvironmentId: EnvironmentId | null;
+}): ScopedProjectRef {
+  const { projectRef, boatCloudEnvironmentIds } = input;
+  if (!boatCloudEnvironmentIds.has(projectRef.environmentId)) return projectRef;
+  const requested = input.projects.find(
+    (project) =>
+      project.environmentId === projectRef.environmentId && project.id === projectRef.projectId,
+  );
+  if (requested === undefined) return projectRef;
+  const key = input.logicalProjectKeyOf(requested);
+  const candidates = input.projects.filter(
+    (project) =>
+      project.archivedAt == null &&
+      !boatCloudEnvironmentIds.has(project.environmentId) &&
+      input.logicalProjectKeyOf(project) === key,
+  );
+  const target =
+    candidates.find((project) => project.environmentId === input.primaryEnvironmentId) ??
+    candidates[0];
+  return target ? { environmentId: target.environmentId, projectId: target.id } : projectRef;
 }
 
 /**

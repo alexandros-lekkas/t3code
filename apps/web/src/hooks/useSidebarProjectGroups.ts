@@ -6,7 +6,11 @@ import {
   selectProjectGroupingSettings,
 } from "@t3tools/client-runtime/state/project-grouping";
 import { buildSidebarProjectSnapshots } from "../sidebarProjectGrouping";
-import { useEnvironmentIdentities, usePrimaryEnvironmentId } from "../state/environments";
+import {
+  useBoatCloudEnvironmentIds,
+  useEnvironmentIdentities,
+  usePrimaryEnvironmentId,
+} from "../state/environments";
 import { useDelegatedUnderParent, useProjects, useQuietThreadShells } from "../state/entities";
 import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore";
 import { useClientSettings } from "./useSettings";
@@ -22,6 +26,7 @@ export function useSidebarProjectGroups() {
   const groupingSettings = useClientSettings(selectProjectGroupingSettings);
   const environments = useEnvironmentIdentities();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const boatCloudEnvironmentIds = useBoatCloudEnvironmentIds();
   const resolve = useMessages();
   const orderedProjects = orderItemsByPreferredIds({
     items: projects,
@@ -42,6 +47,7 @@ export function useSidebarProjectGroups() {
       settings: groupingSettings,
       primaryEnvironmentId,
       resolveEnvironmentLabel: (environmentId) => labels.get(environmentId) ?? null,
+      isBoatCloudEnvironment: (environmentId) => boatCloudEnvironmentIds.has(environmentId),
     },
     resolve,
   );
