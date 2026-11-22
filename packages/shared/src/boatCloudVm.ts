@@ -138,19 +138,28 @@ const RUNS = "orchestration_v2_projection_runs";
 const ACTIVE_RUNS_QUERY = `SELECT count(*) FROM ${RUNS} WHERE status IN (${ACTIVE_RUN_STATUSES})`;
 /** `<active runs> <runs asked for within the unattended cap>` on one line. */
 const RUNS_QUERY = `SELECT (${ACTIVE_RUNS_QUERY}) || ' ' || (SELECT count(*) FROM ${RUNS} WHERE requested_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-${MAX_UNATTENDED_SECONDS} seconds'))`;
+const HELD_TASK = `json_extract(json_each.value, '\\$.awaited') = 1 OR json_extract(json_each.value, '\\$.kind') NOT IN ('command','monitor')`;
+const TURN_ITEMS = "orchestration_v2_projection_turn_items";
 /**
- * Background work an agent said it waits on (t3_background_wait). Its turn has ended, so no
- * run is active, but the thread resumes when the work ends. A dev server it left is not awaited.
+ * What keeps a thread reading "Waiting" after its turn ended, so no run is active: a subagent
+ * or background task, work the agent waits on (t3_background_wait), or a pull request watch
+ * with checks running. Mirrors `backgroundWorkHoldsCompletion`; a dev server it left holds
+ * nothing. One query each, so a table an older T3 lacks does not hide the others.
  */
-const AWAITED_WORK_QUERY = `SELECT count(*) FROM orchestration_v2_projection_provider_threads, json_each(payload_json, '\\$.pendingBackgroundTasks') WHERE status NOT IN ('closed','archived','error') AND json_extract(json_each.value, '\\$.awaited') = 1`;
+const HELD_WORK_QUERIES = [
+  `SELECT count(*) FROM orchestration_v2_projection_provider_threads, json_each(payload_json, '\\$.pendingBackgroundTasks') WHERE status NOT IN ('closed','archived','error') AND (${HELD_TASK})`,
+  // The first two terms repeat the recovery index's own condition so SQLite uses it.
+  `SELECT count(*) FROM ${TURN_ITEMS} WHERE type IN ('command_execution', 'dynamic_tool', 'subagent') AND status IN ('pending', 'running', 'waiting') AND type != 'command_execution' AND json_extract(payload_json, '\\$.input.persistent') IS NOT 1 AND (run_id IS NULL OR run_id NOT IN (SELECT run_id FROM ${RUNS} WHERE status = 'rolled_back'))`,
+  `SELECT count(*) FROM orchestration_v2_projection_threads, json_each(payload_json, '\\$.pullRequests') WHERE deleted_at IS NULL AND json_extract(json_each.value, '\\$.watch') IS NOT NULL AND json_extract(json_each.value, '\\$.source') IS NOT 'stack-dismissed' AND (json_extract(json_each.value, '\\$.watch.checksPending') IS NOT 0 OR json_extract(json_each.value, '\\$.watch.until') IS 'merged' OR json_extract(json_each.value, '\\$.snapshot.state') IS 'merged')`,
+];
 const TERMINAL_LOGS = `${VM_HOME}/.t3/userdata/logs/terminals`;
 
-/** Epoch seconds of the last time the VM saw a running turn, awaited work, a busy terminal or a hand-out. */
+/** Epoch seconds of the last time the VM saw a running turn, held work, a busy terminal or a hand-out. */
 const LAST_ACTIVE_PATH = `${VM_HOME}/.t3-boat-last-active`;
 /** Touched on every hand-out and wake, which count as someone asking for the VM. */
 const HANDED_OUT_PATH = `${VM_HOME}/.t3-boat-handed-out`;
 /**
- * Sets `active` to 1 while a turn runs, an agent waits on background work, or a terminal wrote
+ * Sets `active` to 1 while a turn runs, a thread waits on background work, or a terminal wrote
  * in the last two minutes, and someone asked for the VM within the unattended cap; 0 otherwise.
  */
 const READ_ACTIVE = `db=${USERDATA_DB}
@@ -162,8 +171,7 @@ attended=""
 [ -n "$(find ${HANDED_OUT_PATH} -mmin -${MAX_UNATTENDED_SECONDS / 60} 2>/dev/null)" ] && attended=1
 busy=""
 [ "\${running:-0}" -gt 0 ] 2>/dev/null && busy=1
-awaited="$(sqlite3 -readonly "$db" "${AWAITED_WORK_QUERY}" 2>/dev/null)"
-[ "\${awaited:-0}" -gt 0 ] 2>/dev/null && busy=1
+${HELD_WORK_QUERIES.map((query) => `[ "$(sqlite3 -readonly "$db" "${query}" 2>/dev/null || echo 0)" -gt 0 ] 2>/dev/null && busy=1`).join("\n")}
 [ -n "$(find ${TERMINAL_LOGS} -type f -mmin -2 2>/dev/null | head -n1)" ] && busy=1
 active=0
 [ -n "$attended" ] && [ -n "$busy" ] && active=1 && date +%s > ${LAST_ACTIVE_PATH}`;

@@ -314,32 +314,72 @@ describe.skipIf(!hasSqlite)("idleScript", () => {
       `CREATE TABLE orchestration_v2_projection_provider_threads (provider_thread_id TEXT, status TEXT, payload_json TEXT); ${rows.join("; ")}`,
     );
 
-  it("is busy while an agent waits on background work, within the unattended cap", () => {
+  const turnItem = (id: string, type: string, runId: string, payload: object = {}) =>
+    `INSERT INTO orchestration_v2_projection_turn_items VALUES ('${id}', '${runId}', '${type}', 'running', '${JSON.stringify(payload)}')`;
+  const withTurnItems = (db: string, ...rows: ReadonlyArray<string>) =>
+    insert(
+      db,
+      `CREATE TABLE orchestration_v2_projection_turn_items (turn_item_id TEXT, run_id TEXT, type TEXT, status TEXT, payload_json TEXT); ${rows.join("; ")}`,
+    );
+  const watching = (watch: object, extra: object = {}) =>
+    `INSERT INTO orchestration_v2_projection_threads (thread_id, payload_json) VALUES ('t1', '${JSON.stringify({ pullRequests: [{ source: "agent", snapshot: null, watch, ...extra }] })}')`;
+  const ended = (secondsAgo: number, db: string) =>
+    insert(
+      db,
+      `INSERT INTO orchestration_v2_projection_runs VALUES ('r1', 'completed', '${at(secondsAgo)}'), ('r0', 'rolled_back', '${at(secondsAgo)}')`,
+    );
+
+  it("is busy while a thread waits on background work, within the unattended cap", () => {
     const awaitedBuild = { kind: "command", taskId: "build", awaited: true };
     const asked = (secondsAgo: number) => (_home: string, db: string) => {
-      insert(
-        db,
-        `INSERT INTO orchestration_v2_projection_runs VALUES ('r1', 'completed', '${at(secondsAgo)}')`,
-      );
+      ended(secondsAgo, db);
       withProviderThreads(db, providerThread("p1", "idle", [awaitedBuild]));
     };
     assert.match(runIdle(asked(600)), /^1 0 \d+ -$/u);
     assert.strictEqual(runIdle(asked(7 * 3600)), "0 0 - -");
+
+    const held: Record<string, (db: string) => void> = {
+      "a background subagent": (db) =>
+        withProviderThreads(db, providerThread("p1", "idle", [{ kind: "subagent", taskId: "a" }])),
+      "a kind this build does not know": (db) =>
+        withProviderThreads(db, providerThread("p1", "idle", [{ kind: "later", taskId: "a" }])),
+      "a running subagent item": (db) => withTurnItems(db, turnItem("i1", "subagent", "r1")),
+      "a running tool item": (db) => withTurnItems(db, turnItem("i1", "dynamic_tool", "r1")),
+      "a watch not read yet": (db) => insert(db, watching({})),
+      "a watch with checks running": (db) => insert(db, watching({ checksPending: true })),
+      "a watch held until merge": (db) =>
+        insert(db, watching({ checksPending: false, until: "merged" })),
+    };
+    for (const [name, setup] of Object.entries(held)) {
+      const output = runIdle((_home, db) => {
+        ended(600, db);
+        setup(db);
+      });
+      assert.match(output, /^1 \d \d+ -$/u, name);
+    }
   });
 
   it("is not busy for work no one waits on, or on a closed provider thread", () => {
     const output = runIdle((_home, db) => {
-      insert(
-        db,
-        `INSERT INTO orchestration_v2_projection_runs VALUES ('r1', 'completed', '${at(600)}')`,
-      );
+      ended(600, db);
       withProviderThreads(
         db,
-        providerThread("p1", "idle", [{ kind: "command", taskId: "dev-server" }]),
+        providerThread("p1", "idle", [
+          { kind: "command", taskId: "dev-server" },
+          { kind: "monitor", taskId: "watchdog" },
+        ]),
         providerThread("p2", "closed", [{ kind: "command", taskId: "build", awaited: true }]),
       );
+      withTurnItems(
+        db,
+        turnItem("i1", "command_execution", "r1"),
+        turnItem("i2", "subagent", "r0"),
+        turnItem("i3", "dynamic_tool", "r1", { input: { persistent: true } }),
+      );
+      insert(db, watching({ checksPending: false }));
+      insert(db, watching({}, { source: "stack-dismissed" }));
     });
-    assert.strictEqual(output, "0 0 - -");
+    assert.strictEqual(output, "0 2 - -");
   });
 
   const thread = (id: string, payload: object, deletedAt: string | null = null) =>
