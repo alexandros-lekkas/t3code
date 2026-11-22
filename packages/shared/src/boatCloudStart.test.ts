@@ -210,6 +210,27 @@ describe("startMachine on a running VM", () => {
     }),
   );
 
+  it.effect("starts without a repository: no checkout, no project, no worktree", () =>
+    Effect.gen(function* () {
+      const vm = runningVm("env-1");
+      const reported: Array<string> = [];
+      const started = yield* startMachine({
+        api: vm.api,
+        repository: null,
+        baseBranch: null,
+        environment: "base",
+        snapshot: SNAPSHOT,
+        knownWorkspaceRoots: () => [],
+        report: (step) => Effect.sync(() => void reported.push(step)),
+      });
+      yield* started.checkout;
+      assert.isNull(started.workspaceRoot);
+      assert.isNull(started.worktree);
+      assert.notInclude(reported, "repository");
+      assert.isFalse(vm.commands.some((command) => command.includes("project add")));
+    }),
+  );
+
   it.effect("asks Boat to host the port only after the server started, when the VM could not", () =>
     Effect.gen(function* () {
       const vm = runningVm("env-1", { spare: true, hostsItself: false });

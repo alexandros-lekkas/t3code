@@ -223,7 +223,8 @@ export const layerFake = (options: FakeLayerOptions = {}) =>
       return BoatCloud.BoatCloudService.of({
         ...inner,
         acquire: Effect.fn("FakeBoatCloud.acquire")(function* (input) {
-          const repository = parseRepository(input.repositoryUrl);
+          const repository =
+            input.repositoryUrl === undefined ? null : parseRepository(input.repositoryUrl);
           const workspaceRoot =
             repository === null ? null : yield* local.workspaceRootOf(repository.key);
           if (repository !== null && workspaceRoot === null) {

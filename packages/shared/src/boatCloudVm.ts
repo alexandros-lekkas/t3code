@@ -619,11 +619,15 @@ fi`;
  * of the last 10 seconds that tasks waited for a CPU. The load average also counts tasks
  * waiting on Boat's lazily fetched disk, so a just-resumed idle VM read as busy for a minute.
  */
-export const measureScript = (workspaceRoot: string) =>
+export const measureScript = (workspaceRoot: string | null) =>
   `cpu="$(awk '/^some /{sub("avg10=", "", $2); print $2 / 100}' /proc/pressure/cpu 2>/dev/null)"
 [ -n "$cpu" ] || cpu="$(awk -v cpus="$(nproc)" '{print $1 / cpus}' /proc/loadavg)"
-printf '%s %s %s\\n' "$cpu" "$(awk '/^MemTotal:/{print $2}' /proc/meminfo)" "$(awk '/^MemAvailable:/{print $2}' /proc/meminfo)"
-[ ! -d ${q(`${workspaceRoot}/.git`)} ] || printf '%s\\n' ${q(workspaceRoot)}`;
+printf '%s %s %s\\n' "$cpu" "$(awk '/^MemTotal:/{print $2}' /proc/meminfo)" "$(awk '/^MemAvailable:/{print $2}' /proc/meminfo)"${
+    workspaceRoot === null
+      ? ""
+      : `
+[ ! -d ${q(`${workspaceRoot}/.git`)} ] || printf '%s\\n' ${q(workspaceRoot)}`
+  }`;
 
 export const BASE_BRANCH_MISSING_EXIT = 3;
 
@@ -1026,7 +1030,8 @@ export type MachineChoice =
  */
 export function pickMachine(
   allCandidates: ReadonlyArray<MachineCandidate>,
-  workspaceRoot: string,
+  /** Null prefers no VM for its checkout. */
+  workspaceRoot: string | null,
   environment: string | null,
   /** False keeps each thread on a VM of its own: only the spare, which serves none, is reused. */
   shareMachines = true,
@@ -1049,7 +1054,7 @@ export function pickMachine(
       fitsType(candidate),
   );
   const hasCheckout = (candidate: MachineCandidate) =>
-    candidate.workspaceRoots.includes(workspaceRoot);
+    workspaceRoot !== null && candidate.workspaceRoots.includes(workspaceRoot);
   const free = candidates
     .filter(
       (candidate) =>

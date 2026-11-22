@@ -543,8 +543,11 @@ export const BoatCloudRunSetupInput = Schema.Struct({
 export type BoatCloudRunSetupInput = typeof BoatCloudRunSetupInput.Type;
 
 export const BoatCloudAcquireInput = Schema.Struct({
-  /** The project's git remote; the VM clones it when it does not have it yet. */
-  repositoryUrl: TrimmedNonEmptyString.check(Schema.isMaxLength(2048)),
+  /**
+   * The project's git remote; the VM clones it when it does not have it yet. Absent starts a
+   * VM with no checkout, for a thread without a project.
+   */
+  repositoryUrl: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(2048))),
   /** The thread's base branch; the start fails early when the remote does not have it. */
   baseBranch: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(512))),
   /**
@@ -592,7 +595,7 @@ export const BoatCloudSession = Schema.Struct({
   httpBaseUrl: TrimmedNonEmptyString,
   /** Null when the client is already paired with this environment and reconnects instead. */
   pairingCode: Schema.NullOr(TrimmedNonEmptyString),
-  /** Repository checkout on the VM; null for a wake. */
+  /** Repository checkout on the VM; null for a wake or a start without a repository. */
   workspaceRoot: Schema.NullOr(TrimmedNonEmptyString),
   /**
    * The thread's worktree, which the VM cuts while its server starts. Ready once the start's

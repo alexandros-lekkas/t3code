@@ -265,7 +265,8 @@ export interface StartedMachine {
   readonly httpBaseUrl: string;
   /** Null when the client already paired with this VM and only reconnects. */
   readonly pairingCode: string | null;
-  readonly workspaceRoot: string;
+  /** Null for a start without a repository. */
+  readonly workspaceRoot: string | null;
   /** The thread's worktree, ready once `checkout` is; null without a base branch. */
   readonly worktree: PreparedWorktree | null;
   readonly created: boolean;
@@ -299,7 +300,8 @@ export interface ReadySpare {
 
 interface StartMachineInput {
   readonly api: BoatApi;
-  readonly repository: ParsedRepository;
+  /** Null starts a VM with no checkout, for a thread without a project. */
+  readonly repository: ParsedRepository | null;
   /** The thread's base branch, which must be on the remote. */
   readonly baseBranch: string | null;
   /** The Boat environment a new VM starts on and a reused one must already run; Boat's default when null. */
@@ -363,6 +365,9 @@ const startCheckout = Effect.fn("BoatCloud.startCheckout")(function* (
   alongside: Effect.Effect<void, BoatApiError> = Effect.void,
 ) {
   const { api, repository, report } = input;
+  if (repository === null) {
+    return { worktree: null, fiber: yield* Effect.forkDetach(alongside) };
+  }
   // The same temporary name T3 gives a new worktree, so the server renames it after the first message.
   const worktree: PreparedWorktree | null =
     input.baseBranch === null
@@ -405,7 +410,7 @@ const handOutSpare = Effect.fn("BoatCloud.handOutSpare")(function* (
   if (input.onReused) yield* input.onReused(sandboxId);
   const claim = Effect.all(
     [
-      takeSpare(api, sandboxId, spare.snapshot, input.repository.name).pipe(
+      takeSpare(api, sandboxId, spare.snapshot, input.repository?.name ?? "").pipe(
         Effect.tapError(() => report("repository", "failed", "Could not take the ready VM.")),
       ),
       api.extend(sandboxId, input.idleTtlSeconds ?? IDLE_TTL_SECONDS).pipe(
@@ -426,7 +431,7 @@ const handOutSpare = Effect.fn("BoatCloud.handOutSpare")(function* (
     environmentId: spare.environmentId,
     httpBaseUrl: spare.httpBaseUrl,
     pairingCode: spare.pairingCode,
-    workspaceRoot: input.repository.workspaceRoot,
+    workspaceRoot: input.repository?.workspaceRoot ?? null,
     worktree,
     created: false,
     checkout: Fiber.join(fiber),
@@ -469,7 +474,7 @@ export const startMachine = Effect.fn("BoatCloud.startMachine")(function* (
           });
         }
         // The load decides between sharing this VM and starting another, even when it is the only one.
-        return exec(api, sandbox.id, measureScript(repository.workspaceRoot), 20).pipe(
+        return exec(api, sandbox.id, measureScript(repository?.workspaceRoot ?? null), 20).pipe(
           Effect.map(parseMeasure),
           Effect.orElseSucceed(() => null),
           Effect.map((measure) => ({
@@ -488,7 +493,7 @@ export const startMachine = Effect.fn("BoatCloud.startMachine")(function* (
     return {
       choice: pickMachine(
         candidates,
-        repository.workspaceRoot,
+        repository?.workspaceRoot ?? null,
         input.environment,
         shareMachines,
         input.machineType ?? null,
@@ -519,7 +524,7 @@ export const startMachine = Effect.fn("BoatCloud.startMachine")(function* (
         api,
         sandboxId,
         chosen?.labels?.[SNAPSHOT_LABEL] ?? input.snapshot,
-        repository.name,
+        repository?.name ?? "",
       );
       if (input.onAdded) yield* input.onAdded(sandboxId);
     }
@@ -543,7 +548,7 @@ export const startMachine = Effect.fn("BoatCloud.startMachine")(function* (
       Effect.gen(function* () {
         if (choice.kind === "create") {
           const created = yield* api.createSandbox({
-            name: machineNameOf(repository.name),
+            name: machineNameOf(repository?.name ?? ""),
             type: input.machineType ?? "default",
             labels: threadLabels(input.snapshot),
             from: input.snapshot,
@@ -613,7 +618,7 @@ export const startMachine = Effect.fn("BoatCloud.startMachine")(function* (
     environmentId: server.environmentId,
     httpBaseUrl: server.httpBaseUrl,
     pairingCode: server.pairingCode,
-    workspaceRoot: repository.workspaceRoot,
+    workspaceRoot: repository?.workspaceRoot ?? null,
     worktree,
     created: choice.kind === "create",
     checkout: Fiber.join(checkoutFiber),

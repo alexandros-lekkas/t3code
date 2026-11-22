@@ -19,17 +19,23 @@ export interface BoatCloudStartProgress {
 
 const HOLDER_STEPS: ReadonlySet<BoatCloudStartStep> = new Set(["machine", "server", "repository"]);
 
-/** A fresh start; one that replaces a failed start keeps its send, with every step left to show. */
+/**
+ * A fresh start; one that replaces a failed start keeps its send, with every step left to show.
+ * A start without a checkout has no repository step.
+ */
 export function startingProgress(
   repository: string | null,
   previous: BoatCloudStartProgress | null = null,
+  checkout = true,
 ): BoatCloudStartProgress {
   return {
-    steps: BOAT_CLOUD_START_STEPS.map((step) => ({
-      step,
-      state: step === "machine" ? "active" : "pending",
-      detail: step === "repository" ? repository : null,
-    })),
+    steps: BOAT_CLOUD_START_STEPS.filter((step) => checkout || step !== "repository").map(
+      (step) => ({
+        step,
+        state: step === "machine" ? "active" : "pending",
+        detail: step === "repository" ? repository : null,
+      }),
+    ),
     error: null,
     repository,
     sent: previous?.sent ? { at: previous.sent.at, doneBefore: [] } : null,

@@ -39,6 +39,7 @@ import {
   useEnvironmentProviders,
 } from "../../state/environments";
 import { newThreadProjectRef } from "../../boatCloudMachines.logic";
+import { isScratchProject } from "@t3tools/client-runtime/state/projects";
 import { currentClientMetadata } from "../../connection/platform";
 import { useProjects } from "../../state/entities";
 import { rememberOpenedBoatCloudThread } from "../../state/boatCloudThreads";
@@ -195,6 +196,23 @@ export function useDraftEnvironmentRouting(input: DraftEnvironmentRoutingInput) 
       (candidate) =>
         candidate.environmentId === draft.environmentId && candidate.id === draft.projectId,
     );
+    const machineTypeForDraft =
+      appAtomRegistry.get(boatCloudDraftMachineTypeAtom(draftId ?? "")) ?? machineType;
+    // A draft without a project gets a VM with no checkout, and the VM's own scratch project.
+    if (
+      project &&
+      isScratchProject(
+        project,
+        environmentById.get(project.environmentId)?.serverConfig?.scratchWorkspaceRoot ?? null,
+      )
+    ) {
+      return {
+        holderEnvironmentId: boatCloud.holderEnvironmentId,
+        repositoryUrl: null,
+        baseBranch: null,
+        machineType: machineTypeForDraft,
+      };
+    }
     // A fork's own remote, where the agent can push, rather than the upstream it groups under.
     const identity = project?.repositoryIdentity;
     const repositoryUrl = identity?.origin?.remoteUrl ?? identity?.locator.remoteUrl;
@@ -214,7 +232,7 @@ export function useDraftEnvironmentRouting(input: DraftEnvironmentRoutingInput) 
       holderEnvironmentId: boatCloud.holderEnvironmentId,
       repositoryUrl,
       baseBranch: draft.branch,
-      machineType: appAtomRegistry.get(boatCloudDraftMachineTypeAtom(draftId ?? "")) ?? machineType,
+      machineType: machineTypeForDraft,
     };
   };
   const moveToBoatCloud = async () => {
@@ -241,10 +259,32 @@ export function useDraftEnvironmentRouting(input: DraftEnvironmentRoutingInput) 
       return false;
     }
     const { project, worktree, sandboxId } = target;
+    carryFanoutSelections(originalDraft, project.environmentId);
+    if (start.repositoryUrl === null) {
+      // The VM's scratch project groups apart from this machine's, so the draft moves under it.
+      flushSync(() =>
+        setLogicalProjectDraftThreadId(
+          deriveLogicalProjectKeyFromSettings(project, projectGroupingSettings),
+          scopeProjectRef(project.environmentId, project.id),
+          draftId,
+          {
+            environmentSelection: "cloud",
+            loadBalancedEnvironmentId: null,
+            envMode: "local",
+            branch: null,
+            worktreePath: null,
+          },
+        ),
+      );
+      rememberOpenedBoatCloudThread(
+        { environmentId: project.environmentId, threadId: currentDraft.threadId },
+        sandboxId,
+      );
+      return true;
+    }
     const baseBranch = currentDraft.branch ?? originalDraft.branch;
     // The VM cut the worktree from the base the start asked for; a base picked since needs a new one.
     const readyWorktree = worktree?.baseBranch === baseBranch ? worktree : null;
-    carryFanoutSelections(originalDraft, project.environmentId);
     // The send must read the VM project's composer and provider context after retargeting.
     // Attachments stay on the draft; the send uploads them to the VM it now targets.
     flushSync(() =>

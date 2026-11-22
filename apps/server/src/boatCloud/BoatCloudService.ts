@@ -1441,8 +1441,9 @@ const make = Effect.gen(function* () {
 
   const acquireNew = Effect.fn("BoatCloud.acquire")(function* (input: BoatCloudAcquireInput) {
     const api = yield* requireApi;
-    const repository = parseRepository(input.repositoryUrl);
-    if (repository === null) {
+    const repository =
+      input.repositoryUrl === undefined ? null : parseRepository(input.repositoryUrl);
+    if (input.repositoryUrl !== undefined && repository === null) {
       return yield* new BoatCloudError({
         message: "Boat needs a project with a git remote it can clone.",
       });
@@ -1472,7 +1473,7 @@ const make = Effect.gen(function* () {
         Effect.logInfo("boat cloud start timing", {
           outcome,
           sandboxId,
-          repository: repository.key,
+          repository: repository?.key ?? null,
           totalMs: at - startedAt,
           endedAtMs,
         }),
@@ -1569,7 +1570,7 @@ const make = Effect.gen(function* () {
       Effect.andThen(
         Effect.suspend(() => {
           const repositories = findMachine(started.sandboxId)?.repositories ?? [];
-          return repositories.includes(repository.key)
+          return repository === null || repositories.includes(repository.key)
             ? Effect.void
             : updateMachine(started.sandboxId, {
                 repositories: [...repositories, repository.key],

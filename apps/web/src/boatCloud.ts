@@ -61,7 +61,7 @@ import {
 import { environmentPresentations, environmentSummaries } from "./state/presentation";
 import { threadEnvironment } from "./state/threads";
 import { environmentSession, sessionHasScope } from "./state/session";
-import { environmentProjects } from "./state/projects";
+import { environmentProjects, projectEnvironment } from "./state/projects";
 import { useEnvironmentQuery } from "./state/query";
 import { environmentServerConfigsAtom, serverEnvironment } from "./state/server";
 import { waitForAtomValue } from "./state/waitForAtomValue";
@@ -242,8 +242,9 @@ async function attach(session: BoatCloudSession): Promise<string | null> {
 interface BoatCloudPrepareInput {
   readonly draftId: DraftId;
   readonly holderEnvironmentId: EnvironmentId;
-  readonly repositoryUrl: string;
-  readonly baseBranch: string;
+  /** Null starts a VM with no checkout, whose thread runs in the VM's scratch project. */
+  readonly repositoryUrl: string | null;
+  readonly baseBranch: string | null;
   readonly machineType: BoatCloudMachineType;
 }
 
@@ -269,8 +270,9 @@ async function prepareBoatCloudProjectNow(
   appAtomRegistry.set(
     progressAtom,
     startingProgress(
-      parseRepository(input.repositoryUrl)?.name ?? null,
+      input.repositoryUrl === null ? null : (parseRepository(input.repositoryUrl)?.name ?? null),
       appAtomRegistry.get(progressAtom),
+      input.repositoryUrl !== null,
     ),
   );
   // The holder logs its own steps as "boat cloud start timing"; this is the client's share.
@@ -326,8 +328,8 @@ async function prepareBoatCloudProjectNow(
         {
           environmentId: input.holderEnvironmentId,
           input: {
-            repositoryUrl: input.repositoryUrl,
-            baseBranch: input.baseBranch,
+            ...(input.repositoryUrl === null ? {} : { repositoryUrl: input.repositoryUrl }),
+            ...(input.baseBranch === null ? {} : { baseBranch: input.baseBranch }),
             machineType: input.machineType,
             requestId,
             paired,
@@ -386,11 +388,12 @@ async function prepareBoatCloudProjectNow(
     // so the draft moves once all three have arrived. A thread that takes the VM's worktree
     // also waits for the holder to say it is cut.
     const worktree = session.worktree ?? null;
+    const { workspaceRoot } = session;
     const findProject = (projects: ReadonlyArray<EnvironmentProject>) =>
       projects.find(
         (project) =>
           project.environmentId === session.environmentId &&
-          project.workspaceRoot === session.workspaceRoot,
+          project.workspaceRoot === workspaceRoot,
       );
     // A large repository can still be cloning, and the project only appears after it.
     const cloning =
@@ -400,12 +403,14 @@ async function prepareBoatCloudProjectNow(
     const appearTimeoutMs = cloning ? CHECKOUT_TIMEOUT_MS : PROJECT_APPEAR_TIMEOUT_MS;
     const arrived = await Promise.race([
       Promise.all([
-        waitForAtomValue({
-          registry: appAtomRegistry,
-          atom: environmentProjects.projectsAtom,
-          predicate: (projects) => findProject(projects) !== undefined,
-          timeoutMs: appearTimeoutMs,
-        }),
+        // Without a checkout the VM has no project yet; its scratch project opens below.
+        workspaceRoot === null ||
+          waitForAtomValue({
+            registry: appAtomRegistry,
+            atom: environmentProjects.projectsAtom,
+            predicate: (projects) => findProject(projects) !== undefined,
+            timeoutMs: appearTimeoutMs,
+          }),
         waitForAtomValue({
           registry: appAtomRegistry,
           atom: environmentServerConfigsAtom,
@@ -432,8 +437,25 @@ async function prepareBoatCloudProjectNow(
     ]);
     if (arrived === null) return null;
     if (typeof arrived === "string") return fail(arrived, "repository");
-    const project = findProject(appAtomRegistry.get(environmentProjects.projectsAtom));
-    if (arrived.includes(false) || !project) return fail("The VM did not open the project.");
+    if (arrived.includes(false)) return fail("The VM did not open the project.");
+    let project: EnvironmentProject | undefined;
+    if (workspaceRoot === null) {
+      const opened = await runAtomCommand(
+        appAtomRegistry,
+        projectEnvironment.openScratch,
+        { environmentId: session.environmentId, input: {} },
+        { label: projectEnvironment.openScratch.label, reportFailure: false, reportDefect: true },
+      );
+      if (start.abandoned()) return null;
+      if (opened._tag === "Failure") {
+        if (isAtomCommandInterrupted(opened)) return null;
+        return fail(failureMessage(opened), "project");
+      }
+      project = opened.value;
+    } else {
+      project = findProject(appAtomRegistry.get(environmentProjects.projectsAtom));
+    }
+    if (!project) return fail("The VM did not open the project.");
     // The project is added after the checkout, so it appearing means the checkout is done.
     updateProgress(draftId, (progress) =>
       completeStep(completeStep(progress, "repository"), "project"),
@@ -490,7 +512,7 @@ function syncHolds() {
 }
 
 const startKey = (input: BoatCloudPrepareInput) =>
-  `${input.holderEnvironmentId} ${input.machineType} ${input.repositoryUrl}`;
+  `${input.holderEnvironmentId} ${input.machineType} ${input.repositoryUrl ?? ""}`;
 
 /**
  * Starts getting a VM as soon as the draft picks Boat cloud, so it is usually ready by the
