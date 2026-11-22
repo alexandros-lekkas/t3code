@@ -389,6 +389,51 @@ export const BOOT_CHECK_STATE_FILES: ReadonlyArray<string> = [
   "environment-id",
 ];
 
+const BOOT_CHECK_DATABASE = "statev2.sqlite";
+const BOOT_CHECK_COPY_ATTEMPTS = 5;
+
+const cloneFile = (source: string, destination: string) =>
+  // A clone on APFS: instant and no extra space, even for a multi-gigabyte database.
+  NodeFSP.copyFile(source, destination, NodeFS.constants.COPYFILE_FICLONE);
+
+const databaseStamp = async (path: string) => {
+  try {
+    const stat = await NodeFSP.stat(path, { bigint: true });
+    return `${stat.mtimeNs}:${stat.size}`;
+  } catch (cause) {
+    if ((cause as { code?: unknown }).code !== "ENOENT") throw cause;
+    return null;
+  }
+};
+
+/**
+ * Copies the state the trial server boots on while the live server keeps writing. A checkpoint
+ * between the database and WAL copies leaves pages from two moments, which reads as corrupt
+ * rows. The database file changes only at a checkpoint, so a pair is good when it did not
+ * change while both were copied; otherwise the copy is taken again.
+ */
+export async function copyBootCheckState(input: {
+  readonly liveStateDir: string;
+  readonly stateDir: string;
+  readonly copyFile?: (source: string, destination: string) => Promise<void>;
+}): Promise<void> {
+  const copyFile = input.copyFile ?? cloneFile;
+  const database = NodePath.join(input.liveStateDir, BOOT_CHECK_DATABASE);
+  for (let attempt = 1; ; attempt += 1) {
+    const before = await databaseStamp(database);
+    for (const name of BOOT_CHECK_STATE_FILES) {
+      const destination = NodePath.join(input.stateDir, name);
+      await NodeFSP.rm(destination, { force: true });
+      try {
+        await copyFile(NodePath.join(input.liveStateDir, name), destination);
+      } catch (cause) {
+        if ((cause as { code?: unknown }).code !== "ENOENT") throw cause;
+      }
+    }
+    if (attempt === BOOT_CHECK_COPY_ATTEMPTS || (await databaseStamp(database)) === before) return;
+  }
+}
+
 const BOOT_CHECK_TIMEOUT_MS = 180_000;
 const BOOT_CHECK_POLL_MS = 500;
 const BOOT_CHECK_OUTPUT_LIMIT = 4_000;
@@ -501,19 +546,7 @@ export const bootCheckUnsignedMacUpdate = Effect.fn("desktop.updates.unsignedMac
       await NodeFSP.rm(input.workDir, { recursive: true, force: true });
       await NodeFSP.mkdir(stateDir, { recursive: true });
       await NodeFSP.mkdir(home, { recursive: true });
-      for (const name of BOOT_CHECK_STATE_FILES) {
-        const source = NodePath.join(input.liveStateDir, name);
-        try {
-          // A clone on APFS: instant and no extra space, even for a multi-gigabyte database.
-          await NodeFSP.copyFile(
-            source,
-            NodePath.join(stateDir, name),
-            NodeFS.constants.COPYFILE_FICLONE,
-          );
-        } catch (cause) {
-          if ((cause as { code?: unknown }).code !== "ENOENT") throw cause;
-        }
-      }
+      await copyBootCheckState({ liveStateDir: input.liveStateDir, stateDir });
     });
 
     return yield* Effect.gen(function* () {

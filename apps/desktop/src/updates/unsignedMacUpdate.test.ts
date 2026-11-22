@@ -19,6 +19,7 @@ import {
   bootCheckAnswerMatches,
   bootCheckEnvironment,
   bootCheckUnsignedMacUpdate,
+  copyBootCheckState,
   macUpdateAssetUrl,
   prepareUnsignedMacUpdate,
   resolveMacAppBundlePath,
@@ -285,6 +286,36 @@ describe("unsigned macOS update boot check", () => {
       "T3CODE_NO_BROWSER",
       "TMPDIR",
     ]);
+  });
+
+  it("copies the database and its WAL again when a checkpoint lands between them", async () => {
+    const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3code-boot-check-"));
+    roots.push(root);
+    const live = NodePath.join(root, "live");
+    const stateDir = NodePath.join(root, "copy");
+    await NodeFSP.mkdir(live);
+    await NodeFSP.mkdir(stateDir);
+    await NodeFSP.writeFile(NodePath.join(live, "statev2.sqlite"), "before checkpoint");
+    await NodeFSP.writeFile(NodePath.join(live, "statev2.sqlite-wal"), "frames 1-9");
+    let checkpointed = false;
+    await copyBootCheckState({
+      liveStateDir: live,
+      stateDir,
+      copyFile: async (source, destination) => {
+        if (source.endsWith("-wal") && !checkpointed) {
+          checkpointed = true;
+          await NodeFSP.writeFile(NodePath.join(live, "statev2.sqlite"), "after checkpoint, 1-9");
+          await NodeFSP.writeFile(source, "frame 10");
+        }
+        await NodeFSP.copyFile(source, destination);
+      },
+    });
+    expect(NodeFS.readFileSync(NodePath.join(stateDir, "statev2.sqlite"), "utf8")).toBe(
+      "after checkpoint, 1-9",
+    );
+    expect(NodeFS.readFileSync(NodePath.join(stateDir, "statev2.sqlite-wal"), "utf8")).toBe(
+      "frame 10",
+    );
   });
 
   // A fake bundle whose executable is a tiny server standing in for the update's backend.
