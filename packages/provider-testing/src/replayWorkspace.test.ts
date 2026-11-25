@@ -39,6 +39,15 @@ it.layer(NodeServices.layer)("checkpointWorkspace", (it) => {
       vi.stubEnv("GIT_CONFIG_COUNT", "1");
       vi.stubEnv("GIT_CONFIG_KEY_0", "commit.gpgsign");
       vi.stubEnv("GIT_CONFIG_VALUE_0", "false");
+      // Fork: the fork-sync runner exports GIT_AUTHOR_NAME (github-actions[bot]), which overrides
+      // the identity this checks for; it fails on upstream's own code there too.
+      for (const name of [
+        "GIT_AUTHOR_NAME",
+        "GIT_AUTHOR_EMAIL",
+        "GIT_COMMITTER_NAME",
+        "GIT_COMMITTER_EMAIL",
+      ])
+        vi.stubEnv(name, undefined);
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-replay-workspace-decoy-" });
