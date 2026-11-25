@@ -129,6 +129,11 @@ jobs:
           echo "main_target=$main_target" >>"$GITHUB_OUTPUT"
           echo "skip=false" >>"$GITHUB_OUTPUT"
 
+      # Before the merge: a conflicted package.json would stop the install.
+      - name: Set up the toolchain
+        if: steps.release.outputs.skip == 'false'
+        uses: ./.github/actions/fork-checks-setup
+
       - name: Merge the release into boat
         id: merge
         if: steps.release.outputs.skip == 'false'
@@ -144,10 +149,6 @@ jobs:
             git diff --name-only --diff-filter=U | tee "$LOG_DIR/conflicts.txt"
             echo "conflicted=true" >>"$GITHUB_OUTPUT"
           fi
-
-      - name: Set up the toolchain
-        if: steps.release.outputs.skip == 'false'
-        uses: ./.github/actions/fork-checks-setup
 
       - name: Run checks
         id: checks
@@ -177,7 +178,8 @@ jobs:
           if [[ "$CONFLICTED" == "true" ]]; then
             situation="Merging upstream $REF into boat stopped with conflicts in these files:
           $(cat "$LOG_DIR/conflicts.txt")
-          Resolve every conflict, then make the checks pass."
+          Resolve every conflict, then make the checks pass. node_modules was installed from boat
+          before the merge, so run \`vp install\` once package.json files and the lockfile resolve."
           else
             situation="Upstream $REF merged into boat cleanly, but these checks fail: $(tr '\n' ' ' <"$LOG_DIR/checks-1/failed.txt").
           Their logs are in $LOG_DIR/checks-1/. Make the checks pass."
